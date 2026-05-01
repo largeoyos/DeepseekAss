@@ -837,7 +837,7 @@ class DeepSeekChatGUI(QMainWindow):
 
     def _on_book_selected(self, text: str) -> None:
         """书架选择变化 → 加载已有小说设定"""
-        title = self._get_current_book_title()
+        title = text if text and not text.startswith("（暂无小说") else None
         if not title:
             self._novel_title_edit.setText("")
             self._chapter_info_label.setText("尚未选择小说")
@@ -1013,8 +1013,9 @@ class DeepSeekChatGUI(QMainWindow):
         try:
             chapter_num = self._novel_manager.get_next_chapter_num(title)
 
+            target_words = max(2000, self._client.max_tokens // 2)
             messages = [
-                {"role": "system", "content": "你是一位文笔细腻、想象力丰富的小说家。请直接输出小说正文，不要加任何解释或前言。"},
+                {"role": "system", "content": f"你是一位文笔细腻、想象力丰富的小说家。请直接输出小说正文，不要加任何解释或前言。本章字数不少于{target_words}字，情节饱满，细节丰富，场景描写生动。"},
             ]
 
             bg = self._background_edit.toPlainText().strip()

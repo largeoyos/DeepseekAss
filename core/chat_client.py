@@ -133,8 +133,6 @@ class DeepSeekChatClient:
             model: 模型名称
         """
         known = {
-            Config.MODEL_CHAT,
-            Config.MODEL_REASONER,
             Config.MODEL_V4_FLASH,
             Config.MODEL_V4_PRO,
         }
