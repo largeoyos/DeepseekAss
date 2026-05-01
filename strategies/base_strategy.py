@@ -36,9 +36,8 @@ class BaseStrategy(ABC):
     def recommended_model(self) -> str:
         """
         返回推荐模型（可被子类覆盖）
-        默认使用 deepseek-chat
         """
-        return Config.MODEL_CHAT
+        return Config.MODEL_V4_FLASH
 
     @property
     def recommended_temperature(self) -> float:

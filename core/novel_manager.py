@@ -360,7 +360,7 @@ class NovelManager:
         with open(summary_path, "a", encoding="utf-8") as f:
             f.write(f"\n第{chapter_num}章「{chapter_title}」摘要：{summary_text}\n")
 
-    def rebuild_summary_from_active(self, client, title: str) -> None:
+    def rebuild_summary_from_active(self, client, title: str, model: str = "deepseek-v4-flash") -> None:
         """
         根据所有活跃章节重新生成完整 plot_summary.txt
         当用户切换活跃版本后调用此方法重建摘要
@@ -380,7 +380,7 @@ class NovelManager:
                 continue
             try:
                 response = client.chat.completions.create(
-                    model="deepseek-chat",
+                    model=model,
                     messages=[{
                         "role": "user",
                         "content": (
@@ -417,6 +417,7 @@ class NovelManager:
         client=None,
         next_chapter_num: int | None = None,
         max_recent: int = 3,
+        model: str = "deepseek-v4-flash",
     ) -> str:
         """
         智能选取前情提要：短篇全量返回，长篇自动压缩早期章节。
@@ -478,7 +479,7 @@ class NovelManager:
             try:
                 early_block = "\n\n".join(early_texts)
                 response = client.chat.completions.create(
-                    model="deepseek-chat",
+                    model=model,
                     messages=[{
                         "role": "user",
                         "content": (
@@ -542,6 +543,7 @@ class NovelManager:
         chapter_content: str,
         chapter_num: int,
         chapter_title: str,
+        model: str = "deepseek-v4-flash",
     ) -> str:
         """
         调用 API 生成章节摘要
@@ -557,7 +559,7 @@ class NovelManager:
         """
         try:
             response = client.chat.completions.create(
-                model="deepseek-chat",
+                model=model,
                 messages=[{
                     "role": "user",
                     "content": (
@@ -567,7 +569,7 @@ class NovelManager:
                     ),
                 }],
                 max_tokens=2000,
-                temperature=0.3,  # 摘要用低温保证准确性
+                temperature=0.3,
             )
             return response.choices[0].message.content or ""
         except Exception as e:
