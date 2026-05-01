@@ -239,7 +239,43 @@ class DeepSeekChatClient:
             self._messages.pop()
             raise RuntimeError(f"API 流式调用失败: {e}") from e
 
+    # ========== 消息导入/导出 ==========
+
+    def import_messages(self, messages: list[dict]) -> None:
+        """
+        导入外部消息列表（如从历史记录加载），替换当前对话
+
+        会自动确保第一条消息为 system 角色（若外部消息不包含 system 则保留当前 system prompt）。
+        导入后 system prompt 使用当前策略的提示词。
+
+        Args:
+            messages: 消息列表，格式为 [{"role": "...", "content": "..."}, ...]
+        """
+        system_prompt = self._strategy.get_system_prompt()
+        # 如果外部消息以 system 开头 → 使用当前策略的 system prompt 替换
+        if messages and messages[0].get("role") == "system":
+            messages = messages[1:]  # 移除外部的 system prompt
+        # 用当前策略的 system prompt 重新开头
+        self._messages = [{"role": "system", "content": system_prompt}] + messages
+
+    def export_messages(self) -> list[dict]:
+        """
+        导出完整消息列表（含 system prompt），用于保存
+
+        Returns:
+            消息列表副本
+        """
+        return list(self._messages)
+
     # ========== 内部方法 ==========
+
+    def update_system_prompt(self) -> None:
+        """用当前策略最新的 system prompt 刷新对话首条消息"""
+        new_prompt = self._strategy.get_system_prompt()
+        if self._messages:
+            self._messages[0] = {"role": "system", "content": new_prompt}
+        else:
+            self._messages = [{"role": "system", "content": new_prompt}]
 
     def _reset_conversation(self) -> None:
         """重置对话，仅保留当前策略的 System Prompt"""

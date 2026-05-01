@@ -26,11 +26,13 @@ from PyQt6.QtWidgets import (
     QSlider,
     QInputDialog,
     QMessageBox,
-    QFrame,
     QGroupBox,
     QSpinBox,
     QLineEdit,
     QCheckBox,
+    QFrame,
+    QRadioButton,
+    QButtonGroup,
 )
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineSettings
@@ -39,11 +41,28 @@ import markdown as md_lib
 from config import Config
 from core.chat_client import DeepSeekChatClient
 from core.novel_manager import NovelManager
+from core.conversation_manager import ConversationManager
 from strategies import (
     RolePlayStrategy,
     NovelStrategy,
     CodeAssistantStrategy,
 )
+
+
+# ========== 自定义输入框（拦截 Ctrl+Enter） ==========
+
+class InputTextEdit(QTextEdit):
+    """重写 keyPressEvent，确保 Ctrl+Enter/Ctrl+Return 触发发送"""
+
+    send_requested = pyqtSignal()
+
+    def keyPressEvent(self, event):
+        # Ctrl+Enter 或 Ctrl+Return → 发送信号
+        if event.modifiers() == Qt.KeyboardModifier.ControlModifier and event.key() in (Qt.Key.Key_Enter, Qt.Key.Key_Return):
+            self.send_requested.emit()
+            return
+        # 单独 Enter 保持默认行为（插入换行）
+        super().keyPressEvent(event)
 
 
 # ========== 信号中转 ==========
@@ -217,6 +236,10 @@ class DeepSeekChatGUI(QMainWindow):
 
         # 小说管理器
         self._novel_manager = NovelManager()
+        # 对话历史管理器
+        self._conversation_manager = ConversationManager()
+        self._current_conversation_id: str | None = None
+        self._current_conversation_title: str = ""
 
         # 累积的文本（用于流式追加）
         self._assistant_text_buffer: list[str] = []
@@ -282,7 +305,9 @@ class DeepSeekChatGUI(QMainWindow):
         self.setCentralWidget(splitter)
 
         self._display.setHtml(INITIAL_HTML)
-        self._toggle_novel_panel(False)  # 初始隐藏小说面板
+        self._toggle_novel_panel(False)      # 初始隐藏小说面板
+        self._toggle_role_play_panel(True)   # 初始显示角色扮演面板
+        self._refresh_history_list()
 
     def _build_left_panel(self) -> QWidget:
         """构建左侧控制面板（含小说专属区域）"""
@@ -408,6 +433,41 @@ class DeepSeekChatGUI(QMainWindow):
 
         layout.addWidget(btn_group)
 
+        # ── 💬 对话历史 ──
+        self._history_group = QGroupBox("💬 对话历史")
+        history_layout = QVBoxLayout(self._history_group)
+        history_layout.setContentsMargins(8, 4, 8, 4)
+        history_layout.setSpacing(4)
+
+        save_hist_btn = QPushButton("💾 保存当前对话")
+        save_hist_btn.clicked.connect(self._on_save_conversation)
+        history_layout.addWidget(save_hist_btn)
+
+        hist_list_row = QHBoxLayout()
+        self._history_combo = QComboBox()
+        self._history_combo.setMinimumWidth(120)
+        self._history_combo.setToolTip("选择已保存的对话")
+        hist_list_row.addWidget(self._history_combo, stretch=1)
+
+        load_hist_btn = QPushButton("📂 加载")
+        load_hist_btn.setToolTip("加载选中的对话历史")
+        load_hist_btn.clicked.connect(self._on_load_conversation)
+        hist_list_row.addWidget(load_hist_btn)
+
+        delete_hist_btn = QPushButton("🗑")
+        delete_hist_btn.setToolTip("删除选中的对话历史")
+        delete_hist_btn.setMaximumWidth(40)
+        delete_hist_btn.clicked.connect(self._on_delete_conversation)
+        hist_list_row.addWidget(delete_hist_btn)
+
+        history_layout.addLayout(hist_list_row)
+
+        self._history_status_label = QLabel("暂无已保存对话")
+        self._history_status_label.setWordWrap(True)
+        history_layout.addWidget(self._history_status_label)
+
+        layout.addWidget(self._history_group)
+
         # ── 状态信息 ──
         status_group = QGroupBox("📋 状态")
         status_layout = QVBoxLayout(status_group)
@@ -417,6 +477,10 @@ class DeepSeekChatGUI(QMainWindow):
         status_layout.addWidget(self._status_label)
         layout.addWidget(status_group)
 
+        # ── 🎭 角色扮演面板（默认显示，切换模式时隐藏）──
+        self._role_play_panel = self._build_role_play_panel()
+        layout.addWidget(self._role_play_panel)
+
         # ── 📚 小说写作面板（默认隐藏）──
         self._novel_panel = self._build_novel_panel()
         layout.addWidget(self._novel_panel)
@@ -424,6 +488,61 @@ class DeepSeekChatGUI(QMainWindow):
         layout.addStretch()
         scroll.setWidget(container)
         return scroll
+
+    def _build_role_play_panel(self) -> QGroupBox:
+        """构建角色扮演专属面板"""
+        panel = QGroupBox("🎭 角色扮演 · 角色设定")
+        layout = QVBoxLayout(panel)
+        layout.setSpacing(4)
+        layout.setContentsMargins(8, 4, 8, 4)
+
+        # ── 角色描述 ──
+        char_label = QLabel("👤 角色描述")
+        layout.addWidget(char_label)
+        self._role_char_edit = QTextEdit()
+        self._role_char_edit.setPlaceholderText(
+            "描述要扮演的角色：姓名、性格、外貌、身份、语言风格...\n"
+            "例如：一位傲娇的中世纪骑士，身材高大，说话简短有力..."
+        )
+        self._role_char_edit.setMaximumHeight(100)
+        self._role_char_edit.setMinimumHeight(70)
+        self._role_char_edit.textChanged.connect(self._on_role_char_changed)
+        layout.addWidget(self._role_char_edit)
+
+        # ── 故事背景 ──
+        bg_label = QLabel("🌍 故事背景")
+        layout.addWidget(bg_label)
+        self._role_bg_edit = QTextEdit()
+        self._role_bg_edit.setPlaceholderText(
+            "描述故事发生的世界、时代、情境...\n"
+            "例如：中世纪欧洲，魔法存在，正值十字军东征时期..."
+        )
+        self._role_bg_edit.setMaximumHeight(100)
+        self._role_bg_edit.setMinimumHeight(70)
+        self._role_bg_edit.textChanged.connect(self._on_role_bg_changed)
+        layout.addWidget(self._role_bg_edit)
+
+        # ── 回复方式 ──
+        mode_label = QLabel("💬 回复方式")
+        layout.addWidget(mode_label)
+
+        self._reply_mode_group = QButtonGroup(panel)
+        self._radio_character = QRadioButton("角色回答（第一人称）")
+        self._radio_narrator = QRadioButton("旁白描述（第三人称叙述）")
+        self._radio_character.setChecked(True)
+        self._reply_mode_group.addButton(self._radio_character, 0)
+        self._reply_mode_group.addButton(self._radio_narrator, 1)
+        self._reply_mode_group.idClicked.connect(self._on_reply_mode_changed)
+        layout.addWidget(self._radio_character)
+        layout.addWidget(self._radio_narrator)
+
+        # ── 应用设定按钮 ──
+        apply_btn = QPushButton("✅ 应用设定（重置对话）")
+        apply_btn.setMinimumHeight(32)
+        apply_btn.clicked.connect(self._on_apply_role_settings)
+        layout.addWidget(apply_btn)
+
+        return panel
 
     def _build_novel_panel(self) -> QGroupBox:
         """构建小说写作专属面板"""
@@ -577,10 +696,11 @@ class DeepSeekChatGUI(QMainWindow):
         input_layout = QHBoxLayout(input_frame)
         input_layout.setContentsMargins(8, 6, 8, 6)
 
-        self._input_box = QTextEdit()
+        self._input_box = InputTextEdit()
         self._input_box.setPlaceholderText("在此输入消息，按 Ctrl+Enter 发送...")
         self._input_box.setMaximumHeight(100)
         self._input_box.setMinimumHeight(60)
+        self._input_box.send_requested.connect(self._on_send)
         input_layout.addWidget(self._input_box, stretch=1)
 
         send_btn = QPushButton("发送")
@@ -719,9 +839,11 @@ class DeepSeekChatGUI(QMainWindow):
         self._sync_sliders_to_client()
         self._update_status()
 
-        # 切换小说面板可见性
+        # 切换专属面板可见性
         is_novel = isinstance(strategy, NovelStrategy)
+        is_role_play = isinstance(strategy, RolePlayStrategy)
         self._toggle_novel_panel(is_novel)
+        self._toggle_role_play_panel(is_role_play)
 
         if is_novel:
             self._refresh_novel_bookshelf()
@@ -769,6 +891,9 @@ class DeepSeekChatGUI(QMainWindow):
         self._client.clear_context()
         self._display.setHtml(INITIAL_HTML)
 
+    def _toggle_role_play_panel(self, visible: bool) -> None:
+        self._role_play_panel.setVisible(visible)
+
     def _toggle_novel_panel(self, visible: bool) -> None:
         self._novel_panel.setVisible(visible)
 
@@ -781,6 +906,51 @@ class DeepSeekChatGUI(QMainWindow):
             f"freq_p: {self._client.frequency_penalty:.2f} | "
             f"max_tk: {self._client.max_tokens}"
         )
+
+    # ========== 🎭 角色扮演面板事件 ==========
+
+    def _on_role_char_changed(self) -> None:
+        if isinstance(self._client.strategy, RolePlayStrategy):
+            self._client.strategy.character_description = self._role_char_edit.toPlainText()
+
+    def _on_role_bg_changed(self) -> None:
+        if isinstance(self._client.strategy, RolePlayStrategy):
+            self._client.strategy.story_background = self._role_bg_edit.toPlainText()
+
+    def _on_reply_mode_changed(self, button_id: int) -> None:
+        if isinstance(self._client.strategy, RolePlayStrategy):
+            self._client.strategy.reply_mode = (
+                RolePlayStrategy.REPLY_MODE_NARRATOR
+                if button_id == 1
+                else RolePlayStrategy.REPLY_MODE_CHARACTER
+            )
+
+    def _on_apply_role_settings(self) -> None:
+        """将角色描述、故事背景、回复方式写入 system prompt，并重置对话上下文"""
+        if not isinstance(self._client.strategy, RolePlayStrategy):
+            return
+        self._client.strategy.character_description = self._role_char_edit.toPlainText()
+        self._client.strategy.story_background = self._role_bg_edit.toPlainText()
+        self._client.strategy.reply_mode = (
+            RolePlayStrategy.REPLY_MODE_NARRATOR
+            if self._radio_narrator.isChecked()
+            else RolePlayStrategy.REPLY_MODE_CHARACTER
+        )
+        self._client.update_system_prompt()
+        self._client.clear_context(keep_system=True)
+        char = self._client.strategy.character_description.strip()
+        bg = self._client.strategy.story_background.strip()
+        is_narrator = self._client.strategy.reply_mode == RolePlayStrategy.REPLY_MODE_NARRATOR
+        mode_text = "旁白描述（第三人称）" if is_narrator else "角色回答（第一人称）"
+        notice_parts = [f"🎭 **角色设定已应用，对话已重置。**\n", f"**回复方式：** {mode_text}\n"]
+        if char:
+            notice_parts.append(f"**角色描述：** {char[:80]}{'…' if len(char) > 80 else ''}\n")
+        if bg:
+            notice_parts.append(f"**故事背景：** {bg[:80]}{'…' if len(bg) > 80 else ''}\n")
+        if not char and not bg:
+            notice_parts.append("（未填写角色描述或故事背景，使用默认角色扮演模式）\n")
+        notice_parts.append("\n现在可以开始对话了。")
+        self._display.setHtml(md_to_html("".join(notice_parts)))
 
     # ========== 📚 小说面板事件 ==========
 
@@ -1549,8 +1719,199 @@ class DeepSeekChatGUI(QMainWindow):
         dialog = ChapterManagerDialog(self, self._novel_manager, title, self._client)
         dialog.exec()
 
+    # ========== 💬 对话历史管理 ==========
 
-# ========== 启动入口 ==========
+    def _refresh_history_list(self) -> None:
+        """刷新对话历史下拉列表"""
+        conversations = self._conversation_manager.list_conversations()
+        current = self._history_combo.currentText()
+        self._history_combo.blockSignals(True)
+        self._history_combo.clear()
+        if conversations:
+            for c in conversations:
+                display = f"{c.title} ({c.message_count}条消息, {c.updated_at[:16]})"
+                self._history_combo.addItem(display, userData=c.conversation_id)
+            # 恢复之前选中项
+            for i in range(self._history_combo.count()):
+                if self._history_combo.itemText(i) == current:
+                    self._history_combo.setCurrentIndex(i)
+                    break
+            self._history_status_label.setText(
+                f"共 {len(conversations)} 个已保存对话"
+            )
+        else:
+            self._history_combo.addItem("（暂无已保存对话）")
+            self._history_status_label.setText("暂无已保存对话")
+        self._history_combo.blockSignals(False)
+
+    def _get_selected_history_id(self) -> str | None:
+        """获取当前选中的对话历史 ID"""
+        idx = self._history_combo.currentIndex()
+        if idx < 0:
+            return None
+        data = self._history_combo.currentData()
+        if data is None:
+            return None
+        return str(data)
+
+    def _on_save_conversation(self) -> None:
+        """保存当前对话到历史记录"""
+        messages = self._client.export_messages()
+        # 过滤掉 system prompt，只统计用户和助手的消息
+        user_assistant = [m for m in messages if m.get("role") in ("user", "assistant")]
+        if not user_assistant:
+            QMessageBox.warning(self, "提示", "当前没有对话内容，无法保存。")
+            return
+
+        # 弹出对话框获取标题
+        title, ok = QInputDialog.getText(
+            self,
+            "保存对话",
+            "请输入对话标题：",
+            text=self._current_conversation_title or ""
+        )
+        if not ok or not title.strip():
+            return
+
+        title = title.strip()
+        if self._current_conversation_id:
+            # 更新已有对话
+            conversation_id = self._current_conversation_id
+        else:
+            # 新建对话
+            conversation_id = self._conversation_manager.generate_id(title)
+
+        file_path = self._conversation_manager.save_conversation(
+            conversation_id=conversation_id,
+            title=title,
+            model=self._client.model,
+            messages=messages,
+        )
+        self._current_conversation_id = conversation_id
+        self._current_conversation_title = title
+        self._refresh_history_list()
+        # 选中刚保存的对话
+        for i in range(self._history_combo.count()):
+            if self._history_combo.itemData(i) == conversation_id:
+                self._history_combo.setCurrentIndex(i)
+                break
+        QMessageBox.information(
+            self, "保存成功",
+            f"对话「{title}」已保存（{len(user_assistant)} 条消息）\n{file_path}"
+        )
+
+    def _on_load_conversation(self) -> None:
+        """加载选中的对话历史（最多加载最近50条消息）"""
+        conversation_id = self._get_selected_history_id()
+        if not conversation_id:
+            QMessageBox.warning(self, "提示", "请先选择一个已保存的对话。")
+            return
+
+        record = self._conversation_manager.load_conversation(conversation_id)
+        if not record:
+            QMessageBox.warning(self, "错误", f"对话「{conversation_id}」加载失败，文件可能已损坏。")
+            return
+
+        all_messages = record.get("messages", [])
+        if not all_messages:
+            QMessageBox.warning(self, "提示", "该对话记录中没有任何消息。")
+            return
+
+        # 只取最近 50 条消息（如果超过），保留 system prompt 为首条
+        messages = all_messages[-50:] if len(all_messages) > 50 else all_messages
+
+        # 导入消息到客户端
+        self._client.import_messages(messages)
+        self._current_conversation_id = conversation_id
+        self._current_conversation_title = record.get("title", "")
+
+        # 同步模型设置
+        saved_model = record.get("model", "")
+        if saved_model and saved_model in MODEL_OPTIONS:
+            self._client.switch_model(saved_model)
+            self._model_combo.setCurrentText(saved_model)
+            self._sync_sliders_to_client()
+            self._update_status()
+
+        # 重新渲染完整对话
+        self._render_full_conversation(messages)
+        self._refresh_history_list()
+        QMessageBox.information(
+            self, "加载成功",
+            f"已加载对话「{record.get('title', '')}」（{len(messages)} 条消息）"
+        )
+
+    def _on_delete_conversation(self) -> None:
+        """删除选中的对话历史"""
+        conversation_id = self._get_selected_history_id()
+        if not conversation_id:
+            QMessageBox.warning(self, "提示", "请先选择一个已保存的对话。")
+            return
+
+        # 获取标题用于提示
+        idx = self._history_combo.currentIndex()
+        title_text = self._history_combo.itemText(idx)
+
+        reply = QMessageBox.question(
+            self,
+            "确认删除",
+            f"确定要删除对话「{title_text}」吗？\n此操作不可恢复！",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._conversation_manager.delete_conversation(conversation_id)
+            if self._current_conversation_id == conversation_id:
+                self._current_conversation_id = None
+                self._current_conversation_title = ""
+            self._refresh_history_list()
+            QMessageBox.information(self, "成功", "对话已删除。")
+
+    def _render_full_conversation(self, messages: list[dict]) -> None:
+        """根据消息列表重新渲染完整对话到显示区域（最多显示最近50条）"""
+        self._display.setHtml("")
+        self._display.setHtml("<html><head>" + HTML_STYLE + "</head><body></body></html>")
+
+        # 只渲染最近 50 条消息
+        display_messages = messages[-50:] if len(messages) > 50 else messages
+        for msg in display_messages:
+            role = msg.get("role", "")
+            content = msg.get("content", "")
+            if role == "system":
+                # system 消息以特殊样式显示
+                escaped = content.replace("&", "&").replace("<", "<").replace(">", ">")
+                escaped = escaped.replace("\n", "<br>")
+                js_safe = self._escape_for_js(escaped)
+                script = f"""
+                    (function() {{
+                        var div = document.createElement('div');
+                        div.className = 'system-msg';
+                        div.innerHTML = '<em>[系统提示]</em><br>' + `{js_safe}`;
+                        document.body.appendChild(div);
+                    }})();
+                """
+                self._display.page().runJavaScript(script)
+            elif role == "user":
+                self._append_user_message(content)
+            elif role == "assistant":
+                html_body = md_lib.markdown(
+                    content,
+                    extensions=["fenced_code", "tables", "codehilite", "nl2br", "sane_lists"],
+                )
+                escaped_body = self._escape_for_js(html_body)
+                script = f"""
+                    (function() {{
+                        var div = document.createElement('div');
+                        div.className = 'assistant-msg';
+                        div.innerHTML = '<strong>🤖 助手：</strong><br>' + `{escaped_body}`;
+                        document.body.appendChild(div);
+                    }})();
+                """
+                self._display.page().runJavaScript(script)
+
+        # 滚动到底部
+        self._display.page().runJavaScript("window.scrollTo(0, document.body.scrollHeight);")
+
+    # ========== 启动入口 ==========
 
 def run_gui() -> None:
     """启动 GUI 应用"""
