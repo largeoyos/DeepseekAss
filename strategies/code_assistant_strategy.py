@@ -32,3 +32,7 @@ class CodeAssistantStrategy(BaseStrategy):
     @property
     def recommended_temperature(self) -> float:
         return 0.1  # 低温度保证代码精确性
+
+    @property
+    def recommended_max_tokens(self) -> int:
+        return 16384  # 代码输出通常较长

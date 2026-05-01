@@ -23,7 +23,7 @@ class Config:
     # 默认参数
     DEFAULT_TEMPERATURE: float = 0.7
     DEFAULT_TOP_P: float = 0.9
-    DEFAULT_MAX_TOKENS: int = 4096
+    DEFAULT_MAX_TOKENS: int = 16384
     DEFAULT_FREQUENCY_PENALTY: float = 0.0
 
     @classmethod

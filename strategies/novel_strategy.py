@@ -115,7 +115,7 @@ class NovelStrategy(BaseStrategy):
 
     @property
     def recommended_max_tokens(self) -> int:
-        return 10000  # 长文本需要更多 token
+        return 32768  # 长篇小说单次输出上限（约20000～30000中文字）
 
     # ========== 构建章节写作 User Prompt ==========
 
