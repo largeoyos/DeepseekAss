@@ -3,10 +3,16 @@
 使用 .env 文件读取 API Key 与 Base URL
 """
 import os
+from pathlib import Path
 from dotenv import load_dotenv
 
-# 加载 .env 文件
-load_dotenv()
+# 从脚本所在目录加载 .env，不依赖当前工作目录
+_env_path = Path(__file__).resolve().parent / ".env"
+if _env_path.exists():
+    load_dotenv(dotenv_path=str(_env_path), override=True)
+else:
+    # 兜底：尝试当前工作目录
+    load_dotenv(override=True)
 
 
 class Config:

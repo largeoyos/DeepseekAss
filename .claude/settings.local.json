@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \"import py_compile; py_compile.compile\\('ui/main_window.py', doraise=True\\); print\\('OK'\\)\")",
+      "Bash(python -c \"import importlib; importlib.import_module\\('ui.main_window'\\); print\\('Imports OK'\\)\")",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('config.py', doraise=True\\); py_compile.compile\\('ui/main_window.py', doraise=True\\); py_compile.compile\\('gui_main.py', doraise=True\\); print\\('All OK'\\)\")",
+      "Bash(python -c ' *)",
+      "Bash(git diff *)",
+      "Bash(git status *)",
+      "Bash(python -c \"import py_compile; py_compile.compile\\('ui/main_window.py', doraise=True\\); print\\('Syntax OK'\\)\")"
+    ]
+  }
+}

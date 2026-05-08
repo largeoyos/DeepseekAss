@@ -92,93 +92,171 @@ MODEL_OPTIONS = [
 
 HTML_STYLE = """
 <style>
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #444 #1e1e1e;
+  }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: #1e1e1e; }
+  ::-webkit-scrollbar-thumb { background: #444; border-radius: 4px; }
+  ::-webkit-scrollbar-thumb:hover { background: #555; }
+
   body {
-    font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
-    font-size: 14px;
-    line-height: 1.75;
-    color: #e0e0e0;
-    background-color: #1e1e1e;
-    padding: 16px;
+    font-family: "Microsoft YaHei", "Segoe UI", -apple-system, Arial, sans-serif;
+    font-size: 14.5px;
+    line-height: 1.8;
+    color: #d4d4d4;
+    background: linear-gradient(135deg, #1a1a2e 0%, #1e1e2e 50%, #1a1a2e 100%);
+    padding: 20px;
     margin: 0;
   }
-  pre {
-    background-color: #2d2d2d;
-    border-radius: 6px;
-    padding: 12px 16px;
-    overflow-x: auto;
-    font-family: "Consolas", "Courier New", monospace;
+
+  /* 消息通用过渡动画 */
+  .user-msg, .assistant-msg, .system-msg {
+    animation: fadeIn 0.25s ease-out;
+  }
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* 用户消息气泡 */
+  .user-msg {
+    background: linear-gradient(135deg, #1e3a5f 0%, #264f78 100%);
+    border-radius: 12px 12px 4px 12px;
+    padding: 12px 18px;
+    margin: 10px 0 10px 20%;
+    color: #cee4ff;
+    border: 1px solid rgba(86, 156, 214, 0.25);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+    font-size: 14px;
+    line-height: 1.7;
+  }
+
+  /* 助手消息 */
+  .assistant-msg {
+    margin: 10px 20% 10px 0;
+    padding: 12px 18px;
+    background: rgba(45, 45, 58, 0.8);
+    border-radius: 12px 12px 12px 4px;
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+    font-size: 14px;
+    line-height: 1.8;
+  }
+
+  .system-msg {
+    color: #6a9955;
+    font-style: italic;
+    margin: 10px auto;
+    text-align: center;
     font-size: 13px;
-    line-height: 1.5;
-    border: 1px solid #3a3a3a;
+    opacity: 0.85;
+    padding: 6px 12px;
+    background: rgba(106, 153, 85, 0.08);
+    border-radius: 8px;
+    max-width: 80%;
+  }
+
+  /* 代码块 */
+  pre {
+    background: #0d0d1a !important;
+    border-radius: 8px;
+    padding: 14px 18px;
+    overflow-x: auto;
+    font-family: "JetBrains Mono", "Consolas", "Courier New", monospace;
+    font-size: 13px;
+    line-height: 1.6;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    box-shadow: inset 0 1px 4px rgba(0, 0, 0, 0.3);
+    margin: 12px 0;
   }
   code {
-    background-color: #3a3a3a;
+    background: rgba(86, 156, 214, 0.12);
     border-radius: 4px;
-    padding: 2px 6px;
-    font-family: "Consolas", "Courier New", monospace;
+    padding: 2px 7px;
+    font-family: "JetBrains Mono", "Consolas", "Courier New", monospace;
     font-size: 13px;
     color: #dcdcaa;
   }
   pre code {
-    background-color: transparent;
+    background: transparent;
     padding: 0;
     color: #d4d4d4;
+    font-size: 13px;
   }
+
+  /* 引用 */
   blockquote {
-    border-left: 4px solid #569cd6;
-    margin-left: 0;
-    padding-left: 16px;
-    color: #9cdcfe;
-    background-color: rgba(86, 156, 214, 0.1);
+    border-left: 3px solid #569cd6;
+    margin: 10px 0;
+    padding: 8px 18px;
+    color: #b0c4de;
+    background: linear-gradient(90deg, rgba(86, 156, 214, 0.08) 0%, transparent 100%);
     border-radius: 0 6px 6px 0;
-    padding: 8px 16px;
   }
+
+  /* 表格 */
   table {
     border-collapse: collapse;
-    margin: 12px 0;
+    margin: 14px 0;
     width: 100%;
+    border-radius: 8px;
+    overflow: hidden;
+    box-shadow: 0 1px 6px rgba(0, 0, 0, 0.15);
   }
   th, td {
-    border: 1px solid #444;
-    padding: 8px 12px;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    padding: 10px 14px;
     text-align: left;
   }
   th {
-    background-color: #333;
-    font-weight: bold;
+    background: #0d0d1a;
+    color: #569cd6;
+    font-weight: 600;
+    letter-spacing: 0.3px;
   }
+  td { background: rgba(45, 45, 58, 0.4); }
+  tr:nth-child(even) td { background: rgba(45, 45, 58, 0.2); }
+
   a {
     color: #569cd6;
     text-decoration: none;
+    border-bottom: 1px solid transparent;
+    transition: border-color 0.2s;
   }
-  a:hover { text-decoration: underline; }
+  a:hover {
+    border-bottom-color: #569cd6;
+  }
+
   h1, h2, h3, h4, h5, h6 {
     color: #569cd6;
-    margin-top: 1.2em;
-    margin-bottom: 0.6em;
+    margin-top: 1.3em;
+    margin-bottom: 0.5em;
+    font-weight: 600;
+    letter-spacing: 0.3px;
   }
+  h1 { font-size: 1.6em; border-bottom: 1px solid rgba(86, 156, 214, 0.2); padding-bottom: 8px; }
+  h2 { font-size: 1.35em; }
+  h3 { font-size: 1.2em; }
+
   hr {
     border: none;
-    border-top: 1px solid #444;
-    margin: 16px 0;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, rgba(86, 156, 214, 0.3), transparent);
+    margin: 20px 0;
   }
-  p { margin: 0.5em 0; }
-  ul, ol { padding-left: 24px; }
-  .user-msg {
-    background-color: #264f78;
-    border-radius: 10px;
-    padding: 10px 14px;
+
+  p { margin: 0.6em 0; }
+  ul, ol { padding-left: 26px; }
+  li { margin: 4px 0; }
+
+  /* 图片 */
+  img {
+    max-width: 100%;
+    border-radius: 8px;
     margin: 8px 0;
-    color: #cee4ff;
-    border: 1px solid #1a3a5c;
-  }
-  .assistant-msg {
-    margin: 8px 0;
-  }
-  .system-msg {
-    color: #6a9955;
-    font-style: italic;
-    margin: 8px 0;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
   }
 </style>
 """
@@ -186,20 +264,28 @@ HTML_STYLE = """
 # 初始页面模板
 INITIAL_HTML = f"""
 <html><head>{HTML_STYLE}</head><body>
-<h2>🚀 DeepSeek 多功能聊天客户端</h2>
-<p>请在左侧选择模式和模型，然后开始对话。</p>
-<p><strong>当前可用模式：</strong></p>
-<ul>
-  <li><strong>角色扮演</strong> — 模拟特定人物/身份的对话风格</li>
-  <li><strong>小说写作</strong> — 创意写作、情节构思、文笔润色（支持书架管理 + 章节续写）</li>
-  <li><strong>代码助手</strong> — 编程帮助、Debug、代码审查</li>
-</ul>
-<p><strong>可用模型：</strong></p>
-<ul>
-  <li><strong>deepseek-v4-flash</strong> — v4 闪电版</li>
-  <li><strong>deepseek-v4-pro</strong> — v4 专业版</li>
-</ul>
-<p style="color:#6a9955;">提示：若尚未配置 API Key，程序启动时会弹出输入框。</p>
+<div style="text-align:center; padding: 40px 20px;">
+  <div style="font-size: 48px; margin-bottom: 16px;">🚀</div>
+  <h1 style="border:none; font-size: 1.8em;">DeepSeek 多功能聊天客户端</h1>
+  <p style="color: #888; font-size: 14px; margin-bottom: 32px;">请在左侧面板选择模式和模型，然后开始对话</p>
+
+  <div style="display:inline-block; text-align:left; max-width:480px; background:rgba(255,255,255,0.03); border-radius:12px; padding:24px 32px; border:1px solid rgba(255,255,255,0.06);">
+    <h3 style="margin-top:0; font-size:15px;">当前可用模式</h3>
+    <table style="box-shadow:none;">
+      <tr><td style="border:none; padding:8px 0;"><strong>🎭 角色扮演</strong></td><td style="border:none; padding:8px 0; color:#999;">模拟特定人物/身份的对话风格</td></tr>
+      <tr><td style="border:none; padding:8px 0;"><strong>📚 小说写作</strong></td><td style="border:none; padding:8px 0; color:#999;">创意写作、情节构思、文笔润色（支持书架管理 + 章节续写）</td></tr>
+      <tr><td style="border:none; padding:8px 0;"><strong>💻 代码助手</strong></td><td style="border:none; padding:8px 0; color:#999;">编程帮助、Debug、代码审查</td></tr>
+    </table>
+
+    <h3 style="margin-top:20px; font-size:15px;">可用模型</h3>
+    <table style="box-shadow:none;">
+      <tr><td style="border:none; padding:6px 0;"><code>deepseek-v4-flash</code></td><td style="border:none; padding:6px 0; color:#999;">v4 闪电版</td></tr>
+      <tr><td style="border:none; padding:6px 0;"><code>deepseek-v4-pro</code></td><td style="border:none; padding:6px 0; color:#999;">v4 专业版</td></tr>
+    </table>
+
+    <p style="color:#6a9955; font-size: 13px; margin-top: 24px; text-align:center; background:rgba(106,153,85,0.08); border-radius:6px; padding:8px;">若尚未配置 API Key，程序启动时会弹出输入框</p>
+  </div>
+</div>
 </body></html>
 """
 
@@ -245,8 +331,8 @@ class DeepSeekChatGUI(QMainWindow):
         self._assistant_text_buffer: list[str] = []
         self._streaming = False
 
-        # 先请求 API Key
-        api_key = self._request_api_key()
+        # 获取并验证 API Key（失败可重试）
+        api_key = self._get_api_key_with_retry()
         if not api_key:
             sys.exit(0)
 
@@ -259,23 +345,60 @@ class DeepSeekChatGUI(QMainWindow):
 
     # ========== API Key ==========
 
-    def _request_api_key(self) -> str | None:
-        """启动时弹出对话框要求输入 API Key"""
-        existing = Config.API_KEY
-        if existing and existing != "your_deepseek_api_key_here":
-            return existing
+    def _get_api_key_with_retry(self) -> str | None:
+        """获取并验证 API Key，失败则弹窗重试"""
+        # 先从 .env 加载的 key 开始
+        api_key = Config.API_KEY
 
+        while True:
+            # 无 key 或占位符 → 弹窗索取
+            if not api_key or api_key == "your_deepseek_api_key_here":
+                api_key = self._request_api_key()
+                if not api_key:  # 用户取消
+                    return None
+
+            # 验证 key
+            if self._verify_api_key(api_key):
+                return api_key
+
+            # 验证失败 → 弹窗报错 + 重新索取
+            QMessageBox.critical(
+                None, "API Key 无效",
+                "API Key 验证失败，请检查后重新输入。\n"
+                "常见问题：\n"
+                "  - Key 已过期或未生效\n"
+                "  - 网络连接异常\n"
+                "  - Base URL 配置错误"
+            )
+            api_key = ""  # 强制下次循环弹窗
+
+        return None  # unreachable
+
+    def _request_api_key(self) -> str | None:
+        """弹出对话框要求输入 API Key"""
+        from pathlib import Path
+        env_path = Path(__file__).resolve().parent.parent / ".env"
         key, ok = QInputDialog.getText(
             None,
             "DeepSeek API Key",
             "请输入您的 DeepSeek API Key：\n"
-            "（可在 https://platform.deepseek.com 获取）\n"
-            "也可将 Key 写入 .env 文件后重启，跳过此步骤。",
-            text=existing if existing != "your_deepseek_api_key_here" else "",
+            "（可在 https://platform.deepseek.com 获取）\n\n"
+            f"也可将 Key 写入以下文件后重启，跳过此步骤：\n{env_path}",
         )
         if ok and key.strip():
             return key.strip()
         return None
+
+    @staticmethod
+    def _verify_api_key(api_key: str) -> bool:
+        """通过轻量 API 调用验证 Key 是否可用"""
+        try:
+            from openai import OpenAI
+            client = OpenAI(api_key=api_key, base_url=Config.BASE_URL, timeout=10)
+            client.models.list()
+            return True
+        except Exception:
+            return False
 
     # ========== 初始化 ==========
 
@@ -317,9 +440,10 @@ class DeepSeekChatGUI(QMainWindow):
         scroll.setMinimumWidth(280)
 
         container = QWidget()
+        container.setStyleSheet("QWidget { background: transparent; }")
         layout = QVBoxLayout(container)
-        layout.setSpacing(6)
-        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(4)
+        layout.setContentsMargins(6, 6, 6, 6)
 
         # ── 聊天模式 ──
         mode_group = QGroupBox("📌 聊天模式")
@@ -428,6 +552,23 @@ class DeepSeekChatGUI(QMainWindow):
         btn_layout.setSpacing(4)
 
         clear_btn = QPushButton("🗑️ 清除对话")
+        clear_btn.setStyleSheet("""
+            QPushButton {
+                background: #6b2a2a;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 7px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: #8b3a3a;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+            }
+            QPushButton:pressed {
+                background: #5b1a1a;
+            }
+        """)
         clear_btn.clicked.connect(self._on_clear)
         btn_layout.addWidget(clear_btn)
 
@@ -538,7 +679,28 @@ class DeepSeekChatGUI(QMainWindow):
 
         # ── 应用设定按钮 ──
         apply_btn = QPushButton("✅ 应用设定（重置对话）")
-        apply_btn.setMinimumHeight(32)
+        apply_btn.setMinimumHeight(36)
+        apply_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #1a6b3c, stop:1 #2a8b5c);
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: bold;
+                font-size: 13px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #2a8b4c, stop:1 #3a9b6c);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+            }
+            QPushButton:pressed {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #0a5b2c, stop:1 #1a7b4c);
+            }
+        """)
         apply_btn.clicked.connect(self._on_apply_role_settings)
         layout.addWidget(apply_btn)
 
@@ -652,7 +814,29 @@ class DeepSeekChatGUI(QMainWindow):
 
         # ── 生成章节按钮 ──
         generate_btn = QPushButton("🚀 生成下一章")
-        generate_btn.setMinimumHeight(36)
+        generate_btn.setMinimumHeight(40)
+        generate_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #7a4a9c, stop:1 #9a6abc);
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 8px 16px;
+                font-weight: bold;
+                font-size: 14px;
+                letter-spacing: 1px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #8a5aac, stop:1 #aa7acc);
+                border: 1px solid rgba(255, 255, 255, 0.1);
+            }
+            QPushButton:pressed {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #6a3a8c, stop:1 #8a5aac);
+            }
+        """)
         generate_btn.clicked.connect(self._on_generate_chapter)
         layout.addWidget(generate_btn)
 
@@ -693,19 +877,51 @@ class DeepSeekChatGUI(QMainWindow):
         # 底部输入区
         input_frame = QFrame()
         input_frame.setFrameShape(QFrame.Shape.StyledPanel)
+        input_frame.setStyleSheet("""
+            QFrame {
+                background: rgba(26, 26, 46, 0.95);
+                border: none;
+                border-top: 1px solid rgba(255, 255, 255, 0.06);
+            }
+        """)
         input_layout = QHBoxLayout(input_frame)
-        input_layout.setContentsMargins(8, 6, 8, 6)
+        input_layout.setContentsMargins(12, 8, 12, 8)
+        input_layout.setSpacing(10)
 
         self._input_box = InputTextEdit()
-        self._input_box.setPlaceholderText("在此输入消息，按 Ctrl+Enter 发送...")
-        self._input_box.setMaximumHeight(100)
-        self._input_box.setMinimumHeight(60)
+        self._input_box.setPlaceholderText("输入消息，按 Ctrl+Enter 发送...")
+        self._input_box.setMaximumHeight(120)
+        self._input_box.setMinimumHeight(64)
         self._input_box.send_requested.connect(self._on_send)
         input_layout.addWidget(self._input_box, stretch=1)
 
-        send_btn = QPushButton("发送")
-        send_btn.setMinimumHeight(60)
-        send_btn.setMinimumWidth(70)
+        send_btn = QPushButton("发 送")
+        send_btn.setMinimumHeight(64)
+        send_btn.setMinimumWidth(80)
+        send_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #0e639c, stop:1 #4a9fd8);
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 8px 20px;
+                font-size: 14px;
+                font-weight: bold;
+                letter-spacing: 2px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #1177bb, stop:1 #5aafe8);
+                border: 1px solid rgba(255, 255, 255, 0.15);
+            }
+            QPushButton:pressed {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #094771, stop:1 #3a7ab0);
+                padding-top: 10px;
+                padding-bottom: 6px;
+            }
+        """)
         send_btn.clicked.connect(self._on_send)
         input_layout.addWidget(send_btn)
 
@@ -716,113 +932,254 @@ class DeepSeekChatGUI(QMainWindow):
     # ========== 主题 ==========
 
     def _apply_dark_theme(self) -> None:
-        """应用深色主题样式"""
+        """应用现代化深色主题样式"""
         self.setStyleSheet("""
+            /* ========== 全局 ========== */
             QMainWindow {
-                background-color: #1e1e1e;
+                background-color: #1a1a2e;
             }
+            QWidget {
+                background-color: #1a1a2e;
+                color: #d4d4d4;
+                font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+            }
+
+            /* ========== 滚动条全局（Windows） ========== */
+            QScrollBar:vertical {
+                background: #1a1a2e;
+                width: 8px;
+                border: none;
+            }
+            QScrollBar::handle:vertical {
+                background: #3a3a4a;
+                border-radius: 4px;
+                min-height: 30px;
+            }
+            QScrollBar::handle:vertical:hover { background: #569cd6; }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0; }
+            QScrollBar:horizontal {
+                background: #1a1a2e;
+                height: 8px;
+                border: none;
+            }
+            QScrollBar::handle:horizontal {
+                background: #3a3a4a;
+                border-radius: 4px;
+                min-width: 30px;
+            }
+            QScrollBar::handle:horizontal:hover { background: #569cd6; }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0; }
+
+            /* ========== 分组框（卡片风格） ========== */
             QGroupBox {
-                color: #c0c0c0;
-                font-weight: bold;
-                border: 1px solid #3a3a3a;
-                border-radius: 6px;
-                margin-top: 10px;
-                padding-top: 10px;
-                background-color: #252526;
+                color: #d4d4d4;
+                font-weight: 600;
+                font-size: 13px;
+                border: 1px solid rgba(255, 255, 255, 0.06);
+                border-radius: 10px;
+                margin-top: 12px;
+                padding: 16px 12px 12px 12px;
+                background: rgba(30, 30, 46, 0.6);
             }
             QGroupBox::title {
                 subcontrol-origin: margin;
-                left: 10px;
-                padding: 0 4px;
+                left: 12px;
+                padding: 0 8px;
                 color: #569cd6;
+                background: transparent;
+                letter-spacing: 0.3px;
             }
+
+            /* ========== 下拉框 ========== */
             QComboBox {
-                background-color: #333;
-                color: #e0e0e0;
-                border: 1px solid #555;
-                border-radius: 4px;
-                padding: 4px 8px;
-                min-height: 22px;
+                background: #2a2a3e;
+                color: #d4d4d4;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+                border-radius: 6px;
+                padding: 6px 10px;
+                min-height: 24px;
+                font-size: 13px;
             }
-            QComboBox:hover { border-color: #569cd6; }
+            QComboBox:hover { border-color: #569cd6; background: #30304a; }
+            QComboBox::drop-down {
+                subcontrol-origin: padding;
+                subcontrol-position: top right;
+                width: 24px;
+                border: none;
+                border-radius: 0 6px 6px 0;
+            }
+            QComboBox::down-arrow {
+                image: none;
+                border-left: 5px solid transparent;
+                border-right: 5px solid transparent;
+                border-top: 6px solid #888;
+                margin-right: 6px;
+            }
             QComboBox QAbstractItemView {
-                background-color: #333;
-                color: #e0e0e0;
-                selection-background-color: #264f78;
+                background: #2a2a3e;
+                color: #d4d4d4;
+                selection-background-color: #1e3a5f;
+                selection-color: #fff;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 4px;
+                padding: 4px;
+                outline: none;
             }
+
+            /* ========== 按钮 ========== */
             QPushButton {
-                background-color: #0e639c;
+                background: #0e639c;
                 color: white;
                 border: none;
-                border-radius: 4px;
-                padding: 6px 14px;
-                font-weight: bold;
-                min-height: 22px;
+                border-radius: 6px;
+                padding: 7px 16px;
+                font-weight: 500;
+                font-size: 12.5px;
+                min-height: 24px;
             }
-            QPushButton:hover { background-color: #1177bb; }
-            QPushButton:pressed { background-color: #094771; }
+            QPushButton:hover {
+                background: #1177bb;
+                border: 1px solid rgba(255, 255, 255, 0.1);
+            }
+            QPushButton:pressed {
+                background: #094771;
+                padding-top: 9px;
+                padding-bottom: 5px;
+            }
+            QPushButton:disabled {
+                background: #3a3a4a;
+                color: #666;
+            }
+
+            /* ========== 滑块 ========== */
             QSlider::groove:horizontal {
-                background: #3a3a3a;
+                background: #2a2a3e;
                 height: 4px;
                 border-radius: 2px;
             }
             QSlider::handle:horizontal {
-                background: #569cd6;
-                width: 12px;
-                height: 12px;
-                margin: -4px 0;
-                border-radius: 6px;
-            }
-            QSlider::sub-page:horizontal {
-                background: #0e639c;
-                border-radius: 2px;
-            }
-            QLabel {
-                color: #c0c0c0;
-            }
-            QTextEdit {
-                background-color: #2d2d2d;
-                color: #e0e0e0;
-                border: 1px solid #444;
-                border-radius: 4px;
-                padding: 6px;
-            }
-            QScrollArea {
-                background-color: #252526;
-                border: none;
-            }
-            QSpinBox {
-                background-color: #333;
-                color: #e0e0e0;
-                border: 1px solid #555;
-                border-radius: 4px;
-                padding: 2px 6px;
-                min-height: 22px;
-            }
-            QSpinBox:hover { border-color: #569cd6; }
-            QLineEdit {
-                background-color: #2d2d2d;
-                color: #e0e0e0;
-                border: 1px solid #444;
-                border-radius: 4px;
-                padding: 4px 8px;
-                min-height: 22px;
-            }
-            QLineEdit:hover { border-color: #569cd6; }
-            QCheckBox {
-                color: #c0c0c0;
-            }
-            QCheckBox::indicator {
+                background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5,
+                    stop:0 #569cd6, stop:0.7 #4a8fc8, stop:1 #3a7ab0);
                 width: 16px;
                 height: 16px;
-                background-color: #333;
-                border: 1px solid #555;
-                border-radius: 3px;
+                margin: -6px 0;
+                border-radius: 8px;
             }
+            QSlider::handle:horizontal:hover {
+                background: qradialgradient(cx:0.5, cy:0.5, radius:0.5, fx:0.5, fy:0.5,
+                    stop:0 #69b5ff, stop:0.7 #5a9fd8, stop:1 #4a8ac0);
+                width: 18px;
+                height: 18px;
+                margin: -7px 0;
+            }
+            QSlider::sub-page:horizontal {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #0e639c, stop:1 #4a9fd8);
+                border-radius: 2px;
+            }
+
+            /* ========== 标签 ========== */
+            QLabel {
+                color: #b0b0c0;
+                font-size: 12.5px;
+                background: transparent;
+            }
+
+            /* ========== 文本框 ========== */
+            QTextEdit, QLineEdit {
+                background: #222238;
+                color: #d4d4d4;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 6px;
+                padding: 8px;
+                font-size: 13px;
+                selection-background-color: #264f78;
+            }
+            QTextEdit:hover, QLineEdit:hover { border-color: rgba(86, 156, 214, 0.4); }
+            QTextEdit:focus, QLineEdit:focus {
+                border-color: #569cd6;
+                background: #252540;
+            }
+            QTextEdit { padding: 6px 8px; }
+            QLineEdit { padding: 5px 10px; min-height: 24px; }
+
+            /* ========== 滚动区域 ========== */
+            QScrollArea {
+                background: transparent;
+                border: none;
+            }
+            QScrollArea > QWidget > QWidget { background: transparent; }
+
+            /* ========== 数字输入框 ========== */
+            QSpinBox {
+                background: #2a2a3e;
+                color: #d4d4d4;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 6px;
+                padding: 4px 8px;
+                min-height: 24px;
+                font-size: 13px;
+            }
+            QSpinBox:hover { border-color: rgba(86, 156, 214, 0.4); }
+            QSpinBox:focus { border-color: #569cd6; }
+            QSpinBox::up-button, QSpinBox::down-button {
+                border: none;
+                width: 18px;
+            }
+
+            /* ========== 复选框 ========== */
+            QCheckBox {
+                color: #b0b0c0;
+                font-size: 12.5px;
+                spacing: 8px;
+                background: transparent;
+            }
+            QCheckBox:hover { color: #d4d4d4; }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                background: #2a2a3e;
+                border: 1px solid rgba(255, 255, 255, 0.12);
+                border-radius: 4px;
+            }
+            QCheckBox::indicator:hover { border-color: #569cd6; }
             QCheckBox::indicator:checked {
-                background-color: #0e639c;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #0e639c, stop:1 #4a9fd8);
                 border-color: #569cd6;
             }
+
+            /* ========== 单选框 ========== */
+            QRadioButton {
+                color: #b0b0c0;
+                font-size: 12.5px;
+                spacing: 8px;
+                background: transparent;
+            }
+            QRadioButton:hover { color: #d4d4d4; }
+            QRadioButton::indicator {
+                width: 18px;
+                height: 18px;
+                border-radius: 10px;
+                background: #2a2a3e;
+                border: 1px solid rgba(255, 255, 255, 0.12);
+            }
+            QRadioButton::indicator:hover { border-color: #569cd6; }
+            QRadioButton::indicator:checked {
+                background: qradialgradient(cx:0.5, cy:0.5, radius:0.4, fx:0.5, fy:0.5,
+                    stop:0 #fff, stop:0.5 #569cd6, stop:1 #0e639c);
+                border-color: #569cd6;
+            }
+
+            /* ========== 分割器 ========== */
+            QSplitter::handle {
+                background: rgba(86, 156, 214, 0.08);
+                width: 2px;
+                margin: 4px 0;
+                border-radius: 1px;
+            }
+            QSplitter::handle:hover { background: rgba(86, 156, 214, 0.3); }
+
         """)
 
     # ========== 信号处理 ==========
@@ -918,15 +1275,17 @@ class DeepSeekChatGUI(QMainWindow):
             self._client.strategy.story_background = self._role_bg_edit.toPlainText()
 
     def _on_reply_mode_changed(self, button_id: int) -> None:
+        """切换回复方式时立即更新 system prompt，不重置对话"""
         if isinstance(self._client.strategy, RolePlayStrategy):
             self._client.strategy.reply_mode = (
                 RolePlayStrategy.REPLY_MODE_NARRATOR
                 if button_id == 1
                 else RolePlayStrategy.REPLY_MODE_CHARACTER
             )
+            self._client.update_system_prompt()
 
     def _on_apply_role_settings(self) -> None:
-        """将角色描述、故事背景、回复方式写入 system prompt，并重置对话上下文"""
+        """将角色描述、故事背景、回复方式写入 system prompt，不重置对话"""
         if not isinstance(self._client.strategy, RolePlayStrategy):
             return
         self._client.strategy.character_description = self._role_char_edit.toPlainText()
@@ -937,20 +1296,34 @@ class DeepSeekChatGUI(QMainWindow):
             else RolePlayStrategy.REPLY_MODE_CHARACTER
         )
         self._client.update_system_prompt()
-        self._client.clear_context(keep_system=True)
         char = self._client.strategy.character_description.strip()
         bg = self._client.strategy.story_background.strip()
         is_narrator = self._client.strategy.reply_mode == RolePlayStrategy.REPLY_MODE_NARRATOR
         mode_text = "旁白描述（第三人称）" if is_narrator else "角色回答（第一人称）"
-        notice_parts = [f"🎭 **角色设定已应用，对话已重置。**\n", f"**回复方式：** {mode_text}\n"]
+        notice_parts = [f"🎭 **角色设定已更新。**\n", f"**回复方式：** {mode_text}\n"]
         if char:
             notice_parts.append(f"**角色描述：** {char[:80]}{'…' if len(char) > 80 else ''}\n")
         if bg:
             notice_parts.append(f"**故事背景：** {bg[:80]}{'…' if len(bg) > 80 else ''}\n")
         if not char and not bg:
             notice_parts.append("（未填写角色描述或故事背景，使用默认角色扮演模式）\n")
-        notice_parts.append("\n现在可以开始对话了。")
-        self._display.setHtml(md_to_html("".join(notice_parts)))
+        notice_parts.append("\n对话历史已保留，可以继续对话。")
+
+        # 在现有显示底部追加通知，不清屏
+        notice_html = md_lib.markdown(
+            "".join(notice_parts),
+            extensions=["fenced_code", "tables", "codehilite", "nl2br", "sane_lists"],
+        )
+        escaped = self._escape_for_js(notice_html)
+        self._display.page().runJavaScript(f"""
+            (function() {{
+                var div = document.createElement('div');
+                div.className = 'system-msg';
+                div.innerHTML = `{escaped}`;
+                document.body.appendChild(div);
+                window.scrollTo(0, document.body.scrollHeight);
+            }})();
+        """)
 
     # ========== 📚 小说面板事件 ==========
 
