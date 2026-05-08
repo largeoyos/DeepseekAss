@@ -64,6 +64,8 @@ class ConversationManager:
         title: str,
         model: str,
         messages: list[dict],
+        character_description: str = "",
+        story_background: str = "",
     ) -> str:
         """
         保存对话记录到 JSON 文件
@@ -73,6 +75,8 @@ class ConversationManager:
             title: 对话标题
             model: 使用的模型
             messages: 完整消息列表（含 system/user/assistant）
+            character_description: 角色扮演模式下的角色描述
+            story_background: 角色扮演模式下的故事背景
 
         Returns:
             保存的文件路径
@@ -98,6 +102,8 @@ class ConversationManager:
             "model": model,
             "created_at": created_at,
             "updated_at": now_str,
+            "character_description": character_description,
+            "story_background": story_background,
             "messages": messages,
         }
 
@@ -128,6 +134,20 @@ class ConversationManager:
         if record is None:
             return None
         return record.get("messages", [])
+
+    def get_preview(self, conversation_id: str, max_chars: int = 80) -> str:
+        """获取对话的简短预览（最后一条用户消息的前 max_chars 字）"""
+        messages = self.load_messages(conversation_id)
+        if not messages:
+            return "(空对话)"
+        # 从后往前找第一条 user 消息
+        for msg in reversed(messages):
+            if msg.get("role") == "user":
+                content = msg.get("content", "").strip()
+                if content:
+                    preview = content[:max_chars].replace("\n", " ")
+                    return preview + ("…" if len(content) > max_chars else "")
+        return "(无用户消息)"
 
     # ========== 删除 ==========
 
