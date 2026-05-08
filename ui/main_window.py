@@ -1913,8 +1913,6 @@ class DeepSeekChatGUI(QMainWindow):
                 user_parts.append(f"【续写要求】\n{requirement}\n")
             if plot:
                 user_parts.append(f"【续写剧情走向】\n{plot}\n")
-            if demand:
-                user_parts.append(f"【写作要求参考】\n{demand}\n")
             user_parts.append(
                 f"请直接输出续写正文，不要加任何解释或前言。字数不少于{word_count}字。"
             )
