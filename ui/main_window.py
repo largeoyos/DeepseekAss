@@ -867,42 +867,44 @@ class DeepSeekChatGUI(QMainWindow):
         manage_chapters_btn.clicked.connect(self._on_manage_chapters)
         layout.addWidget(manage_chapters_btn)
 
-        # ── 分隔线 ──
-        sep = QFrame()
-        sep.setFrameShape(QFrame.Shape.HLine)
-        sep.setStyleSheet("background: rgba(255,255,255,0.1); max-height: 1px; margin: 6px 0;")
-        layout.addWidget(sep)
+        return panel
 
-        # ── 续写小说 ──
-        continue_header = QLabel("续写小说")
-        continue_header.setStyleSheet("font-weight: bold; font-size: 13px; color: #e0c8ff; margin-top: 4px;")
-        layout.addWidget(continue_header)
+    def _build_continuation_panel(self) -> QGroupBox:
+        """构建续写小说专属面板"""
+        panel = QGroupBox("📄 续写小说 · 源文档与设定")
+        layout = QVBoxLayout(panel)
+        layout.setSpacing(4)
+        layout.setContentsMargins(8, 4, 8, 4)
 
-        # 源文档选择
+        # ── 源文档选择 ──
+        file_label = QLabel("源文档")
+        layout.addWidget(file_label)
         file_row = QHBoxLayout()
         self._continue_file_path = QLineEdit()
         self._continue_file_path.setPlaceholderText("未选择文件...")
         self._continue_file_path.setReadOnly(True)
         file_row.addWidget(self._continue_file_path, stretch=1)
         browse_file_btn = QPushButton("浏览")
-        browse_file_btn.setMaximumWidth(70)
+        browse_file_btn.setMaximumWidth(60)
         browse_file_btn.clicked.connect(self._on_browse_continue_file)
         file_row.addWidget(browse_file_btn)
         layout.addLayout(file_row)
 
-        # 文件夹选择
+        # ── 文件夹选择 ──
+        folder_label = QLabel("或指定文件夹")
+        layout.addWidget(folder_label)
         folder_row = QHBoxLayout()
         self._continue_folder_path = QLineEdit()
-        self._continue_folder_path.setPlaceholderText("或指定文件夹路径...")
+        self._continue_folder_path.setPlaceholderText("未选择文件夹...")
         self._continue_folder_path.setReadOnly(True)
         folder_row.addWidget(self._continue_folder_path, stretch=1)
         browse_folder_btn = QPushButton("浏览")
-        browse_folder_btn.setMaximumWidth(70)
+        browse_folder_btn.setMaximumWidth(60)
         browse_folder_btn.clicked.connect(self._on_browse_continue_folder)
         folder_row.addWidget(browse_folder_btn)
         layout.addLayout(folder_row)
 
-        # 续写要求
+        # ── 续写要求 ──
         req_label = QLabel("续写要求")
         layout.addWidget(req_label)
         self._continue_requirement = QTextEdit()
@@ -914,7 +916,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._continue_requirement.setMinimumHeight(60)
         layout.addWidget(self._continue_requirement)
 
-        # 续写字数
+        # ── 续写字数 ──
         word_row = QHBoxLayout()
         word_row.setContentsMargins(0, 0, 0, 0)
         word_label = QLabel("字数")
@@ -928,7 +930,7 @@ class DeepSeekChatGUI(QMainWindow):
         word_row.addWidget(self._continue_word_count, stretch=1)
         layout.addLayout(word_row)
 
-        # 续写剧情（可选）
+        # ── 续写剧情（可选） ──
         plot_label = QLabel("续写剧情（可选）")
         layout.addWidget(plot_label)
         self._continue_plot = QTextEdit()
@@ -939,7 +941,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._continue_plot.setMinimumHeight(60)
         layout.addWidget(self._continue_plot)
 
-        # 开始续写按钮
+        # ── 开始续写按钮 ──
         continue_btn = QPushButton("开始续写")
         continue_btn.setMinimumHeight(40)
         continue_btn.setStyleSheet("""
@@ -1309,15 +1311,17 @@ class DeepSeekChatGUI(QMainWindow):
         # 切换专属面板可见性
         is_novel = isinstance(strategy, NovelStrategy)
         is_role_play = isinstance(strategy, RolePlayStrategy)
+        is_continuation = isinstance(strategy, ContinuationStrategy)
         self._toggle_novel_panel(is_novel)
         self._toggle_role_play_panel(is_role_play)
+        self._toggle_continuation_panel(is_continuation)
 
         if is_novel:
             self._refresh_novel_bookshelf()
             self._on_book_selected(self._bookshelf_combo.currentText())
             self._display.setHtml(md_to_html(strategy.get_welcome_message()))
         else:
-            self._display.setHtml(INITIAL_HTML)
+            self._display.setHtml(md_to_html(strategy.get_welcome_message()))
 
     def _on_model_changed(self, model: str) -> None:
         self._client.switch_model(model)
@@ -1894,10 +1898,6 @@ class DeepSeekChatGUI(QMainWindow):
         """后台线程：执行续写 → 保存 → 摘要"""
         try:
             # 构建 System Prompt
-            bg = self._background_edit.toPlainText().strip()
-            bio = self._protagonist_edit.toPlainText().strip()
-            demand = self._demand_edit.toPlainText().strip()
-
             messages = [{"role": "system", "content": (
                 "你是一位文笔细腻、想象力丰富的小说家。请根据用户提供的原文内容，"
                 "续写后续章节。严格保持原文的风格、视角、人称、叙事节奏和人物性格，"
@@ -1905,10 +1905,6 @@ class DeepSeekChatGUI(QMainWindow):
                 "直接输出续写正文，不要加任何解释、前言或后记。"
                 f"\n目标字数：{word_count} 字以上。\n"
             )}]
-            if bg:
-                messages.append({"role": "system", "content": f"【核心设定】：\n{bg}"})
-            if bio:
-                messages.append({"role": "system", "content": f"【人物背景】：\n{bio}"})
 
             # 构建 User Prompt
             user_parts = [f"【原文内容】\n{source_text}\n"]
