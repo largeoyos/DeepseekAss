@@ -1557,9 +1557,15 @@ class DeepSeekChatGUI(QMainWindow):
         current_preset = self._preset_combo.currentText()
         self._preset_applying = True
         self._sync_sliders_to_client()
+        # 如果当前是命名预设，直接应用预设值（setCurrentText 在文本未变时不触发信号）
+        if current_preset != CUSTOM_LABEL:
+            preset = PRESETS.get(current_preset)
+            if preset:
+                self._temp_slider.setValue(preset["temp"])
+                self._top_p_slider.setValue(preset["top_p"])
+                self._fp_slider.setValue(preset["fp"])
+                self._mt_spin.setValue(preset["max_tokens"])
         self._preset_applying = False
-        # 恢复预设方案（触发 _on_preset_changed 重新应用预设值）
-        self._preset_combo.setCurrentText(current_preset)
         self._update_status()
 
         # 切换专属面板可见性
@@ -2992,6 +2998,21 @@ class DeepSeekChatGUI(QMainWindow):
                 title = os.path.basename(source_folder)
             else:
                 title = "续写作品"
+
+        # 检查目标书是否已有章节，防止导入源文档覆盖现有数据
+        existing_chapters = self._novel_manager.list_chapters(title)
+        if existing_chapters:
+            reply = QMessageBox.question(
+                self, "确认覆盖",
+                f"「{title}」已有 {len(existing_chapters)} 个章节。\n\n"
+                f"导入源文档将清空这些章节。确定继续吗？\n\n"
+                f"建议：若想保留现有章节，请先创建一本新小说。",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                self._streaming = False  # 勿泄漏 streaming 状态
+                return
 
         model = self._client.model
         self._streaming = True
