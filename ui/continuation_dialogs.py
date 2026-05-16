@@ -30,6 +30,15 @@ SUGGESTION_PROMPT = """你是一位资深小说编辑。请根据以下故事设
 方向2：标题 | 核心冲突 | 情节走向"""
 
 
+def _safe_format(template: str, **kwargs) -> str:
+    """安全的模板替换，值中含 { 或 } 不会导致崩溃。"""
+    result = template
+    for key, value in kwargs.items():
+        result = result.replace("{" + key + "}", value)
+    result = result.replace("{{", "{").replace("}}", "}")
+    return result
+
+
 def analyze_source_text(client, source_text: str, model: str) -> dict:
     """
     新版分析：使用 AI 语义分段 + 结构化提取，返回可加载的小说设定。
@@ -80,7 +89,7 @@ def suggest_directions(client, setting: str, plot: str, model: str) -> list[str]
     Returns:
         方向描述列表
     """
-    prompt = SUGGESTION_PROMPT.format(setting=setting[:1500], plot=plot[:1500])
+    prompt = _safe_format(SUGGESTION_PROMPT, setting=setting[:1500], plot=plot[:1500])
     try:
         resp = client.chat.completions.create(
             model=model,

@@ -91,6 +91,7 @@ class StreamSignals(QObject):
     analysis_done = pyqtSignal(str, str, str)     # setting, plot, source_text
     directions_ready = pyqtSignal(list, str, str, int)  # directions, setting, plot, word_count
     novel_imported = pyqtSignal(str)               # 从源文档导入小说完成，参数：标题
+    refresh_chapter_info = pyqtSignal(str)          # 安全刷新章节信息，参数：书名
 
 
 # ========== 模式配置 ==========
@@ -341,6 +342,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._stream_signals.directions_ready.connect(self._show_direction_selector)
         self._stream_signals.novel_imported.connect(self._on_novel_imported)
         self._stream_signals.novel_imported.connect(self._on_cont_novel_imported)
+        self._stream_signals.refresh_chapter_info.connect(self._refresh_chapter_info_display)
 
         # 小说管理器
         self._novel_manager = NovelManager()
@@ -1580,6 +1582,10 @@ class DeepSeekChatGUI(QMainWindow):
             self._on_book_selected(self._bookshelf_combo.currentText())
             if not self._loading_conversation:
                 self._display.setHtml(md_to_html(strategy.get_welcome_message()))
+        elif is_continuation:
+            self._on_cont_book_selected(self._cont_bookshelf_combo.currentText())
+            if not self._loading_conversation:
+                self._display.setHtml(md_to_html(strategy.get_welcome_message()))
         elif not self._loading_conversation:
             self._display.setHtml(md_to_html(strategy.get_welcome_message()))
 
@@ -1926,6 +1932,7 @@ class DeepSeekChatGUI(QMainWindow):
         if reply == QMessageBox.StandardButton.Yes:
             self._novel_manager.delete_book(title)
             self._refresh_novel_bookshelf()
+            self._on_cont_book_selected(self._cont_bookshelf_combo.currentText())
 
     def _on_cont_protagonist_changed(self) -> None:
         """续写面板：主角设定变更 → 自动保存"""
@@ -2003,8 +2010,15 @@ class DeepSeekChatGUI(QMainWindow):
             QMessageBox.warning(self, "提示", "请先在书架中选择一部小说。")
             return
 
-        # 获取源文本（优先使用分析时缓存的内容）
-        source_text = getattr(self, '_cont_analysis_source', "")
+        # 检查缓存是否有效：分析时记录的源路径与当前路径一致
+        current_source = (
+            self._continue_file_path.text().strip()
+            or self._continue_folder_path.text().strip()
+        )
+        cached_path = getattr(self, '_cont_analysis_source_path', "")
+        source_text = ""
+        if cached_path == current_source:
+            source_text = getattr(self, '_cont_analysis_source', "")
         if not source_text:
             source_text = self._read_continuation_source()
         if not source_text:
@@ -2049,7 +2063,7 @@ class DeepSeekChatGUI(QMainWindow):
                 try:
                     with open(source_file, "r", encoding=enc) as f:
                         return f.read()
-                except (UnicodeDecodeError, Exception):
+                except UnicodeDecodeError:
                     continue
             return ""
         elif source_folder:
@@ -2062,13 +2076,16 @@ class DeepSeekChatGUI(QMainWindow):
             parts = []
             for fname in files:
                 fpath = os.path.join(source_folder, fname)
+                content = ""
                 for enc in ("utf-8", "gbk"):
                     try:
                         with open(fpath, "r", encoding=enc) as f:
                             content = f.read()
                         break
-                    except (UnicodeDecodeError, Exception):
-                        content = f"[无法读取：{fname}]\n"
+                    except UnicodeDecodeError:
+                        continue
+                if not content:
+                    continue  # 跳过无法读取的文件
                 parts.append(f"===== {fname} =====\n{content}")
             return "\n\n".join(parts)
         return ""
@@ -2409,9 +2426,9 @@ class DeepSeekChatGUI(QMainWindow):
                         with open(fpath, "r", encoding="gbk") as f:
                             content = f.read()
                     except Exception:
-                        content = f"[无法读取：{fname}]\n"
+                        continue  # 跳过无法读取的文件
                 except Exception:
-                    content = f"[无法读取：{fname}]\n"
+                    continue  # 跳过无法读取的文件
                 parts.append(f"===== {fname} =====\n{content}")
             source_text = "\n\n".join(parts)
         else:
@@ -2433,6 +2450,13 @@ class DeepSeekChatGUI(QMainWindow):
             if not book_title:
                 book_title = "续写作品"
             self._novel_manager.create_book(book_title)
+            # 保存当前编辑器的设定内容到新书的 meta（防止 setCurrentText 触发信号清空）
+            self._novel_manager.save_meta(
+                book_title,
+                protagonist_bio=self._cont_protagonist_edit.toPlainText().strip(),
+                background_story=self._cont_background_edit.toPlainText().strip(),
+                writing_demand=self._cont_demand_edit.toPlainText().strip(),
+            )
             self._refresh_novel_bookshelf()
             self._cont_bookshelf_combo.setCurrentText(book_title)
 
@@ -2462,6 +2486,7 @@ class DeepSeekChatGUI(QMainWindow):
         requirement: str,
         word_count: int,
         plot: str,
+        setting: str = "",
     ) -> None:
         """后台线程：执行续写（增强版：含世界书+剧情摘要+设定）"""
         try:
@@ -2491,15 +2516,20 @@ class DeepSeekChatGUI(QMainWindow):
             except Exception:
                 pass
 
-            # 加载小说设定（从 meta.json）
+            # 加载小说设定（优先使用 analysis 传入的 setting，否则读 meta.json）
+            bg_story = setting
+            protagonist_bio = ""
             try:
                 meta = self._novel_manager.load_meta(book_title)
-                if meta.background_story:
-                    user_parts.append(f"【核心设定】\n{meta.background_story}\n")
-                if meta.protagonist_bio:
-                    user_parts.append(f"【人物背景】\n{meta.protagonist_bio}\n")
+                if not bg_story:
+                    bg_story = meta.background_story
+                protagonist_bio = meta.protagonist_bio
             except Exception:
                 pass
+            if bg_story:
+                user_parts.append(f"【核心设定】\n{bg_story}\n")
+            if protagonist_bio:
+                user_parts.append(f"【人物背景】\n{protagonist_bio}\n")
 
             # 续写要求 + 剧情走向
             user_parts.append(f"请续写以上内容，作为第 {chapter_num} 章「{chapter_title}」。\n")
@@ -2598,7 +2628,7 @@ class DeepSeekChatGUI(QMainWindow):
             except Exception as wb_e:
                 self._stream_signals.token.emit(f"⚠️ 世界书更新跳过: {wb_e}\n")
 
-            self._refresh_chapter_info_display(book_title)
+            self._stream_signals.refresh_chapter_info.emit(book_title)
             self._stream_signals.token.emit(
                 f"\n📖 下一章：第{self._novel_manager.get_next_chapter_num(book_title)}章\n"
             )
@@ -3029,6 +3059,7 @@ class DeepSeekChatGUI(QMainWindow):
                 self._cont_analysis_world_data = world_data
                 self._cont_analysis_settings = settings
                 self._cont_analysis_source = source_text
+                self._cont_analysis_source_path = source_file or source_folder or ""
 
                 # 触发 UI 加载
                 self._stream_signals.novel_imported.emit(title)
@@ -3087,14 +3118,18 @@ class DeepSeekChatGUI(QMainWindow):
         self._streaming = False
         dlg = DirectionSelectionDialog(self, directions)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.selected_direction:
-            self._do_continuation_with_context(setting, word_count)
+            self._do_continuation_with_context(setting, word_count, plot=dlg.selected_direction)
 
     def _on_cont_specify(self, setting: str, plot_outline: str, word_count: int) -> None:
         """用户指定剧情 → 续写"""
-        plot = self._continue_plot.toPlainText().strip()
-        self._do_continuation_with_context(setting, word_count)
+        # 合并分析剧情节点的上下文 + 用户手动输入的剧情
+        manual_plot = self._continue_plot.toPlainText().strip()
+        merged_plot = plot_outline
+        if manual_plot:
+            merged_plot = (merged_plot + "\n\n" + manual_plot) if merged_plot else manual_plot
+        self._do_continuation_with_context(setting, word_count, plot=merged_plot)
 
-    def _do_continuation_with_context(self, setting: str, word_count: int = 0) -> None:
+    def _do_continuation_with_context(self, setting: str, word_count: int = 0, plot: str = "") -> None:
         """带分析上下文的续写执行"""
         source_text = getattr(self, '_cont_analysis_source', "")
         if not source_text:
@@ -3111,7 +3146,8 @@ class DeepSeekChatGUI(QMainWindow):
         if not chapter_title:
             chapter_title = f"续写 (第{chapter_num}章)"
         requirement = self._continue_requirement.toPlainText().strip()
-        plot = self._continue_plot.toPlainText().strip()
+        if not plot:
+            plot = self._continue_plot.toPlainText().strip()
         word_count = word_count or self._continue_word_count.value()
 
         self._streaming = True
@@ -3120,7 +3156,7 @@ class DeepSeekChatGUI(QMainWindow):
 
         threading.Thread(
             target=self._run_continuation,
-            args=(book_title, chapter_num, chapter_title, source_text, requirement, word_count, plot),
+            args=(book_title, chapter_num, chapter_title, source_text, requirement, word_count, plot, setting),
             daemon=True,
         ).start()
 

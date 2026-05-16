@@ -132,6 +132,19 @@ def _parse_json(text: str) -> dict:
     return json.loads(text)
 
 
+def _safe_format(template: str, **kwargs) -> str:
+    """安全的模板替换，值中含 { 或 } 不会导致崩溃。
+
+    先替换 {key} 占位符，再转换 {{ → { 、}} → }，
+    避免 Python str.format() 在用户内容含 {/} 时报错。
+    """
+    result = template
+    for key, value in kwargs.items():
+        result = result.replace("{" + key + "}", value)
+    result = result.replace("{{", "{").replace("}}", "}")
+    return result
+
+
 # ========== 对外接口 ==========
 
 
@@ -142,7 +155,7 @@ def segment_by_ai(client, text: str, model: str) -> list[tuple[str, str]]:
     Returns:
         [(title, content), ...]  每个段落的标题和内容
     """
-    prompt = SEGMENT_PROMPT.format(text=text)
+    prompt = _safe_format(SEGMENT_PROMPT, text=text)
     raw = _call_api(client, [{"role": "user", "content": prompt}], model)
 
     # 解析 【语义段落】 标记
@@ -209,7 +222,7 @@ def extract_world_bible_from_segments(
         else:
             dedup_context = ""
 
-        prompt = EXTRACT_PROMPT.format(title=title, content=content_sample, dedup_context=dedup_context)
+        prompt = _safe_format(EXTRACT_PROMPT, title=title, content=content_sample, dedup_context=dedup_context)
         try:
             raw = _call_api(client, [{"role": "user", "content": prompt}], model, max_tokens=4096, temperature=0.1)
             data = _parse_json(raw)
@@ -312,7 +325,7 @@ def generate_novel_settings_from_world_bible(
         for t in world_data.get("timeline", [])[:10]
     ) or "（无）"
 
-    prompt = BACKGROUND_PROMPT.format(
+    prompt = _safe_format(BACKGROUND_PROMPT,
         characters=chars_str,
         locations=locs_str,
         rules=rules_str,
