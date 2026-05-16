@@ -10,38 +10,6 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 
-
-CONTINUATION_SETTING_PROMPT = """请深度分析以下文本，提取其中的世界观设定、角色信息。请用中文输出，格式如下：
-
-【核心设定】
-核心世界观规则、力量体系、时代背景等
-
-【角色列表】
-- 角色名：性格/身份/能力简述
-- 角色名：性格/身份/能力简述
-
-【角色关系】
-- A 和 B：关系类型（如师徒/仇敌/恋人）
-
-【未解线索】
-文中埋下的伏笔、未解决的冲突等
-
-原文：
-{text}"""
-
-CONTINUATION_PLOT_PROMPT = """请总结以下文本的完整剧情大纲，按时间顺序列出主要情节节点：
-
-【剧情概要】
-1. 事件一
-2. 事件二
-...
-
-【当前状态】
-故事进行到哪里，角色们处于什么状态
-
-原文：
-{text}"""
-
 SUGGESTION_PROMPT = """你是一位资深小说编辑。请根据以下故事设定和剧情概要，给出 3-5 个下一章的发展方向建议。
 
 每个建议需要：
@@ -62,9 +30,11 @@ SUGGESTION_PROMPT = """你是一位资深小说编辑。请根据以下故事设
 方向2：标题 | 核心冲突 | 情节走向"""
 
 
-def analyze_source_text(client, source_text: str, model: str) -> tuple[str, str]:
+def analyze_source_text(client, source_text: str, model: str) -> dict:
     """
-    分析源文档，返回 (setting_summary, plot_outline)
+    新版分析：使用 AI 语义分段 + 结构化提取，返回可加载的小说设定。
+
+    替换旧版双 API 调用（只读前 6000 字 + 纯文本输出）。
 
     Args:
         client: OpenAI 客户端
@@ -72,37 +42,35 @@ def analyze_source_text(client, source_text: str, model: str) -> tuple[str, str]
         model: 模型名称
 
     Returns:
-        (核心设定摘要, 剧情大纲)
+        {
+            "world_data": {      # extract_world_bible_from_segments 的输出
+                "characters": [...], "locations": [...],
+                "rules": [...], "timeline": [...], "plot_threads": [...]
+            },
+            "settings": {        # generate_novel_settings_from_world_bible 的输出
+                "background_story": str,
+                "protagonist_bio": str,
+                "writing_demand": str,
+            },
+            "segments": [(title, content), ...],  # AI 识别的段落
+        }
     """
-    # 截取前 6000 字分析
-    sample = source_text[:6000]
+    from utils.summarize import segment_by_ai, extract_world_bible_from_segments, generate_novel_settings_from_world_bible
 
-    setting = ""
-    plot = ""
+    # 1. AI 语义分段
+    segments = segment_by_ai(client, source_text, model)
 
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": CONTINUATION_SETTING_PROMPT.format(text=sample)}],
-            max_tokens=2000,
-            temperature=0.3,
-        )
-        setting = resp.choices[0].message.content or ""
-    except Exception:
-        setting = "[分析失败]"
+    # 2. 逐段提取世界观
+    world_data = extract_world_bible_from_segments(client, segments, model)
 
-    try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": CONTINUATION_PLOT_PROMPT.format(text=sample)}],
-            max_tokens=2000,
-            temperature=0.3,
-        )
-        plot = resp.choices[0].message.content or ""
-    except Exception:
-        plot = "[分析失败]"
+    # 3. 生成小说设定
+    settings = generate_novel_settings_from_world_bible(client, world_data, model)
 
-    return setting, plot
+    return {
+        "world_data": world_data,
+        "settings": settings,
+        "segments": segments,
+    }
 
 
 def suggest_directions(client, setting: str, plot: str, model: str) -> list[str]:
@@ -129,63 +97,121 @@ def suggest_directions(client, setting: str, plot: str, model: str) -> list[str]
 
 class ContinuationAnalysisDialog(QDialog):
     """
-    续写分析结果对话框
-    展示核心设定和剧情大纲，用户可编辑，然后选择续写方式
+    续写分析结果对话框（新版）
+    展示结构化提取结果的摘要统计，用户可查看各标签页的数据
     """
 
-    def __init__(self, parent, setting: str, plot_outline: str,
+    def __init__(self, parent, world_data: dict, settings: dict,
                  on_suggest, on_specify):
         """
         Args:
             parent: 父窗口
-            setting: 核心设定文本
-            plot_outline: 剧情大纲文本
-            on_suggest: 回调 (setting, plot) -> 自由续写模式启动
-            on_specify: 回调 (setting, plot) -> 指定续写模式启动
+            world_data: extract_world_bible_from_segments 的输出
+            settings: generate_novel_settings_from_world_bible 的输出
+            on_suggest: 回调 (setting, plot) -> AI 建议方向
+            on_specify: 回调 (setting, plot) -> 自行指定剧情
         """
         super().__init__(parent)
-        self._setting = setting
-        self._plot = plot_outline
+        self._world_data = world_data
+        self._settings = settings
         self._on_suggest = on_suggest
         self._on_specify = on_specify
-        self.setWindowTitle("续写前 - 设定与剧情概要")
-        self.resize(650, 500)
+        self.setWindowTitle("分析完成 - 提取结果总览")
+        self.resize(700, 550)
         self.setModal(True)
         self._build_ui()
 
     def _build_ui(self):
         layout = QVBoxLayout(self)
 
-        hint = QLabel("以下是从源文档中提取的设定与剧情概要，可编辑修改后选择续写方式。")
-        hint.setStyleSheet("color: #888; font-size: 12px; padding: 4px 0;")
+        # 统计摘要
+        chars = self._world_data.get("characters", [])
+        locs = self._world_data.get("locations", [])
+        rules = self._world_data.get("rules", [])
+        timeline = self._world_data.get("timeline", [])
+        threads = self._world_data.get("plot_threads", [])
+        segments = self._world_data.get("key_settings_hints", [])
+
+        summary = (
+            f"✅ 分析完成！共识别 {len(segments) or '?'} 个语义段落，提取到：\n"
+            f"  👥 角色 {len(chars)} 个  |  🏙️ 地点 {len(locs)} 个  |  📜 规则 {len(rules)} 条\n"
+            f"  ⏱️ 事件 {len(timeline)} 个  |  🔗 剧情线 {len(threads)} 条\n\n"
+            f"以下内容已保存到书架并加载到编辑面板，可在面板上直接修改。"
+        )
+        hint = QLabel(summary)
+        hint.setStyleSheet("color: #ccc; font-size: 13px; padding: 8px; background: #333; border-radius: 4px;")
+        hint.setWordWrap(True)
         layout.addWidget(hint)
 
+        # 标签页展示详细数据
         tabs = QTabWidget()
-        self._setting_edit = QTextEdit()
-        self._setting_edit.setPlainText(self._setting)
-        self._setting_edit.setStyleSheet("background: #2d2d2d; color: #e0e0e0; border: 1px solid #444;")
-        tabs.addTab(self._setting_edit, "核心设定")
 
-        self._plot_edit = QTextEdit()
-        self._plot_edit.setPlainText(self._plot)
-        self._plot_edit.setStyleSheet("background: #2d2d2d; color: #e0e0e0; border: 1px solid #444;")
-        tabs.addTab(self._plot_edit, "剧情概要")
+        # 设定总览标签页
+        bg = self._settings.get("background_story", "") or "(未生成)"
+        bio = self._settings.get("protagonist_bio", "") or "(未生成)"
+        demand = self._settings.get("writing_demand", "") or "(未生成)"
+        overview_text = (
+            f"【核心设定】\n{bg}\n\n"
+            f"【人物背景】\n{bio}\n\n"
+            f"【写作要求】\n{demand}\n"
+        )
+        overview_edit = QTextEdit()
+        overview_edit.setPlainText(overview_text)
+        overview_edit.setStyleSheet("background: #2d2d2d; color: #e0e0e0; border: 1px solid #444;")
+        tabs.addTab(overview_edit, "生成的小说设定")
+
+        # 角色标签页
+        char_text = "\n".join(
+            f"- {c['name']}：{c.get('traits', '')[:80]}"
+            for c in chars
+        ) or "(未提取到角色)"
+        char_edit = QTextEdit()
+        char_edit.setPlainText(char_text)
+        char_edit.setStyleSheet("background: #2d2d2d; color: #e0e0e0; border: 1px solid #444;")
+        tabs.addTab(char_edit, f"角色 ({len(chars)})")
+
+        # 地点标签页
+        loc_text = "\n".join(
+            f"- {l['name']}：{l.get('description', '')[:60]}"
+            for l in locs
+        ) or "(未提取到地点)"
+        loc_edit = QTextEdit()
+        loc_edit.setPlainText(loc_text)
+        loc_edit.setStyleSheet("background: #2d2d2d; color: #e0e0e0; border: 1px solid #444;")
+        tabs.addTab(loc_edit, f"地点 ({len(locs)})")
+
+        # 规则标签页
+        rule_text = "\n".join(f"- {r[:80]}" for r in rules) or "(未提取到规则)"
+        rule_edit = QTextEdit()
+        rule_edit.setPlainText(rule_text)
+        rule_edit.setStyleSheet("background: #2d2d2d; color: #e0e0e0; border: 1px solid #444;")
+        tabs.addTab(rule_edit, f"规则 ({len(rules)})")
+
+        # 剧情线标签页
+        thread_text = "\n".join(
+            f"- {p['name']} [{p.get('status', 'active')}]: {p.get('description', '')[:60]}"
+            for p in threads
+        ) or "(未提取到剧情线)"
+        thread_edit = QTextEdit()
+        thread_edit.setPlainText(thread_text)
+        thread_edit.setStyleSheet("background: #2d2d2d; color: #e0e0e0; border: 1px solid #444;")
+        tabs.addTab(thread_edit, f"剧情线 ({len(threads)})")
+
+        # 时间线标签页
+        tl_text = "\n".join(
+            f"- {t.get('event', '')[:60]} ({t.get('significance', '')[:40]})"
+            for t in timeline
+        ) or "(未提取到时间线)"
+        tl_edit = QTextEdit()
+        tl_edit.setPlainText(tl_text)
+        tl_edit.setStyleSheet("background: #2d2d2d; color: #e0e0e0; border: 1px solid #444;")
+        tabs.addTab(tl_edit, f"事件 ({len(timeline)})")
+
         layout.addWidget(tabs)
 
-        # 字数设置
-        word_row = QHBoxLayout()
-        word_row.addWidget(QLabel("目标字数："))
-        self._word_count = QSpinBox()
-        self._word_count.setRange(100, 100000)
-        self._word_count.setValue(10000)
-        self._word_count.setSingleStep(500)
-        self._word_count.setSuffix(" 字")
-        word_row.addWidget(self._word_count)
-        word_row.addStretch()
-        layout.addLayout(word_row)
-
-        # 按钮
+        # 操作按钮
         btn_row = QHBoxLayout()
+
         suggest_btn = QPushButton("🎲 AI 建议发展方向")
         suggest_btn.setStyleSheet("""
             QPushButton { background: #2d6b2d; color: white; border: none;
@@ -204,23 +230,27 @@ class ContinuationAnalysisDialog(QDialog):
         specify_btn.clicked.connect(self._on_specify)
         btn_row.addWidget(specify_btn)
 
-        cancel_btn = QPushButton("取消")
-        cancel_btn.clicked.connect(self.close)
-        btn_row.addWidget(cancel_btn)
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(self.close)
+        btn_row.addWidget(close_btn)
 
         layout.addLayout(btn_row)
 
     def _on_suggest(self):
-        setting = self._setting_edit.toPlainText().strip()
-        plot = self._plot_edit.toPlainText().strip()
-        word_count = self._word_count.value()
-        self._on_suggest(setting, plot, word_count)
+        wc = self.parent()._continue_word_count.value() if hasattr(self.parent(), '_continue_word_count') else 10000
+        self._on_suggest(
+            self._settings.get("background_story", ""),
+            "",
+            wc,
+        )
 
     def _on_specify(self):
-        setting = self._setting_edit.toPlainText().strip()
-        plot = self._plot_edit.toPlainText().strip()
-        word_count = self._word_count.value()
-        self._on_specify(setting, plot, word_count)
+        wc = self.parent()._continue_word_count.value() if hasattr(self.parent(), '_continue_word_count') else 10000
+        self._on_specify(
+            self._settings.get("background_story", ""),
+            "",
+            wc,
+        )
 
 
 class DirectionSelectionDialog(QDialog):

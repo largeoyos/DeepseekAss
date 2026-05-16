@@ -340,6 +340,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._stream_signals.analysis_done.connect(self._show_analysis_dialog)
         self._stream_signals.directions_ready.connect(self._show_direction_selector)
         self._stream_signals.novel_imported.connect(self._on_novel_imported)
+        self._stream_signals.novel_imported.connect(self._on_cont_novel_imported)
 
         # 小说管理器
         self._novel_manager = NovelManager()
@@ -961,14 +962,16 @@ class DeepSeekChatGUI(QMainWindow):
         return panel
 
     def _build_continuation_panel(self) -> QGroupBox:
-        """构建续写小说专属面板"""
-        panel = QGroupBox("📄 续写小说 · 源文档与设定")
+        """构建续写小说专属面板（大修版：含书架、章节管理、设定编辑）"""
+        panel = QGroupBox("📄 续写小说 · 源文档 & 书架")
         layout = QVBoxLayout(panel)
         layout.setSpacing(4)
         layout.setContentsMargins(8, 4, 8, 4)
 
-        # ── 源文档选择 ──
-        file_label = QLabel("源文档")
+        # ================================================================
+        # ① 源文档选择（续写独有）
+        # ================================================================
+        file_label = QLabel("📄 源文档")
         layout.addWidget(file_label)
         file_row = QHBoxLayout()
         self._continue_file_path = QLineEdit()
@@ -981,9 +984,6 @@ class DeepSeekChatGUI(QMainWindow):
         file_row.addWidget(browse_file_btn)
         layout.addLayout(file_row)
 
-        # ── 文件夹选择 ──
-        folder_label = QLabel("或指定文件夹")
-        layout.addWidget(folder_label)
         folder_row = QHBoxLayout()
         self._continue_folder_path = QLineEdit()
         self._continue_folder_path.setPlaceholderText("未选择文件夹...")
@@ -995,7 +995,139 @@ class DeepSeekChatGUI(QMainWindow):
         folder_row.addWidget(browse_folder_btn)
         layout.addLayout(folder_row)
 
-        # ── 续写要求 ──
+        # ── 源文档快速分析 + 直接续写按钮行 ──
+        source_btn_row = QHBoxLayout()
+        analyze_cont_btn = QPushButton("🔍 分析源文档并导入设定")
+        analyze_cont_btn.setMinimumHeight(32)
+        analyze_cont_btn.setStyleSheet("""
+            QPushButton { background: #2d5a8b; color: white; border: none;
+                          border-radius: 6px; padding: 6px 12px; font-weight: bold; }
+            QPushButton:hover { background: #3d7abb; }
+        """)
+        analyze_cont_btn.clicked.connect(self._on_analyze_continuation)
+        source_btn_row.addWidget(analyze_cont_btn)
+
+        quick_cont_btn = QPushButton("⚡ 直接续写")
+        quick_cont_btn.setMinimumHeight(32)
+        quick_cont_btn.setStyleSheet("""
+            QPushButton { background: #b85a2c; color: white; border: none;
+                          border-radius: 6px; padding: 6px 12px; font-weight: bold; }
+            QPushButton:hover { background: #d87a4c; }
+        """)
+        quick_cont_btn.clicked.connect(self._on_start_continuation)
+        source_btn_row.addWidget(quick_cont_btn)
+        layout.addLayout(source_btn_row)
+
+        # ================================================================
+        # ② 书架与章节管理（新增，复用小说模式设计）
+        # ================================================================
+        sep1 = QLabel("── 书架与章节管理 ──")
+        sep1.setStyleSheet("color: #888; font-size: 11px; padding: 2px 0;")
+        layout.addWidget(sep1)
+
+        bookshelf_row = QHBoxLayout()
+        self._cont_bookshelf_combo = QComboBox()
+        self._cont_bookshelf_combo.setMinimumWidth(120)
+        self._cont_bookshelf_combo.currentTextChanged.connect(self._on_cont_book_selected)
+        bookshelf_row.addWidget(self._cont_bookshelf_combo, stretch=1)
+
+        cont_create_book_btn = QPushButton("➕ 新建")
+        cont_create_book_btn.setMinimumWidth(70)
+        cont_create_book_btn.clicked.connect(self._on_cont_create_book)
+        bookshelf_row.addWidget(cont_create_book_btn)
+
+        cont_delete_book_btn = QPushButton("🗑 删除")
+        cont_delete_book_btn.setMinimumWidth(70)
+        cont_delete_book_btn.clicked.connect(self._on_cont_delete_book)
+        bookshelf_row.addWidget(cont_delete_book_btn)
+        layout.addLayout(bookshelf_row)
+
+        # 章节标题
+        cont_ch_row = QHBoxLayout()
+        cont_ch_row.setContentsMargins(0, 0, 0, 0)
+        cont_ch_label = QLabel("章节")
+        cont_ch_label.setFixedWidth(36)
+        self._cont_chapter_title_edit = QLineEdit()
+        self._cont_chapter_title_edit.setPlaceholderText("本章标题（如'风雨欲来'）")
+        cont_ch_row.addWidget(cont_ch_label)
+        cont_ch_row.addWidget(self._cont_chapter_title_edit, stretch=1)
+        layout.addLayout(cont_ch_row)
+
+        # 章节信息
+        self._cont_chapter_info_label = QLabel("尚未选择小说")
+        self._cont_chapter_info_label.setWordWrap(True)
+        layout.addWidget(self._cont_chapter_info_label)
+
+        # 章节模式
+        self._cont_chapter_mode_check = QCheckBox("📖 章节续写模式（勾选后发送即生成下一章）")
+        self._cont_chapter_mode_check.setChecked(False)
+        self._cont_chapter_mode_check.toggled.connect(self._on_cont_chapter_mode_toggled)
+        layout.addWidget(self._cont_chapter_mode_check)
+
+        # ================================================================
+        # ③ 小说设定（新增，复用小说模式设计）
+        # ================================================================
+        sep2 = QLabel("── 小说设定 ──")
+        sep2.setStyleSheet("color: #888; font-size: 11px; padding: 2px 0;")
+        layout.addWidget(sep2)
+
+        protag_label = QLabel("👤 主角设定")
+        layout.addWidget(protag_label)
+        self._cont_protagonist_edit = QTextEdit()
+        self._cont_protagonist_edit.setPlaceholderText("描述主角背景、性格、外貌...")
+        self._cont_protagonist_edit.setMaximumHeight(80)
+        self._cont_protagonist_edit.setMinimumHeight(60)
+        self._cont_protagonist_edit.textChanged.connect(self._on_cont_protagonist_changed)
+        layout.addWidget(self._cont_protagonist_edit)
+
+        bg_label = QLabel("🌍 世界观 / 背景故事")
+        layout.addWidget(bg_label)
+        self._cont_background_edit = QTextEdit()
+        self._cont_background_edit.setPlaceholderText("描述世界观、时代背景、核心设定...")
+        self._cont_background_edit.setMaximumHeight(80)
+        self._cont_background_edit.setMinimumHeight(60)
+        self._cont_background_edit.textChanged.connect(self._on_cont_background_changed)
+        layout.addWidget(self._cont_background_edit)
+
+        demand_label = QLabel("✍️ 写作要求")
+        layout.addWidget(demand_label)
+        self._cont_demand_edit = QTextEdit()
+        self._cont_demand_edit.setPlaceholderText("本章具体写作要求（风格、节奏、必须包含的元素...）")
+        self._cont_demand_edit.setMaximumHeight(60)
+        self._cont_demand_edit.setMinimumHeight(48)
+        self._cont_demand_edit.textChanged.connect(self._on_cont_demand_changed)
+        layout.addWidget(self._cont_demand_edit)
+
+        # ── 保存/加载设定按钮 ──
+        cont_save_settings_row = QHBoxLayout()
+        cont_save_settings_btn = QPushButton("💾 保存小说设定")
+        cont_save_settings_btn.clicked.connect(self._on_cont_save_settings)
+        cont_save_settings_row.addWidget(cont_save_settings_btn)
+        cont_load_settings_btn = QPushButton("📂 加载小说设定")
+        cont_load_settings_btn.clicked.connect(self._on_cont_load_settings)
+        cont_save_settings_row.addWidget(cont_load_settings_btn)
+        layout.addLayout(cont_save_settings_row)
+
+        # ── 章节管理 + 世界书按钮 ──
+        cont_mgr_row = QHBoxLayout()
+        cont_mgr_btn = QPushButton("⚙ 章节管理")
+        cont_mgr_btn.setMinimumHeight(32)
+        cont_mgr_btn.clicked.connect(self._on_manage_chapters)
+        cont_mgr_row.addWidget(cont_mgr_btn)
+        cont_wb_btn = QPushButton("📖 世界书")
+        cont_wb_btn.setMinimumHeight(32)
+        cont_wb_btn.clicked.connect(self._on_world_bible)
+        cont_mgr_row.addWidget(cont_wb_btn)
+        layout.addLayout(cont_mgr_row)
+
+        # ================================================================
+        # ④ 续写操作（保留原有 + 新增生成按钮）
+        # ================================================================
+        sep3 = QLabel("── 续写操作 ──")
+        sep3.setStyleSheet("color: #888; font-size: 11px; padding: 2px 0;")
+        layout.addWidget(sep3)
+
+        # 续写要求
         req_label = QLabel("续写要求")
         layout.addWidget(req_label)
         self._continue_requirement = QTextEdit()
@@ -1007,7 +1139,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._continue_requirement.setMinimumHeight(60)
         layout.addWidget(self._continue_requirement)
 
-        # ── 续写字数 ──
+        # 字数
         word_row = QHBoxLayout()
         word_row.setContentsMargins(0, 0, 0, 0)
         word_label = QLabel("字数")
@@ -1021,7 +1153,7 @@ class DeepSeekChatGUI(QMainWindow):
         word_row.addWidget(self._continue_word_count, stretch=1)
         layout.addLayout(word_row)
 
-        # ── 续写剧情（可选） ──
+        # 续写剧情（可选）
         plot_label = QLabel("续写剧情（可选）")
         layout.addWidget(plot_label)
         self._continue_plot = QTextEdit()
@@ -1032,32 +1164,13 @@ class DeepSeekChatGUI(QMainWindow):
         self._continue_plot.setMinimumHeight(60)
         layout.addWidget(self._continue_plot)
 
-        # ── 分析源文档按钮 ──
-        analyze_cont_btn = QPushButton("🔍 分析源文档")
-        analyze_cont_btn.setMinimumHeight(36)
-        analyze_cont_btn.setStyleSheet("""
-            QPushButton {
-                background: #2d5a8b;
-                color: white;
-                border: none;
-                border-radius: 6px;
-                padding: 8px 16px;
-                font-weight: bold;
-            }
-            QPushButton:hover {
-                background: #3d7abb;
-            }
-        """)
-        analyze_cont_btn.clicked.connect(self._on_analyze_continuation)
-        layout.addWidget(analyze_cont_btn)
-
-        # ── 直接续写按钮 ──
-        continue_btn = QPushButton("开始续写（直接续写，跳过分析）")
-        continue_btn.setMinimumHeight(40)
-        continue_btn.setStyleSheet("""
+        # ── 生成下一章按钮 ──
+        cont_generate_btn = QPushButton("🚀 生成下一章")
+        cont_generate_btn.setMinimumHeight(40)
+        cont_generate_btn.setStyleSheet("""
             QPushButton {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #b85a2c, stop:1 #d87a4c);
+                    stop:0 #7a4a9c, stop:1 #9a6abc);
                 color: white;
                 border: none;
                 border-radius: 8px;
@@ -1068,18 +1181,18 @@ class DeepSeekChatGUI(QMainWindow):
             }
             QPushButton:hover {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #c86a3c, stop:1 #e88a5c);
+                    stop:0 #8a5aac, stop:1 #aa7acc);
                 border: 1px solid rgba(255, 255, 255, 0.1);
             }
             QPushButton:pressed {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
-                    stop:0 #a84a1c, stop:1 #c86a3c);
+                    stop:0 #6a3a8c, stop:1 #8a5aac);
             }
         """)
-        continue_btn.clicked.connect(self._on_start_continuation)
-        layout.addWidget(continue_btn)
+        cont_generate_btn.clicked.connect(self._on_cont_generate_chapter)
+        layout.addWidget(cont_generate_btn)
 
-        # ── 导出按钮（复用同一书架） ──
+        # ── 导出 ──
         export_label = QLabel("导出")
         layout.addWidget(export_label)
         export_fmt_row = QHBoxLayout()
@@ -1613,7 +1726,7 @@ class DeepSeekChatGUI(QMainWindow):
     # ========== 📚 小说面板事件 ==========
 
     def _refresh_novel_bookshelf(self) -> None:
-        """刷新书架下拉列表（按最近编辑时间排序）"""
+        """刷新书架下拉列表（按最近编辑时间排序，同时更新续写面板）"""
         books = self._novel_manager.list_books()
         books.sort(
             key=lambda t: self._novel_manager.load_meta(t).updated_at or "",
@@ -1629,6 +1742,17 @@ class DeepSeekChatGUI(QMainWindow):
         else:
             self._bookshelf_combo.addItem("（暂无小说，请新建）")
         self._bookshelf_combo.blockSignals(False)
+
+        cont_current = self._cont_bookshelf_combo.currentText()
+        self._cont_bookshelf_combo.blockSignals(True)
+        self._cont_bookshelf_combo.clear()
+        if books:
+            self._cont_bookshelf_combo.addItems(books)
+            if cont_current in books:
+                self._cont_bookshelf_combo.setCurrentText(cont_current)
+        else:
+            self._cont_bookshelf_combo.addItem("（暂无小说，请新建）")
+        self._cont_bookshelf_combo.blockSignals(False)
 
     def _on_create_book(self) -> None:
         """新建小说"""
@@ -1661,8 +1785,9 @@ class DeepSeekChatGUI(QMainWindow):
             self._on_book_selected(self._bookshelf_combo.currentText())
 
     def _get_current_book_title(self) -> str | None:
-        """获取当前书架选中项，若为占位符则返回 None"""
-        text = self._bookshelf_combo.currentText()
+        """获取当前活动面板的书架选中项，若为占位符则返回 None"""
+        combo = self._cont_bookshelf_combo if self._continuation_panel.isVisible() else self._bookshelf_combo
+        text = combo.currentText()
         if not text or text.startswith("（暂无小说"):
             return None
         return text
@@ -1748,6 +1873,198 @@ class DeepSeekChatGUI(QMainWindow):
                 self._append_user_message(
                     "💬 **自由对话模式** — 可随意交流写作问题"
                 )
+
+    # ========== 📄 续写面板 Handler（新增） ==========
+
+    def _on_cont_book_selected(self, text: str) -> None:
+        """续写面板：书架选择变化 → 加载已有小说设定"""
+        title = text if text and not text.startswith("（暂无小说") else None
+        if not title:
+            self._cont_chapter_info_label.setText("尚未选择小说")
+            return
+
+        meta = self._novel_manager.load_meta(title)
+        self._cont_protagonist_edit.blockSignals(True)
+        self._cont_protagonist_edit.setPlainText(meta.protagonist_bio)
+        self._cont_protagonist_edit.blockSignals(False)
+        self._cont_background_edit.blockSignals(True)
+        self._cont_background_edit.setPlainText(meta.background_story)
+        self._cont_background_edit.blockSignals(False)
+        self._cont_demand_edit.blockSignals(True)
+        self._cont_demand_edit.setPlainText(meta.writing_demand)
+        self._cont_demand_edit.blockSignals(False)
+        next_ch = self._novel_manager.get_next_chapter_num(title)
+        chapters = self._novel_manager.list_chapters(title)
+        self._cont_chapter_info_label.setText(
+            f"已有 {len(chapters)} 章，下一章编号: 第{next_ch}章"
+        )
+
+    def _on_cont_create_book(self) -> None:
+        """续写面板：新建小说"""
+        from PyQt6.QtWidgets import QInputDialog
+        title, ok = QInputDialog.getText(self, "新建小说", "请输入小说标题：")
+        if ok and title.strip():
+            self._novel_manager.create_book(title.strip())
+            self._refresh_novel_bookshelf()
+            self._cont_bookshelf_combo.setCurrentText(title.strip())
+
+    def _on_cont_delete_book(self) -> None:
+        """续写面板：删除小说"""
+        title = self._cont_bookshelf_combo.currentText()
+        if not title or title.startswith("（暂无小说"):
+            return
+        reply = QMessageBox.question(
+            self, "确认删除",
+            f"确定要删除「{title}」及其所有章节吗？\n此操作不可恢复！",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply == QMessageBox.StandardButton.Yes:
+            self._novel_manager.delete_book(title)
+            self._refresh_novel_bookshelf()
+
+    def _on_cont_protagonist_changed(self) -> None:
+        """续写面板：主角设定变更 → 自动保存"""
+        title = self._get_current_book_title()
+        if title:
+            self._novel_manager.save_meta(
+                title, protagonist_bio=self._cont_protagonist_edit.toPlainText().strip()
+            )
+
+    def _on_cont_background_changed(self) -> None:
+        """续写面板：背景变更 → 自动保存"""
+        title = self._get_current_book_title()
+        if title:
+            self._novel_manager.save_meta(
+                title, background_story=self._cont_background_edit.toPlainText().strip()
+            )
+
+    def _on_cont_demand_changed(self) -> None:
+        """续写面板：写作要求变更 → 自动保存"""
+        title = self._get_current_book_title()
+        if title:
+            self._novel_manager.save_meta(
+                title, writing_demand=self._cont_demand_edit.toPlainText().strip()
+            )
+
+    def _on_cont_chapter_mode_toggled(self, checked: bool) -> None:
+        """续写面板：章节模式切换"""
+        if checked:
+            self._append_user_message(
+                "📖 **章节续写模式已开启** — 发送消息将自动续写下一章"
+            )
+        else:
+            self._append_user_message(
+                "💬 **自由对话模式** — 可随意交流写作问题"
+            )
+
+    def _on_cont_save_settings(self) -> None:
+        """续写面板：保存设定到 meta.json"""
+        title = self._get_current_book_title()
+        if not title:
+            QMessageBox.warning(self, "提示", "请先在书架中选择一部小说。")
+            return
+        self._novel_manager.save_meta(
+            title,
+            protagonist_bio=self._cont_protagonist_edit.toPlainText().strip(),
+            background_story=self._cont_background_edit.toPlainText().strip(),
+            writing_demand=self._cont_demand_edit.toPlainText().strip(),
+        )
+        QMessageBox.information(self, "成功", f"「{title}」的设定已保存。")
+
+    def _on_cont_load_settings(self) -> None:
+        """续写面板：加载设定到编辑框"""
+        title = self._get_current_book_title()
+        if not title:
+            QMessageBox.warning(self, "提示", "请先在书架中选择一部小说。")
+            return
+        meta = self._novel_manager.load_meta(title)
+        self._cont_protagonist_edit.blockSignals(True)
+        self._cont_protagonist_edit.setPlainText(meta.protagonist_bio)
+        self._cont_protagonist_edit.blockSignals(False)
+        self._cont_background_edit.blockSignals(True)
+        self._cont_background_edit.setPlainText(meta.background_story)
+        self._cont_background_edit.blockSignals(False)
+        self._cont_demand_edit.blockSignals(True)
+        self._cont_demand_edit.setPlainText(meta.writing_demand)
+        self._cont_demand_edit.blockSignals(False)
+
+    def _on_cont_generate_chapter(self) -> None:
+        """续写面板：生成下一章"""
+        if self._streaming:
+            return
+
+        book_title = self._get_current_book_title()
+        if not book_title:
+            QMessageBox.warning(self, "提示", "请先在书架中选择一部小说。")
+            return
+
+        # 获取源文本
+        source_text = self._read_continuation_source()
+        if not source_text:
+            QMessageBox.warning(self, "提示", "请先选择续写源文档或文件夹。")
+            return
+
+        chapter_title = self._cont_chapter_title_edit.text().strip()
+        if not chapter_title:
+            chapter_title = f"续写 (第{self._novel_manager.get_next_chapter_num(book_title)}章)"
+            self._cont_chapter_title_edit.setText(chapter_title)
+
+        requirement = self._continue_requirement.toPlainText().strip()
+        word_count = self._continue_word_count.value()
+        plot = self._continue_plot.toPlainText().strip()
+        chapter_num = self._novel_manager.get_next_chapter_num(book_title)
+
+        self._streaming = True
+        self._assistant_text_buffer = []
+        self._append_user_message(f"📝 续写「{book_title}」→ 第{chapter_num}章「{chapter_title}」")
+
+        threading.Thread(
+            target=self._run_continuation,
+            args=(book_title, chapter_num, chapter_title, source_text, requirement, word_count, plot),
+            daemon=True,
+        ).start()
+
+    def _on_cont_novel_imported(self, title: str) -> None:
+        """续写面板：导入完成后刷新书架并加载设定到 UI"""
+        self._refresh_novel_bookshelf()
+        self._cont_bookshelf_combo.setCurrentText(title)
+        # _on_cont_book_selected 会通过信号自动触发
+
+    def _read_continuation_source(self) -> str:
+        """读取续写源文档/文件夹内容"""
+        source_file = self._continue_file_path.text().strip()
+        source_folder = self._continue_folder_path.text().strip()
+
+        if source_file:
+            if not os.path.isfile(source_file):
+                return ""
+            for enc in ("utf-8", "gbk"):
+                try:
+                    with open(source_file, "r", encoding=enc) as f:
+                        return f.read()
+                except (UnicodeDecodeError, Exception):
+                    continue
+            return ""
+        elif source_folder:
+            if not os.path.isdir(source_folder):
+                return ""
+            ext_map = {".txt", ".md", ".html", ".htm"}
+            files = sorted(f for f in os.listdir(source_folder) if os.path.splitext(f)[1].lower() in ext_map)
+            if not files:
+                return ""
+            parts = []
+            for fname in files:
+                fpath = os.path.join(source_folder, fname)
+                for enc in ("utf-8", "gbk"):
+                    try:
+                        with open(fpath, "r", encoding=enc) as f:
+                            content = f.read()
+                        break
+                    except (UnicodeDecodeError, Exception):
+                        content = f"[无法读取：{fname}]\n"
+                parts.append(f"===== {fname} =====\n{content}")
+            return "\n\n".join(parts)
+        return ""
 
     def _on_save_novel_settings(self) -> None:
         """保存当前小说设定到 meta.json"""
@@ -2110,10 +2427,12 @@ class DeepSeekChatGUI(QMainWindow):
                 book_title = "续写作品"
             self._novel_manager.create_book(book_title)
             self._refresh_novel_bookshelf()
-            self._bookshelf_combo.setCurrentText(book_title)
+            self._cont_bookshelf_combo.setCurrentText(book_title)
 
         chapter_num = self._novel_manager.get_next_chapter_num(book_title)
-        chapter_title = f"续写 (第{chapter_num}章)"
+        chapter_title = self._cont_chapter_title_edit.text().strip()
+        if not chapter_title:
+            chapter_title = f"续写 (第{chapter_num}章)"
 
         self._streaming = True
         self._assistant_text_buffer = []
@@ -2137,19 +2456,45 @@ class DeepSeekChatGUI(QMainWindow):
         word_count: int,
         plot: str,
     ) -> None:
-        """后台线程：执行续写 → 保存 → 摘要"""
+        """后台线程：执行续写（增强版：含世界书+剧情摘要+设定）"""
         try:
-            # 构建 System Prompt
-            messages = [{"role": "system", "content": (
-                "你是一位文笔细腻、想象力丰富的小说家。请根据用户提供的原文内容，"
-                "续写后续章节。严格保持原文的风格、视角、人称、叙事节奏和人物性格，"
-                "确保续写内容与原文自然衔接、浑然一体。"
-                "直接输出续写正文，不要加任何解释、前言或后记。"
-                f"\n目标字数：{word_count} 字以上。\n"
-            )}]
-
-            # 构建 User Prompt
+            # ── 构建 User Prompt（含前情提要 + 世界书 + 设定） ──
             user_parts = [f"【原文内容】\n{source_text}\n"]
+
+            # 加载前情提要（复用小说模式的智能摘要算法）
+            try:
+                summary = self._novel_manager.load_smart_summary(
+                    book_title, self._client.raw_client,
+                    next_chapter_num=chapter_num,
+                    model=self._client.model,
+                )
+                if summary and "故事刚刚开始" not in summary:
+                    user_parts.append(f"【前情提要】\n{summary}\n")
+            except Exception:
+                pass
+
+            # 加载世界书
+            try:
+                from core.world_bible import format_world_bible_for_prompt
+                bible = self._novel_manager.load_world_bible(book_title)
+                if bible:
+                    wb_text = format_world_bible_for_prompt(bible)
+                    if wb_text.strip():
+                        user_parts.append(f"【世界书（已建立设定库）】\n{wb_text}\n")
+            except Exception:
+                pass
+
+            # 加载小说设定（从 meta.json）
+            try:
+                meta = self._novel_manager.load_meta(book_title)
+                if meta.background_story:
+                    user_parts.append(f"【核心设定】\n{meta.background_story}\n")
+                if meta.protagonist_bio:
+                    user_parts.append(f"【人物背景】\n{meta.protagonist_bio}\n")
+            except Exception:
+                pass
+
+            # 续写要求 + 剧情走向
             user_parts.append(f"请续写以上内容，作为第 {chapter_num} 章「{chapter_title}」。\n")
             if requirement:
                 user_parts.append(f"【续写要求】\n{requirement}\n")
@@ -2160,7 +2505,7 @@ class DeepSeekChatGUI(QMainWindow):
             )
 
             user_prompt = "\n".join(user_parts)
-            messages.append({"role": "user", "content": user_prompt})
+            messages = [{"role": "user", "content": user_prompt}]
 
             self._stream_signals.token.emit(
                 f"\n\n📝 正在续写第 {chapter_num} 章「{chapter_title}」...\n\n"
@@ -2267,6 +2612,15 @@ class DeepSeekChatGUI(QMainWindow):
             and self._client.strategy.chapter_mode
         ):
             self._on_generate_chapter()
+            return
+
+        # 如果当前是续写模式且章节模式已勾选 → 触发续写章节生成
+        from strategies.continuation_strategy import ContinuationStrategy
+        if (
+            isinstance(self._client.strategy, ContinuationStrategy)
+            and self._cont_chapter_mode_check.isChecked()
+        ):
+            self._on_cont_generate_chapter()
             return
 
         user_input = self._input_box.toPlainText().strip()
@@ -2385,28 +2739,29 @@ class DeepSeekChatGUI(QMainWindow):
     # ========== 📋 章节信息更新 ==========
 
     def _refresh_chapter_info_display(self, title: str) -> None:
-        """刷新章节信息显示"""
+        """刷新章节信息显示（同时更新小说面板和续写面板）"""
         chapters = self._novel_manager.list_chapters(title)
+        info_text = ""
         if not chapters:
-            self._chapter_info_label.setText(
-                f"暂无章节，下一章编号: 第{self._novel_manager.get_next_chapter_num(title)}章"
-            )
-            return
-        lines = [f"已有 {len(chapters)} 章，下一章: 第{self._novel_manager.get_next_chapter_num(title)}章"]
-        for ch in chapters:
-            active = ch.get("active_version", 1)
-            count = ch.get("version_count", 1)
-            if count > 1:
-                lines.append(f"  · 第{ch['num']}章「{ch['title']}」v{active}/{count}个版本")
-            else:
-                lines.append(f"  · 第{ch['num']}章「{ch['title']}」")
-        self._chapter_info_label.setText("\n".join(lines))
+            info_text = f"暂无章节，下一章编号: 第{self._novel_manager.get_next_chapter_num(title)}章"
+        else:
+            lines = [f"已有 {len(chapters)} 章，下一章: 第{self._novel_manager.get_next_chapter_num(title)}章"]
+            for ch in chapters:
+                active = ch.get("active_version", 1)
+                count = ch.get("version_count", 1)
+                if count > 1:
+                    lines.append(f"  · 第{ch['num']}章「{ch['title']}」v{active}/{count}个版本")
+                else:
+                    lines.append(f"  · 第{ch['num']}章「{ch['title']}」")
+            info_text = "\n".join(lines)
+        self._chapter_info_label.setText(info_text)
+        self._cont_chapter_info_label.setText(info_text)
 
     # ========== 📖 世界书对话框 ==========
 
     def _on_world_bible(self) -> None:
         """打开世界书编辑对话框"""
-        title = self._novel_title_edit.text().strip()
+        title = self._get_current_book_title()
         if not title:
             QMessageBox.warning(self, "提示", "请先选择或创建一本小说。")
             return
@@ -2573,61 +2928,16 @@ class DeepSeekChatGUI(QMainWindow):
     # ========== 🔍 续写分析流程 ==========
 
     def _on_analyze_continuation(self) -> None:
-        """分析源文档 → 弹出设定编辑对话框"""
+        """
+        新版分析：读取源文档 → AI 语义分段 → 结构化提取世界观
+        → 创建小说 → 保存世界书 → 保存设定 → 自动加载 UI
+        """
         if self._streaming:
             return
-        source_file = self._continue_file_path.text().strip()
-        source_folder = self._continue_folder_path.text().strip()
-        if not source_file and not source_folder:
+
+        source_text = self._read_continuation_source()
+        if not source_text:
             QMessageBox.warning(self, "提示", "请先选择续写源文档或文件夹。")
-            return
-
-        source_text = ""
-        if source_file:
-            if not os.path.isfile(source_file):
-                QMessageBox.warning(self, "错误", f"文件不存在：{source_file}")
-                return
-            try:
-                with open(source_file, "r", encoding="utf-8") as f:
-                    source_text = f.read()
-            except UnicodeDecodeError:
-                try:
-                    with open(source_file, "r", encoding="gbk") as f:
-                        source_text = f.read()
-                except Exception as e:
-                    QMessageBox.warning(self, "错误", f"无法读取文件：{e}")
-                    return
-            except Exception as e:
-                QMessageBox.warning(self, "错误", f"无法读取文件：{e}")
-                return
-        elif source_folder:
-            if not os.path.isdir(source_folder):
-                QMessageBox.warning(self, "错误", f"文件夹不存在：{source_folder}")
-                return
-            ext_map = {".txt", ".md", ".html", ".htm"}
-            files = sorted(f for f in os.listdir(source_folder) if os.path.splitext(f)[1].lower() in ext_map)
-            if not files:
-                QMessageBox.warning(self, "提示", "文件夹中没有找到文本文件。")
-                return
-            parts = []
-            for fname in files:
-                fpath = os.path.join(source_folder, fname)
-                try:
-                    with open(fpath, "r", encoding="utf-8") as f:
-                        content = f.read()
-                except UnicodeDecodeError:
-                    try:
-                        with open(fpath, "r", encoding="gbk") as f:
-                            content = f.read()
-                    except Exception:
-                        content = f"[无法读取：{fname}]\n"
-                except Exception:
-                    content = f"[无法读取：{fname}]\n"
-                parts.append(f"===== {fname} =====\n{content}")
-            source_text = "\n\n".join(parts)
-
-        if not source_text.strip():
-            QMessageBox.warning(self, "提示", "源文档内容为空。")
             return
 
         client = self._client.raw_client if hasattr(self, '_client') else None
@@ -2635,32 +2945,111 @@ class DeepSeekChatGUI(QMainWindow):
             QMessageBox.warning(self, "错误", "客户端未初始化。")
             return
 
+        # 自动推断小说标题（从文件名）
+        title = self._get_current_book_title()
+        if not title:
+            source_file = self._continue_file_path.text().strip()
+            source_folder = self._continue_folder_path.text().strip()
+            if source_file:
+                title = os.path.splitext(os.path.basename(source_file))[0]
+            elif source_folder:
+                title = os.path.basename(source_folder)
+            else:
+                title = "续写作品"
+
         model = self._client.model
         self._streaming = True
         self._assistant_text_buffer = []
-        self._append_user_message(f"🔍 分析源文档：{os.path.basename(source_file) if source_file else os.path.basename(source_folder)}")
+        self._append_user_message(f"🔍 分析源文档并导入小说：{title}")
 
         def _run_analyze():
             try:
-                self._stream_signals.token.emit("\n\n🔍 正在分析源文档，提取核心设定和剧情概要...\n\n")
-                setting, plot = analyze_source_text(client, source_text, model)
-                self._stream_signals.token.emit("✅ 分析完成。\n")
-                self._stream_signals.finished.emit()
-                self._stream_signals.analysis_done.emit(setting, plot, source_text)
+                from utils.summarize import segment_by_ai, extract_world_bible_from_segments, generate_novel_settings_from_world_bible
+                from core.world_bible import WorldBible, CharacterEntry, LocationEntry, TimelineEntry, PlotThread
+
+                si = self._stream_signals
+                si.token.emit(f"\n\n🔍 第一步：AI 语义分段…\n")
+
+                segments = segment_by_ai(client, source_text, model)
+                si.token.emit(f"  ✅ 识别出 {len(segments)} 个逻辑段落\n")
+
+                si.token.emit(f"\n⏳ 第二步：逐段提取世界观信息…\n")
+                world_data = extract_world_bible_from_segments(client, segments, model)
+
+                chars = len(world_data.get("characters", []))
+                locs = len(world_data.get("locations", []))
+                rules = len(world_data.get("rules", []))
+                si.token.emit(
+                    f"  ✅ 提取到: {chars}角色 / {locs}地点 / {rules}规则\n"
+                )
+
+                si.token.emit(f"\n⏳ 第三步：创建小说并保存数据…\n")
+                self._novel_manager.create_book(title)
+
+                # 保存世界书
+                bible = WorldBible(
+                    characters=[CharacterEntry(**c) for c in world_data.get("characters", [])],
+                    locations=[LocationEntry(**l) for l in world_data.get("locations", [])],
+                    rules=list(world_data.get("rules", [])),
+                    timeline=[TimelineEntry(**t) for t in world_data.get("timeline", [])],
+                    active_plot_threads=[PlotThread(**p) for p in world_data.get("plot_threads", [])],
+                    last_updated_chapter=0,
+                )
+                self._novel_manager.save_world_bible(title, bible)
+
+                # 生成并保存小说设定
+                si.token.emit(f"⏳ 第四步：生成小说设定…\n")
+                settings = generate_novel_settings_from_world_bible(client, world_data, model)
+                self._novel_manager.save_meta(
+                    title,
+                    protagonist_bio=settings.get("protagonist_bio", ""),
+                    background_story=settings.get("background_story", ""),
+                    writing_demand=settings.get("writing_demand", ""),
+                )
+
+                si.token.emit(f"  ✅ 设定已保存\n")
+                si.token.emit(
+                    f"\n{'='*50}\n"
+                    f"✅ 分析完成！「{title}」创建成功\n"
+                    f"  • {len(segments)} 个语义段落\n"
+                    f"  • 世界书 {chars}角色 + {locs}地点 + {rules}规则\n"
+                    f"  • 小说设定已生成并加载到面板\n"
+                    f"  • 现在可以点击「🚀 生成下一章」开始续写\n"
+                    f"{'='*50}\n"
+                )
+                si.finished.emit()
+
+                # 保存分析数据供对话框使用
+                self._cont_analysis_world_data = world_data
+                self._cont_analysis_settings = settings
+                self._cont_analysis_source = source_text
+
+                # 触发 UI 加载
+                self._stream_signals.novel_imported.emit(title)
+
+                # 弹出分析结果对话框
+                world_data2 = world_data
+                settings2 = settings
+                self._stream_signals.analysis_done.emit(
+                    str(world_data2), str(settings2), title,
+                )
+
             except Exception as e:
+                import traceback
+                self._stream_signals.token.emit(f"\n❌ 分析失败: {e}\n")
+                self._stream_signals.token.emit(f"\n```\n{traceback.format_exc()}\n```\n")
                 self._stream_signals.error.emit(f"分析失败: {e}")
 
         threading.Thread(target=_run_analyze, daemon=True).start()
 
-    def _show_analysis_dialog(self, setting: str, plot: str, source_text: str) -> None:
+    def _show_analysis_dialog(self, world_data_str: str, settings_str: str, title: str) -> None:
         """在主线程显示分析结果对话框"""
         self._streaming = False
-        self._cont_analysis_source = source_text
-        self._cont_analysis_setting = setting
-        self._cont_analysis_plot = plot
+        world_data = getattr(self, '_cont_analysis_world_data', {})
+        settings = getattr(self, '_cont_analysis_settings', {})
 
         dlg = ContinuationAnalysisDialog(
-            self, setting, plot,
+            self, world_data, settings,
             on_suggest=self._on_cont_suggest,
             on_specify=self._on_cont_specify,
         )
@@ -2679,9 +3068,9 @@ class DeepSeekChatGUI(QMainWindow):
         def _run():
             try:
                 self._stream_signals.token.emit("\n\n🎲 AI 正在分析发展方向...\n\n")
-                directions = suggest_directions(client, setting, plot_outline, self._client.model)
+                directions = suggest_directions(client, setting, "", self._client.model)
                 self._stream_signals.finished.emit()
-                self._stream_signals.directions_ready.emit(directions, setting, plot_outline, word_count)
+                self._stream_signals.directions_ready.emit(directions, setting, "", word_count)
             except Exception as e:
                 self._stream_signals.error.emit(f"方向建议失败: {e}")
 
@@ -2692,31 +3081,32 @@ class DeepSeekChatGUI(QMainWindow):
         self._streaming = False
         dlg = DirectionSelectionDialog(self, directions)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.selected_direction:
-            self._do_continuation_with_context(setting, plot_outline, dlg.selected_direction, word_count)
+            self._do_continuation_with_context(setting, word_count)
 
     def _on_cont_specify(self, setting: str, plot_outline: str, word_count: int) -> None:
         """用户指定剧情 → 续写"""
         plot = self._continue_plot.toPlainText().strip()
-        self._do_continuation_with_context(setting, plot_outline, plot, word_count)
+        self._do_continuation_with_context(setting, word_count)
 
-    def _do_continuation_with_context(self, setting: str, plot_outline: str, plot_content: str, word_count: int) -> None:
+    def _do_continuation_with_context(self, setting: str, word_count: int = 0) -> None:
         """带分析上下文的续写执行"""
         source_text = getattr(self, '_cont_analysis_source', "")
         if not source_text:
             QMessageBox.warning(self, "错误", "分析上下文丢失，请重新分析。")
             return
 
-        book_title = self._bookshelf_combo.currentText().strip()
+        book_title = self._get_current_book_title()
         if not book_title:
-            book_title = "续写作品"
-            self._novel_manager.create_book(book_title)
-            self._refresh_novel_bookshelf()
-            self._bookshelf_combo.setCurrentText(book_title)
+            QMessageBox.warning(self, "错误", "请先选择或创建一本小说。")
+            return
 
         chapter_num = self._novel_manager.get_next_chapter_num(book_title)
-        chapter_title = f"续写 (第{chapter_num}章)"
+        chapter_title = self._cont_chapter_title_edit.text().strip()
+        if not chapter_title:
+            chapter_title = f"续写 (第{chapter_num}章)"
         requirement = self._continue_requirement.toPlainText().strip()
-        plot = plot_content
+        plot = self._continue_plot.toPlainText().strip()
+        word_count = word_count or self._continue_word_count.value()
 
         self._streaming = True
         self._assistant_text_buffer = []
