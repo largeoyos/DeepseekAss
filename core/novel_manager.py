@@ -52,6 +52,13 @@ class NovelMeta:
     # 早期章节压缩缓存：{ "compressed_early": "..." }
     compressed_early_summary: str = ""
 
+    def __post_init__(self):
+        """加载时归一化：确保字符串字段不是 list（兼容 LLM 返回 JSON 数组的情况）"""
+        for field_name in ("protagonist_bio", "background_story", "writing_demand"):
+            val = getattr(self, field_name)
+            if isinstance(val, list):
+                setattr(self, field_name, "\n".join(str(item) for item in val))
+
 
 class NovelManager:
     """小说管理器：书架+章节+摘要+版本管理"""

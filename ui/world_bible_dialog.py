@@ -33,7 +33,7 @@ class WorldBibleDialog(QDialog):
         self._save_callback = save_callback
         self._saved = False
         self.setWindowTitle("📖 世界书 - 已建立的设定与世界观")
-        self.resize(700, 500)
+        self.resize(800, 600)
         self.setModal(True)
         self._build_ui()
 
@@ -49,6 +49,12 @@ class WorldBibleDialog(QDialog):
 
         # 标签页
         self._tabs = QTabWidget()
+        self._tabs.setStyleSheet("""
+            QTabWidget::pane { background-color: #2d2d2d; border: 1px solid #444; }
+            QTabBar::tab { background-color: #3c3c3c; color: #e0e0e0; padding: 6px 16px; border: 1px solid #444; border-bottom: none; border-top-left-radius: 4px; border-top-right-radius: 4px; }
+            QTabBar::tab:selected { background-color: #2d2d2d; color: #ffffff; }
+            QTabBar::tab:hover:!selected { background-color: #4a4a4a; }
+        """)
 
         self._char_edit = self._make_tab("角色", self._format_characters())
         self._loc_edit = self._make_tab("地点", self._format_locations())

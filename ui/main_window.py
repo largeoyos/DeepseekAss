@@ -365,6 +365,8 @@ class DeepSeekChatGUI(QMainWindow):
 
         self._init_client()
         self._init_ui()
+        # 默认预设方案：狂野
+        self._preset_combo.setCurrentText("狂野")
         self._apply_dark_theme()
         self._refresh_novel_bookshelf()
 
@@ -446,9 +448,9 @@ class DeepSeekChatGUI(QMainWindow):
         right_panel = self._build_right_panel()
         splitter.addWidget(right_panel)
 
-        splitter.setStretchFactor(0, 0)
-        splitter.setStretchFactor(1, 1)
-        splitter.setSizes([320, 880])
+        splitter.setStretchFactor(0, 1)
+        splitter.setStretchFactor(1, 2)
+        splitter.setSizes([450, 750])
 
         self.setCentralWidget(splitter)
 
@@ -778,12 +780,12 @@ class DeepSeekChatGUI(QMainWindow):
         bookshelf_row.addWidget(self._bookshelf_combo, stretch=1)
 
         create_book_btn = QPushButton("➕ 新建")
-        create_book_btn.setMaximumWidth(60)
+        create_book_btn.setMinimumWidth(70)
         create_book_btn.clicked.connect(self._on_create_book)
         bookshelf_row.addWidget(create_book_btn)
 
         delete_book_btn = QPushButton("🗑 删除")
-        delete_book_btn.setMaximumWidth(60)
+        delete_book_btn.setMinimumWidth(70)
         delete_book_btn.clicked.connect(self._on_delete_book)
         bookshelf_row.addWidget(delete_book_btn)
 
@@ -1436,7 +1438,13 @@ class DeepSeekChatGUI(QMainWindow):
             self._current_conversation_id = None
             self._current_conversation_title = ""
         self._model_combo.setCurrentText(self._client.model)
+        # 同步滑块时阻止滑块事件把预设改成"自定义"
+        current_preset = self._preset_combo.currentText()
+        self._preset_applying = True
         self._sync_sliders_to_client()
+        self._preset_applying = False
+        # 恢复预设方案（触发 _on_preset_changed 重新应用预设值）
+        self._preset_combo.setCurrentText(current_preset)
         self._update_status()
 
         # 切换专属面板可见性
@@ -1605,8 +1613,12 @@ class DeepSeekChatGUI(QMainWindow):
     # ========== 📚 小说面板事件 ==========
 
     def _refresh_novel_bookshelf(self) -> None:
-        """刷新书架下拉列表"""
+        """刷新书架下拉列表（按最近编辑时间排序）"""
         books = self._novel_manager.list_books()
+        books.sort(
+            key=lambda t: self._novel_manager.load_meta(t).updated_at or "",
+            reverse=True,
+        )
         current = self._bookshelf_combo.currentText()
         self._bookshelf_combo.blockSignals(True)
         self._bookshelf_combo.clear()
@@ -1727,17 +1739,15 @@ class DeepSeekChatGUI(QMainWindow):
     def _on_chapter_mode_toggled(self, checked: bool) -> None:
         if isinstance(self._client.strategy, NovelStrategy):
             self._client.strategy.chapter_mode = checked
-            self._client.clear_context()
             self._update_status()
             if checked:
-                self._display.setHtml(md_to_html(
-                    "📖 **章节续写模式已开启**\n"
-                    "点击「生成下一章」按钮或直接发送消息，将自动根据设定生成新章节。\n"
-                ))
+                self._append_user_message(
+                    "📖 **章节续写模式已开启** — 发送消息将自动根据设定生成新章节"
+                )
             else:
-                self._display.setHtml(md_to_html(
-                    "💬 **自由对话模式** — 可随意交流写作问题。"
-                ))
+                self._append_user_message(
+                    "💬 **自由对话模式** — 可随意交流写作问题"
+                )
 
     def _on_save_novel_settings(self) -> None:
         """保存当前小说设定到 meta.json"""
@@ -3375,7 +3385,7 @@ def run_gui() -> None:
     """启动 GUI 应用"""
     app = QApplication(sys.argv)
     window = DeepSeekChatGUI()
-    window.show()
+    window.showMaximized()
     sys.exit(app.exec())
 
 
