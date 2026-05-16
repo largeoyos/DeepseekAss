@@ -19,6 +19,7 @@ class ConversationMeta:
     conversation_id: str = ""
     title: str = ""
     model: str = ""
+    strategy: str = ""
     created_at: str = ""
     updated_at: str = ""
     message_count: int = 0
@@ -48,6 +49,7 @@ class ConversationManager:
                         conversation_id=data.get("conversation_id", ""),
                         title=data.get("title", "未命名对话"),
                         model=data.get("model", ""),
+                        strategy=data.get("strategy", ""),
                         created_at=data.get("created_at", ""),
                         updated_at=data.get("updated_at", ""),
                         message_count=len(data.get("messages", [])),
@@ -66,6 +68,8 @@ class ConversationManager:
         messages: list[dict],
         character_description: str = "",
         story_background: str = "",
+        strategy: str = "",
+        reply_mode: str = "",
     ) -> str:
         """
         保存对话记录到 JSON 文件
@@ -77,6 +81,8 @@ class ConversationManager:
             messages: 完整消息列表（含 system/user/assistant）
             character_description: 角色扮演模式下的角色描述
             story_background: 角色扮演模式下的故事背景
+            strategy: 创建此对话的策略/模式名称
+            reply_mode: 角色扮演模式下的回复方式（character/narrator）
 
         Returns:
             保存的文件路径
@@ -100,6 +106,8 @@ class ConversationManager:
             "conversation_id": conversation_id,
             "title": title,
             "model": model,
+            "strategy": strategy,
+            "reply_mode": reply_mode,
             "created_at": created_at,
             "updated_at": now_str,
             "character_description": character_description,

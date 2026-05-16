@@ -42,7 +42,7 @@ python gui_main.py
 
 ## 项目概述
 
-一个针对 **DeepSeek API**（兼容 OpenAI 的 SDK）的多功能聊天客户端。通过**策略模式**支持三种聊天模式，使用 **PyQt6 GUI**（`gui_main.py`）。
+一个针对 **DeepSeek API**（兼容 OpenAI 的 SDK）的多功能聊天客户端。通过**策略模式**支持多种聊天模式，使用 **PyQt6 GUI**（`gui_main.py`）。
 
 ## 架构
 
@@ -59,6 +59,7 @@ python gui_main.py
 - **`role_play_strategy.py`** — 角色描述、故事背景、回复模式（第一人称角色 vs 第三人称叙述者）。
 - **`novel_strategy.py`** — 小说标题、章节标题、主角简介、世界观设定、写作要求。章节模式标志可启用自动章节生成工作流。
 - **`code_assistant_strategy.py`** — 带有固定系统提示词的简单模式，推荐低 temperature（0.1）和 deepseek-reasoner 模型。
+- **`continuation_strategy.py`** — 续写小说模式，基于外部文档续写后续章节，复用 `NovelManager` 保管章节。
 
 ### 工具 (`utils/`)
 - **`prompts.py`** (`Prompts`) — 集中管理系统提示词常量。要添加新模式？在此添加常量。
@@ -67,7 +68,7 @@ python gui_main.py
 - 从 `.env` 文件中读取 `DEEPSEEK_API_KEY` 和 `DEEPSEEK_BASE_URL`（通过 python-dotenv）。GUI 支持运行时输入 API 密钥。
 
 ### UI (`ui/main_window.py`)
-- ~1900 行的 PyQt6 GUI，包含：深色主题、QWebEngineView Markdown 渲染、通过后台线程 + pyqtSignal 实现流式输出、左侧控制面板（模式/模型/参数）、角色扮演面板（角色/背景/回复模式）、小说面板（书架、章节生成、版本管理对话框）、对话历史保存/加载。
+- ~1900+ 行的 PyQt6 GUI，包含：深色主题、QWebEngineView Markdown 渲染、通过后台线程 + pyqtSignal 实现流式输出、左侧控制面板（模式/模型/参数）、角色扮演面板（角色/背景/回复模式）、小说面板（书架、章节生成、版本管理对话框）、续写小说面板（文件选择、续写参数）、对话历史保存/加载。
 
 ## 关键设计决策
 

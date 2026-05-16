@@ -8,7 +8,9 @@
       "Bash(git diff *)",
       "Bash(git status *)",
       "Bash(python -c \"import py_compile; py_compile.compile\\('ui/main_window.py', doraise=True\\); print\\('Syntax OK'\\)\")",
-      "Bash(python *)"
+      "Bash(python *)",
+      "Bash(pip show *)",
+      "WebSearch"
     ]
   }
 }

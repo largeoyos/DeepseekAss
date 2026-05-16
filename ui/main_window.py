@@ -50,6 +50,13 @@ from strategies import (
     CodeAssistantStrategy,
     ContinuationStrategy,
 )
+from utils.export import (
+    export_chapter,
+    export_book,
+    export_conversation,
+    EXPORT_FORMATS,
+    FORMAT_LABELS,
+)
 
 
 # ========== 自定义输入框（拦截 Ctrl+Enter） ==========
@@ -334,6 +341,8 @@ class DeepSeekChatGUI(QMainWindow):
         # 累积的文本（用于流式追加）
         self._assistant_text_buffer: list[str] = []
         self._streaming = False
+        # 正在加载对话（阻止模式切换时覆盖显示）
+        self._loading_conversation = False
 
         # 获取并验证 API Key（失败可重试）
         api_key = self._get_api_key_with_retry()
@@ -586,7 +595,7 @@ class DeepSeekChatGUI(QMainWindow):
         history_layout.setSpacing(4)
 
         save_hist_btn = QPushButton("💾 保存当前对话")
-        save_hist_btn.clicked.connect(self._on_save_conversation)
+        save_hist_btn.clicked.connect(self. _on_save_conversation)
         history_layout.addWidget(save_hist_btn)
 
         hist_list_row = QHBoxLayout()
@@ -612,6 +621,17 @@ class DeepSeekChatGUI(QMainWindow):
         self._history_status_label = QLabel("暂无已保存对话")
         self._history_status_label.setWordWrap(True)
         history_layout.addWidget(self._history_status_label)
+
+        # ── 导出对话 ──
+        hist_export_row = QHBoxLayout()
+        self._hist_export_format_combo = QComboBox()
+        for fmt in EXPORT_FORMATS:
+            self._hist_export_format_combo.addItem(FORMAT_LABELS[fmt], userData=fmt)
+        hist_export_row.addWidget(self._hist_export_format_combo, stretch=1)
+        export_hist_btn = QPushButton("📤 导出对话")
+        export_hist_btn.clicked.connect(self._on_export_conversation)
+        hist_export_row.addWidget(export_hist_btn)
+        history_layout.addLayout(hist_export_row)
 
         layout.addWidget(self._history_group)
 
@@ -867,6 +887,25 @@ class DeepSeekChatGUI(QMainWindow):
         manage_chapters_btn.clicked.connect(self._on_manage_chapters)
         layout.addWidget(manage_chapters_btn)
 
+        # ── 导出按钮 ──
+        export_label = QLabel("导出")
+        layout.addWidget(export_label)
+        export_format_row = QHBoxLayout()
+        self._export_format_combo = QComboBox()
+        for fmt in EXPORT_FORMATS:
+            self._export_format_combo.addItem(FORMAT_LABELS[fmt], userData=fmt)
+        export_format_row.addWidget(self._export_format_combo, stretch=1)
+        layout.addLayout(export_format_row)
+
+        export_btn_row = QHBoxLayout()
+        export_chapter_btn = QPushButton("📄 导出当前章节")
+        export_chapter_btn.clicked.connect(self._on_export_chapter)
+        export_btn_row.addWidget(export_chapter_btn)
+        export_book_btn = QPushButton("📚 导出全书")
+        export_book_btn.clicked.connect(self._on_export_book)
+        export_btn_row.addWidget(export_book_btn)
+        layout.addLayout(export_btn_row)
+
         return panel
 
     def _build_continuation_panel(self) -> QGroupBox:
@@ -968,6 +1007,25 @@ class DeepSeekChatGUI(QMainWindow):
         """)
         continue_btn.clicked.connect(self._on_start_continuation)
         layout.addWidget(continue_btn)
+
+        # ── 导出按钮（复用同一书架） ──
+        export_label = QLabel("导出")
+        layout.addWidget(export_label)
+        export_fmt_row = QHBoxLayout()
+        self._cont_export_format_combo = QComboBox()
+        for fmt in EXPORT_FORMATS:
+            self._cont_export_format_combo.addItem(FORMAT_LABELS[fmt], userData=fmt)
+        export_fmt_row.addWidget(self._cont_export_format_combo, stretch=1)
+        layout.addLayout(export_fmt_row)
+
+        export_btn_row = QHBoxLayout()
+        cont_export_chapter_btn = QPushButton("📄 导出当前章节")
+        cont_export_chapter_btn.clicked.connect(self._on_export_cont_chapter)
+        export_btn_row.addWidget(cont_export_chapter_btn)
+        cont_export_book_btn = QPushButton("📚 导出全书")
+        cont_export_book_btn.clicked.connect(self._on_export_cont_book)
+        export_btn_row.addWidget(cont_export_book_btn)
+        layout.addLayout(export_btn_row)
 
         return panel
 
@@ -1304,6 +1362,10 @@ class DeepSeekChatGUI(QMainWindow):
 
         strategy = strategy_cls()
         self._client.switch_strategy(strategy)
+        # 用户主动切换模式时清除当前对话ID，避免覆盖其他模式的保存
+        if not self._loading_conversation:
+            self._current_conversation_id = None
+            self._current_conversation_title = ""
         self._model_combo.setCurrentText(self._client.model)
         self._sync_sliders_to_client()
         self._update_status()
@@ -1319,8 +1381,9 @@ class DeepSeekChatGUI(QMainWindow):
         if is_novel:
             self._refresh_novel_bookshelf()
             self._on_book_selected(self._bookshelf_combo.currentText())
-            self._display.setHtml(md_to_html(strategy.get_welcome_message()))
-        else:
+            if not self._loading_conversation:
+                self._display.setHtml(md_to_html(strategy.get_welcome_message()))
+        elif not self._loading_conversation:
             self._display.setHtml(md_to_html(strategy.get_welcome_message()))
 
     def _on_model_changed(self, model: str) -> None:
@@ -2426,6 +2489,121 @@ class DeepSeekChatGUI(QMainWindow):
         dialog = ChapterManagerDialog(self, self._novel_manager, title, self._client)
         dialog.exec()
 
+    # ========== 📤 导出功能 ==========
+
+    def _get_export_format(self, combo: QComboBox) -> str:
+        return combo.currentData() or "txt"
+
+    def _prompt_save_path(self, default_name: str, fmt: str) -> str | None:
+        """弹出保存文件对话框，返回选择的路径或 None"""
+        fmt_map = {"txt": "纯文本文件 (*.txt)", "md": "Markdown 文件 (*.md)", "html": "HTML 文件 (*.html)", "docx": "Word 文档 (*.docx)"}
+        filter_str = fmt_map.get(fmt, f"*.{fmt}")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "导出文件", default_name, filter_str
+        )
+        return path if path else None
+
+    def _on_export_chapter(self) -> None:
+        """导出当前小说的当前章节"""
+        title = self._bookshelf_combo.currentText().strip()
+        if not title:
+            QMessageBox.warning(self, "提示", "请先选择一本小说。")
+            return
+        chapters = self._novel_manager.list_chapters(title)
+        if not chapters:
+            QMessageBox.warning(self, "提示", f"小说「{title}」没有任何章节。")
+            return
+        # 找最新一章
+        ch = chapters[-1]
+        fmt = self._get_export_format(self._export_format_combo)
+        default_name = f"第{ch['num']}章_{ch['title']}.{fmt}"
+        output_path = self._prompt_save_path(default_name, fmt)
+        if not output_path:
+            return
+        try:
+            result = export_chapter(self._novel_manager, title, ch["num"], fmt, output_path)
+            QMessageBox.information(self, "导出成功", f"章节已导出到：\n{result}")
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", f"导出出错：{e}")
+
+    def _on_export_book(self) -> None:
+        """导出整本小说"""
+        title = self._bookshelf_combo.currentText().strip()
+        if not title:
+            QMessageBox.warning(self, "提示", "请先选择一本小说。")
+            return
+        fmt = self._get_export_format(self._export_format_combo)
+        default_name = f"{title}_全集.{fmt}"
+        output_path = self._prompt_save_path(default_name, fmt)
+        if not output_path:
+            return
+        try:
+            result = export_book(self._novel_manager, title, fmt, output_path)
+            QMessageBox.information(self, "导出成功", f"全书已导出到：\n{result}")
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", f"导出出错：{e}")
+
+    def _on_export_cont_chapter(self) -> None:
+        """续写面板：导出当前章节"""
+        title = self._bookshelf_combo.currentText().strip()
+        if not title:
+            QMessageBox.warning(self, "提示", "请先选择一本小说。")
+            return
+        chapters = self._novel_manager.list_chapters(title)
+        if not chapters:
+            QMessageBox.warning(self, "提示", f"小说「{title}」没有任何章节。")
+            return
+        ch = chapters[-1]
+        fmt = self._get_export_format(self._cont_export_format_combo)
+        default_name = f"第{ch['num']}章_{ch['title']}.{fmt}"
+        output_path = self._prompt_save_path(default_name, fmt)
+        if not output_path:
+            return
+        try:
+            result = export_chapter(self._novel_manager, title, ch["num"], fmt, output_path)
+            QMessageBox.information(self, "导出成功", f"章节已导出到：\n{result}")
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", f"导出出错：{e}")
+
+    def _on_export_cont_book(self) -> None:
+        """续写面板：导出整本小说"""
+        title = self._bookshelf_combo.currentText().strip()
+        if not title:
+            QMessageBox.warning(self, "提示", "请先选择一本小说。")
+            return
+        fmt = self._get_export_format(self._cont_export_format_combo)
+        default_name = f"{title}_全集.{fmt}"
+        output_path = self._prompt_save_path(default_name, fmt)
+        if not output_path:
+            return
+        try:
+            result = export_book(self._novel_manager, title, fmt, output_path)
+            QMessageBox.information(self, "导出成功", f"全书已导出到：\n{result}")
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", f"导出出错：{e}")
+
+    def _on_export_conversation(self) -> None:
+        """导出选中的对话历史"""
+        conversation_id = None
+        idx = self._history_combo.currentIndex()
+        if idx >= 0:
+            conversation_id = self._history_combo.itemData(idx)
+        if not conversation_id:
+            QMessageBox.warning(self, "提示", "请先选择一个已保存的对话。")
+            return
+
+        title_text = self._history_combo.itemText(idx)
+        fmt = self._get_export_format(self._hist_export_format_combo)
+        default_name = f"{title_text.split('(')[0].strip()}.{fmt}"
+        output_path = self._prompt_save_path(default_name, fmt)
+        if not output_path:
+            return
+        try:
+            result = export_conversation(self._conversation_manager, conversation_id, fmt, output_path)
+            QMessageBox.information(self, "导出成功", f"对话已导出到：\n{result}")
+        except Exception as e:
+            QMessageBox.critical(self, "导出失败", f"导出出错：{e}")
+
     # ========== 💬 对话历史管理 ==========
 
     def _refresh_history_list(self) -> None:
@@ -2436,7 +2614,8 @@ class DeepSeekChatGUI(QMainWindow):
         self._history_combo.clear()
         if conversations:
             for c in conversations:
-                display = f"{c.title} ({c.message_count}条消息, {c.updated_at[:16]})"
+                mode_tag = f"[{c.strategy}] " if c.strategy else ""
+                display = f"{mode_tag}{c.title} ({c.message_count}条, {c.updated_at[:16]})"
                 self._history_combo.addItem(display, userData=c.conversation_id)
             # 恢复之前选中项
             for i in range(self._history_combo.count()):
@@ -2490,12 +2669,17 @@ class DeepSeekChatGUI(QMainWindow):
             # 新建对话
             conversation_id = self._conversation_manager.generate_id(title)
 
-        # 如果是角色扮演模式，附带保存角色描述和故事背景
+        # 保存当前策略名称，用于跨模式加载时自动切换
+        strategy_name = self._client.strategy.get_name()
+
+        # 保存策略专属设置
         char_desc = ""
         story_bg = ""
+        reply_mode = ""
         if isinstance(self._client.strategy, RolePlayStrategy):
             char_desc = self._client.strategy.character_description
             story_bg = self._client.strategy.story_background
+            reply_mode = self._client.strategy.reply_mode
 
         file_path = self._conversation_manager.save_conversation(
             conversation_id=conversation_id,
@@ -2504,6 +2688,8 @@ class DeepSeekChatGUI(QMainWindow):
             messages=messages,
             character_description=char_desc,
             story_background=story_bg,
+            strategy=strategy_name,
+            reply_mode=reply_mode,
         )
         self._current_conversation_id = conversation_id
         self._current_conversation_title = title
@@ -2538,15 +2724,33 @@ class DeepSeekChatGUI(QMainWindow):
         # 只取最近 50 条消息（如果超过），保留 system prompt 为首条
         messages = all_messages[-50:] if len(all_messages) > 50 else all_messages
 
-        # 导入消息到客户端
+        # ── 自动切换策略/模式 ──
+        saved_strategy = record.get("strategy", "") or ""
+        current_strategy = self._client.strategy.get_name()
+        # 旧文件兼容：无 strategy 字段但存在角色数据时，推断为角色扮演
+        if not saved_strategy:
+            saved_char_desc = record.get("character_description", "") or ""
+            saved_story_bg = record.get("story_background", "") or ""
+            if saved_char_desc or saved_story_bg:
+                saved_strategy = "角色扮演"
+        if saved_strategy and saved_strategy != current_strategy:
+            # 切换到对话保存时的模式，避免策略特定设置丢失
+            strategy_cls = STRATEGY_OPTIONS.get(saved_strategy)
+            if strategy_cls:
+                self._loading_conversation = True
+                self._mode_combo.setCurrentText(saved_strategy)
+                self._loading_conversation = False
+
+        # 导入消息到客户端（switch_strategy 已清空对话，需重新导入）
         self._client.import_messages(messages)
         self._current_conversation_id = conversation_id
         self._current_conversation_title = record.get("title", "")
 
-        # 恢复角色扮演的角色描述和故事背景
+        # 恢复角色扮演的角色描述、故事背景和回复方式
         saved_char_desc = record.get("character_description", "") or ""
         saved_story_bg = record.get("story_background", "") or ""
-        if saved_char_desc or saved_story_bg:
+        saved_reply_mode = record.get("reply_mode", "") or ""
+        if saved_char_desc or saved_story_bg or saved_reply_mode:
             self._role_char_edit.blockSignals(True)
             self._role_bg_edit.blockSignals(True)
             self._role_char_edit.setPlainText(saved_char_desc)
@@ -2556,6 +2760,11 @@ class DeepSeekChatGUI(QMainWindow):
             if isinstance(self._client.strategy, RolePlayStrategy):
                 self._client.strategy.character_description = saved_char_desc
                 self._client.strategy.story_background = saved_story_bg
+                if saved_reply_mode:
+                    self._client.strategy.reply_mode = saved_reply_mode
+                    is_narrator = saved_reply_mode == RolePlayStrategy.REPLY_MODE_NARRATOR
+                    self._radio_narrator.setChecked(is_narrator)
+                    self._radio_character.setChecked(not is_narrator)
                 self._client.update_system_prompt()
 
         # 同步模型设置
