@@ -450,6 +450,25 @@ def extract_world_bible_from_segments(
         except Exception:
             pass  # 合成失败不影响已有提取结果
 
+    # === 按信息量重算重要等级（取代 AI 单段的主观判断） ===
+    for ch in merged.get("characters", []):
+        detail_count = len(ch.get("key_details", [])) + len(ch.get("key_dialogues", []))
+        if detail_count >= 4:
+            ch["importance"] = "major"
+        elif detail_count >= 1:
+            ch["importance"] = "normal"
+        else:
+            ch["importance"] = "minor"
+
+    for pt in merged.get("plot_threads", []):
+        detail_count = len(pt.get("key_details", [])) + len(pt.get("foreshadowing_related", []))
+        if detail_count >= 4:
+            pt["importance"] = "major"
+        elif detail_count >= 1:
+            pt["importance"] = "normal"
+        else:
+            pt["importance"] = "minor"
+
     return merged
 
 

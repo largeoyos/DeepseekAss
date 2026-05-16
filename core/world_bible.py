@@ -120,7 +120,7 @@ def dict_to_world_bible(data: dict) -> WorldBible:
 # ========== 格式化输出 ==========
 
 
-def format_world_bible_for_prompt(bible: WorldBible, max_entries: int = 5) -> str:
+def format_world_bible_for_prompt(bible: WorldBible, max_entries: int = 10) -> str:
     """
     将世界书格式化为紧凑文本，供注入到生成 prompt 中使用
     限制条目数量避免超出上下文窗口
@@ -129,11 +129,24 @@ def format_world_bible_for_prompt(bible: WorldBible, max_entries: int = 5) -> st
 
     if bible.characters:
         parts.append("【已登场的角色】")
-        for ch in bible.characters[:max_entries]:
+        # 按重要性排序：major 优先，normal 其次，minor 最后
+        sorted_chars = sorted(
+            bible.characters,
+            key=lambda c: {"major": 0, "normal": 1, "minor": 2}.get(c.importance, 1),
+        )
+        for ch in sorted_chars[:max_entries]:
+            line = f"- {ch.name}：{ch.traits[:100]}"
+            if ch.motivation:
+                line += f" | 动机：{ch.motivation[:60]}"
+            if ch.arc:
+                line += f" | 弧光：{ch.arc[:60]}"
             rel_str = "; ".join(f"{r.type}({r.target})" for r in ch.relationships[:3])
-            line = f"- {ch.name}：{ch.traits[:100]}" + (f" 关系：{rel_str}" if rel_str else "") + (f" [{ch.status}]" if ch.status != "alive" else "")
+            if rel_str:
+                line += f" | 关系：{rel_str}"
+            if ch.status != "alive":
+                line += f" [{ch.status}]"
             if ch.key_details:
-                line += " | 关键细节：" + " | ".join(ch.key_details[:2])
+                line += " | " + " | ".join(ch.key_details[:2])
             if ch.key_dialogues:
                 line += " | 台词：" + " | ".join(ch.key_dialogues[:1])
             parts.append(line)
@@ -144,14 +157,18 @@ def format_world_bible_for_prompt(bible: WorldBible, max_entries: int = 5) -> st
         parts.append("\n【重要地点】")
         for loc in bible.locations[:max_entries]:
             line = f"- {loc.name}：{loc.description[:80]}"
+            if loc.atmosphere:
+                line += f"（{loc.atmosphere[:40]}）"
+            if loc.significance:
+                line += f" | 意义：{loc.significance[:60]}"
             if loc.key_details:
-                line += " | 描写：" + " | ".join(loc.key_details[:1])
+                line += " | " + " | ".join(loc.key_details[:1])
             parts.append(line)
 
     if bible.rules:
         parts.append("\n【世界观规则】")
         for rule in bible.rules[:max_entries]:
-            parts.append(f"- {rule[:120]}")
+            parts.append(f"- {rule[:150]}")
 
     if bible.active_plot_threads:
         active = [p for p in bible.active_plot_threads if p.status == "active"]
@@ -159,26 +176,36 @@ def format_world_bible_for_prompt(bible: WorldBible, max_entries: int = 5) -> st
             parts.append("\n【活跃剧情线】")
             for p in active[:max_entries]:
                 line = f"- {p.name}：{p.description[:100]}"
+                if p.involved_characters:
+                    line += f" | 角色：{', '.join(p.involved_characters[:4])}"
                 if p.foreshadowing_related:
                     line += " | 伏笔：" + " | ".join(p.foreshadowing_related[:1])
                 parts.append(line)
+        # 非活跃剧情线（简略列出）
+        non_active = [p for p in bible.active_plot_threads if p.status != "active"]
+        if non_active:
+            parts.append("\n【待回收剧情线】")
+            for p in non_active[:4]:
+                parts.append(f"- {p.name} [{p.status}]：{p.description[:80]}")
 
     if bible.timeline:
         recent = bible.timeline[-max_entries:]
         parts.append("\n【近期事件】")
         for t in recent:
             line = f"- 第{t.chapter}章：{t.event[:80]}"
+            if t.significance:
+                line += f"（{t.significance[:40]}）"
             if t.foreshadowing_hints:
                 line += " 🔮" + " | ".join(t.foreshadowing_hints[:1])
             parts.append(line)
 
-    # 全局设定与伏笔（简略展示 2-3 条）
+    # 全局设定与伏笔（简略展示 3-4 条）
     extras = []
     if bible.key_worldbuilding_passages:
-        for item in bible.key_worldbuilding_passages[:2]:
+        for item in bible.key_worldbuilding_passages[:3]:
             extras.append(f"- 设定·{item.get('topic', '')}：{item.get('passage', '')[:100]}")
     if bible.global_foreshadowing:
-        for item in bible.global_foreshadowing[:2]:
+        for item in bible.global_foreshadowing[:3]:
             extras.append(f"- 伏笔·{item.get('hint', '')[:60]}")
     if extras:
         parts.append("\n【关键设定与伏笔】")
