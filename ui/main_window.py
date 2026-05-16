@@ -2989,9 +2989,9 @@ class DeepSeekChatGUI(QMainWindow):
 
         # 自动推断小说标题（从文件名）
         title = self._get_current_book_title()
+        source_file = self._continue_file_path.text().strip()
+        source_folder = self._continue_folder_path.text().strip()
         if not title:
-            source_file = self._continue_file_path.text().strip()
-            source_folder = self._continue_folder_path.text().strip()
             if source_file:
                 title = os.path.splitext(os.path.basename(source_file))[0]
             elif source_folder:
