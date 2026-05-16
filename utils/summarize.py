@@ -34,9 +34,16 @@ SEGMENT_PROMPT = """你是一位文本分析专家。请分析以下文本，根
 {text}"""
 
 
-EXTRACT_PROMPT = """你是一个专业的小说分析工具。请分析以下文本片段，提取其中包含的结构化世界观信息。
+EXTRACT_PROMPT = """你是一个小说信息提取器。请严格根据以下文本内容，提取其中涉及的角色、地点、世界观规则、事件和剧情线索。
 
 文本标题：{title}
+
+约束：
+- 严格基于原文，不要添加社会学分析、心理描写分析或道德评判
+- 如果原文未明确说明，不要臆测角色动机或社会背景
+- 只陈述事实，控制在字段限定的字数内
+
+{dedup_context}
 
 文本内容：
 {content}
@@ -45,7 +52,7 @@ EXTRACT_PROMPT = """你是一个专业的小说分析工具。请分析以下文
 
 {{
   "characters": [
-    {{"name": "角色名", "aliases": ["别名"], "traits": "性格/外貌/能力描述（50字内）", "status": "alive"}}
+    {{"name": "角色名", "aliases": ["别名"], "traits": "性格/外貌/能力描述（50字内）", "status": "alive/dead/missing/transformed", "importance": "major/normal/minor"}}
   ],
   "locations": [
     {{"name": "地点名", "description": "地点描述（30字内）", "significance": "重要性"}}
@@ -55,17 +62,20 @@ EXTRACT_PROMPT = """你是一个专业的小说分析工具。请分析以下文
     {{"event": "核心事件（30字内）", "significance": "意义"}}
   ],
   "plot_threads": [
-    {{"name": "剧情线索名", "status": "active/resolved/dormant", "involved_characters": ["角色名"], "description": "描述（30字内）"}}
-  ],
-  "key_settings": "这段内容反映的核心设定要点（50字内）",
-  "character_focus": "这段内容涉及的关键角色特征（50字内）"
-}}
+    {{"name": "剧情线索名", "status": "active/resolved/dormant", "importance": "major/normal/minor", "involved_characters": ["角色名"], "description": "描述（30字内）"}}
+  ]
+}
 
 如果没有某项内容，用空数组 []。确保 JSON 合法。"""
 
 
-BACKGROUND_PROMPT = """你是一位资深小说编辑。以下是从一份小说设定文档中提取出的结构化世界观信息。
-请根据这些信息，撰写两段用于指导小说创作的核心设定文本。
+BACKGROUND_PROMPT = """你是一位小说设定整理助手。以下是从一份小说设定文档中提取出的结构化世界观信息。
+请根据这些信息，生成三份严格基于已有设定的参考文本。
+
+约束：
+- 严格基于已有设定，不要自由发挥或添加原文没有的内容
+- 不要做社会学分析或文学评论
+- 只做信息整合，不做创造性扩展
 
 角色列表：
 {characters}
@@ -168,8 +178,6 @@ def extract_world_bible_from_segments(
             "rules": [...],
             "timeline": [...],
             "plot_threads": [...],
-            "key_settings_hints": [...],   # 每段的核心设定要点
-            "character_focus_hints": [...], # 每段的角色特征要点
         }
     """
     merged = {
@@ -178,8 +186,6 @@ def extract_world_bible_from_segments(
         "rules": [],
         "timeline": [],
         "plot_threads": [],
-        "key_settings_hints": [],
-        "character_focus_hints": [],
     }
     seen_names = {"characters": set(), "locations": set(), "rules": set(), "plot_threads": set()}
     # 用 chapter_num=1 标记所有条目都来自初始导入（区别于后续章节生成的条目）
@@ -192,7 +198,18 @@ def extract_world_bible_from_segments(
         # 控制每段送审长度
         content_sample = content[:4000]
 
-        prompt = EXTRACT_PROMPT.format(title=title, content=content_sample)
+        # 去重上下文：告知 LLM 已提取的角色，避免同名不同写
+        known_chars = list(seen_names["characters"])
+        if known_chars:
+            dedup_context = (
+                "已有角色列表：" + "、".join(known_chars) + "\n"
+                "如果当前文本中的某个角色与已有角色是同一人（如别名、代称），\n"
+                "请使用已有名称，并在 aliases 中标注新出现的称呼。\n"
+            )
+        else:
+            dedup_context = ""
+
+        prompt = EXTRACT_PROMPT.format(title=title, content=content_sample, dedup_context=dedup_context)
         try:
             raw = _call_api(client, [{"role": "user", "content": prompt}], model, max_tokens=4096, temperature=0.1)
             data = _parse_json(raw)
@@ -210,6 +227,7 @@ def extract_world_bible_from_segments(
                 "aliases": ch.get("aliases", []),
                 "traits": ch.get("traits", "")[:200],
                 "status": ch.get("status", "alive"),
+                "importance": ch.get("importance", "normal"),
                 "first_appearance": chapter_marker,
             })
 
@@ -252,15 +270,10 @@ def extract_world_bible_from_segments(
             merged["plot_threads"].append({
                 "name": name,
                 "status": pt.get("status", "active"),
+                "importance": pt.get("importance", "normal"),
                 "involved_characters": pt.get("involved_characters", []),
                 "description": pt.get("description", "")[:200],
             })
-
-        # 收集设定要点
-        if data.get("key_settings"):
-            merged["key_settings_hints"].append(data["key_settings"])
-        if data.get("character_focus"):
-            merged["character_focus_hints"].append(data["character_focus"])
 
     return merged
 

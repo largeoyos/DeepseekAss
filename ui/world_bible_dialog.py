@@ -88,12 +88,14 @@ class WorldBibleDialog(QDialog):
         return edit
 
     def _format_characters(self) -> str:
-        lines = ["# 角色列表", "格式：角色名 | 性格/外貌/能力 | 状态 | 首登场章\n"]
+        lines = ["# 角色列表", "格式：角色名 | 重要性 | 性格/外貌/能力 | 状态 | 首登场章\n"]
         for c in self._bible.characters:
             rels = "; ".join(f"{r.type}({r.target})" for r in c.relationships)
             lines.append(f"【{c.name}】")
             if c.aliases:
                 lines.append(f"  别名：{'、'.join(c.aliases)}")
+            imp_map = {"major": "重要", "normal": "普通", "minor": "次要"}
+            lines.append(f"  重要性：{imp_map.get(c.importance, c.importance)}")
             lines.append(f"  描述：{c.traits}")
             lines.append(f"  状态：{c.status}")
             if rels:
@@ -122,7 +124,9 @@ class WorldBibleDialog(QDialog):
         lines = ["# 剧情线\n"]
         for p in self._bible.active_plot_threads:
             chars = "、".join(p.involved_characters) if p.involved_characters else "无"
+            imp_map = {"major": "重要", "normal": "普通", "minor": "次要"}
             lines.append(f"【{p.name}】（{p.status}）")
+            lines.append(f"  重要性：{imp_map.get(p.importance, p.importance)}")
             lines.append(f"  描述：{p.description}")
             lines.append(f"  涉及角色：{chars}\n")
         return "\n".join(lines) if self._bible.active_plot_threads else "(尚未提取到剧情线)"
@@ -138,7 +142,11 @@ class WorldBibleDialog(QDialog):
                 if current and current.get("name"):
                     characters.append(CharacterEntry(**current))
                 name = line.strip("【】").strip()
-                current = {"name": name, "aliases": [], "traits": "", "relationships": [], "status": "alive", "first_appearance": 0, "notes": ""}
+                current = {"name": name, "aliases": [], "traits": "", "relationships": [], "status": "alive", "importance": "normal", "first_appearance": 0, "notes": ""}
+            elif line.startswith("重要性：") and current:
+                imp_raw = line[4:].strip()
+                imp_map = {"重要": "major", "普通": "normal", "次要": "minor"}
+                current["importance"] = imp_map.get(imp_raw, imp_raw)
             elif line.startswith("描述：") and current:
                 current["traits"] = line[3:].strip()
             elif line.startswith("状态：") and current:

@@ -27,6 +27,7 @@ class CharacterEntry:
     traits: str = ""         # 性格、外貌、能力
     relationships: list[Relationship] = field(default_factory=list)
     status: str = "alive"    # alive/dead/missing/transformed
+    importance: str = "normal"  # major / normal / minor
     first_appearance: int = 0
     notes: str = ""
 
@@ -50,6 +51,7 @@ class TimelineEntry:
 class PlotThread:
     name: str = ""
     status: str = "active"   # active/resolved/dormant
+    importance: str = "normal"  # major / normal / minor
     involved_characters: list[str] = field(default_factory=list)
     description: str = ""
 
@@ -142,14 +144,26 @@ def format_world_bible_for_prompt(bible: WorldBible, max_entries: int = 5) -> st
 
 # ========== AI 提取与合并 ==========
 
+_IMPORTANCE_RANK = {"major": 3, "normal": 2, "minor": 1}
 
-EXTRACT_PROMPT = """你是一个专业的小说分析工具。请分析以下章节内容，提取结构化的世界观信息。
+
+def _higher_importance(a: str, b: str) -> str:
+    """返回两者中更高的 importance 等级"""
+    return a if _IMPORTANCE_RANK.get(a, 0) >= _IMPORTANCE_RANK.get(b, 0) else b
+
+
+EXTRACT_PROMPT = """你是一个小说信息提取器。请严格根据以下章节内容，提取结构化的世界观信息。
+
+约束：
+- 严格基于原文，不要添加社会学分析、心理描写分析或道德评判
+- 如果原文未明确说明，不要臆测角色动机或社会背景
+- 只陈述事实，控制在字段限定的字数内
 
 请严格按照以下 JSON 格式输出，不包含任何其他文字：
 
 {
   "characters": [
-    {"name": "角色名", "aliases": ["别名"], "traits": "性格/外貌/能力描述（50字内）", "status": "alive/dead/missing/transformed"}
+    {"name": "角色名", "aliases": ["别名"], "traits": "性格/外貌/能力描述（50字内）", "status": "alive/dead/missing/transformed", "importance": "major/normal/minor"}
   ],
   "locations": [
     {"name": "地点名", "description": "地点描述（30字内）", "significance": "重要性"}
@@ -159,7 +173,7 @@ EXTRACT_PROMPT = """你是一个专业的小说分析工具。请分析以下章
     {"event": "核心事件（30字内）", "significance": "意义"}
   ],
   "plot_threads": [
-    {"name": "剧情线索名", "status": "active/resolved/dormant", "involved_characters": ["角色名"], "description": "描述（30字内）"}
+    {"name": "剧情线索名", "status": "active/resolved/dormant", "importance": "major/normal/minor", "involved_characters": ["角色名"], "description": "描述（30字内）"}
   ]
 }
 
@@ -236,6 +250,9 @@ def extract_and_merge_world_bible(
                         for alias in ch_data["aliases"]:
                             if alias and alias not in existing.aliases:
                                 existing.aliases.append(alias)
+                    # importance 取最高等级
+                    new_imp = ch_data.get("importance", "normal")
+                    existing.importance = _higher_importance(existing.importance, new_imp)
                     break
         else:
             entry = CharacterEntry(
@@ -243,6 +260,7 @@ def extract_and_merge_world_bible(
                 aliases=ch_data.get("aliases", []),
                 traits=ch_data.get("traits", "")[:200],
                 status=ch_data.get("status", "alive"),
+                importance=ch_data.get("importance", "normal"),
                 first_appearance=chapter_num,
             )
             bible.characters.append(entry)
@@ -295,11 +313,14 @@ def extract_and_merge_world_bible(
                     for char in pt_data.get("involved_characters", []):
                         if char and char not in existing.involved_characters:
                             existing.involved_characters.append(char)
+                    new_imp = pt_data.get("importance", "normal")
+                    existing.importance = _higher_importance(existing.importance, new_imp)
                     break
         else:
             bible.active_plot_threads.append(PlotThread(
                 name=name,
                 status=pt_data.get("status", "active"),
+                importance=pt_data.get("importance", "normal"),
                 involved_characters=pt_data.get("involved_characters", []),
                 description=pt_data.get("description", "")[:200],
             ))
