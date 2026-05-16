@@ -233,6 +233,144 @@ class WorldBibleDialog(QDialog):
             characters.append(CharacterEntry(**current))
         return characters
 
+    def _parse_locations_from_text(self, text: str) -> list:
+        """从编辑后的文本重新解析地点列表"""
+        from core.world_bible import LocationEntry
+        locations = []
+        current = {}
+        for line in text.split("\n"):
+            line = line.strip()
+            if line.startswith("【") and line.endswith("】"):
+                if current and current.get("name"):
+                    locations.append(LocationEntry(**current))
+                current = {"name": line.strip("【】").strip(), "description": "", "significance": "", "first_appearance": 0, "key_details": [], "atmosphere": ""}
+            elif line.startswith("描述：") and current:
+                current["description"] = line[3:].strip()
+            elif line.startswith("重要度：") and current:
+                current["significance"] = line[4:].strip()
+            elif line.startswith("氛围：") and current:
+                current["atmosphere"] = line[3:].strip()
+            elif line.startswith("📌 关键描写：") and current:
+                current.setdefault("key_details", []).append(line[7:].strip())
+            elif line.startswith("首登场：") and current:
+                try:
+                    current["first_appearance"] = int(''.join(filter(str.isdigit, line[4:])))
+                except ValueError:
+                    pass
+        if current and current.get("name"):
+            locations.append(LocationEntry(**current))
+        return locations
+
+    def _parse_timeline_from_text(self, text: str) -> list:
+        """从编辑后的文本重新解析时间线"""
+        from core.world_bible import TimelineEntry
+        timeline = []
+        current = {}
+        for line in text.split("\n"):
+            line = line.strip()
+            if line.startswith("- 第") and "章：" in line:
+                if current and current.get("event"):
+                    timeline.append(TimelineEntry(**current))
+                rest = line[1:].strip()
+                try:
+                    ch_part = rest.split("章")[0].replace("第", "").strip()
+                    chapter = int(ch_part)
+                except ValueError:
+                    chapter = 0
+                after_ch = "章：".join(rest.split("章：")[1:]) if "章：" in rest else ""
+                if "(" in after_ch and after_ch.endswith(")"):
+                    event = after_ch[:after_ch.rindex("(")].strip()
+                    significance = after_ch[after_ch.rindex("(")+1:-1].strip()
+                else:
+                    event = after_ch.strip()
+                    significance = ""
+                current = {"chapter": chapter, "event": event, "significance": significance, "key_passages": [], "foreshadowing_hints": []}
+            elif line.startswith("📄 原文段落：") and current:
+                current.setdefault("key_passages", []).append(line[7:].strip())
+            elif line.startswith("🔮 伏笔：") and current:
+                current.setdefault("foreshadowing_hints", []).append(line[5:].strip())
+        if current and current.get("event"):
+            timeline.append(TimelineEntry(**current))
+        return timeline
+
+    def _parse_plot_threads_from_text(self, text: str) -> list:
+        """从编辑后的文本重新解析剧情线"""
+        from core.world_bible import PlotThread
+        threads = []
+        current = {}
+        for line in text.split("\n"):
+            line = line.strip()
+            if line.startswith("【") and "）" in line and "】" in line:
+                if current and current.get("name"):
+                    threads.append(PlotThread(**current))
+                name_end = line.index("】")
+                name = line[1:name_end].strip()
+                status = line[name_end+1:].strip("（）() ").strip()
+                current = {"name": name, "status": status or "active", "importance": "normal", "description": "", "involved_characters": [], "key_details": [], "foreshadowing_related": []}
+            elif line.startswith("重要性：") and current:
+                imp_raw = line[4:].strip()
+                imp_map = {"重要": "major", "普通": "normal", "次要": "minor"}
+                current["importance"] = imp_map.get(imp_raw, imp_raw)
+            elif line.startswith("描述：") and current:
+                current["description"] = line[3:].strip()
+            elif line.startswith("涉及角色：") and current:
+                raw = line[5:].strip()
+                current["involved_characters"] = [c.strip() for c in raw.split("、") if c.strip() and c.strip() != "无"]
+            elif line.startswith("📌 关键细节：") and current:
+                current.setdefault("key_details", []).append(line[7:].strip())
+            elif line.startswith("🔮 关联伏笔：") and current:
+                current.setdefault("foreshadowing_related", []).append(line[7:].strip())
+        if current and current.get("name"):
+            threads.append(PlotThread(**current))
+        return threads
+
+    def _parse_worldbuilding_from_text(self, text: str) -> tuple:
+        """从编辑后的文本重新解析设定与伏笔"""
+        from core.world_bible import WorldBible
+        passages = []
+        foreshadowing = []
+        dialogues = []
+        section = None
+        current_topic = None
+        for line in text.split("\n"):
+            line = line.strip()
+            if line.startswith("## 世界观设定段落"):
+                section = "passages"
+            elif line.startswith("## 全局伏笔"):
+                section = "foreshadowing"
+            elif line.startswith("## 关键对话"):
+                section = "dialogues"
+            elif line.startswith("【") and line.endswith("】") and section == "passages":
+                current_topic = line.strip("【】").strip()
+            elif section == "passages" and current_topic and line and not line.startswith("（第") and not line.startswith("#"):
+                current_passage = line
+            elif section == "passages" and current_topic and line.startswith("（第") and line.endswith("章）"):
+                try:
+                    ch = int(''.join(filter(str.isdigit, line[2:])))
+                except ValueError:
+                    ch = 0
+                passages.append({"topic": current_topic, "passage": current_passage, "chapter": ch})
+                current_topic = None
+            elif section == "foreshadowing" and line.startswith("🔮"):
+                hint_text = line[2:].strip()
+                if "→ 关联：" in hint_text:
+                    parts = hint_text.split("→ 关联：", 1)
+                    foreshadowing.append({"hint": parts[0].strip(), "relates_to": parts[1].strip()})
+                else:
+                    foreshadowing.append({"hint": hint_text, "relates_to": ""})
+            elif section == "dialogues" and line.startswith("💬"):
+                dia_text = line[2:].strip()
+                if "：" in dia_text:
+                    speaker, rest = dia_text.split("：", 1)
+                    if "（" in rest and rest.endswith("）"):
+                        dialogue = rest[:rest.rindex("（")].strip()
+                        context = rest[rest.rindex("（")+1:-1].strip()
+                    else:
+                        dialogue = rest.strip()
+                        context = ""
+                    dialogues.append({"speaker": speaker.strip(), "dialogue": dialogue, "context": context})
+        return passages, foreshadowing, dialogues
+
     def get_bible(self):
         """返回修改后的 WorldBible 对象（在 exec 返回 Accepted 后调用）"""
         return self._bible
@@ -245,10 +383,33 @@ class WorldBibleDialog(QDialog):
             if char_text and "尚未提取到" not in char_text:
                 self._bible.characters = self._parse_characters_from_text(char_text)
 
+            # 地点
+            loc_text = self._loc_edit.toPlainText().strip()
+            if loc_text and "尚未提取到" not in loc_text:
+                self._bible.locations = self._parse_locations_from_text(loc_text)
+
             # 规则
             rule_text = self._rule_edit.toPlainText().strip()
             if rule_text and "尚未提取到" not in rule_text:
                 self._bible.rules = [r.strip() for r in rule_text.split("\n") if r.strip() and not r.startswith("#")]
+
+            # 时间线
+            timeline_text = self._timeline_edit.toPlainText().strip()
+            if timeline_text and "尚未提取到" not in timeline_text:
+                self._bible.timeline = self._parse_timeline_from_text(timeline_text)
+
+            # 剧情线
+            plot_text = self._plot_edit.toPlainText().strip()
+            if plot_text and "尚未提取到" not in plot_text:
+                self._bible.active_plot_threads = self._parse_plot_threads_from_text(plot_text)
+
+            # 设定与伏笔
+            wb_text = self._worldbuilding_edit.toPlainText().strip()
+            if wb_text and "尚未提取到" not in wb_text:
+                passages, foreshadowing, dialogues = self._parse_worldbuilding_from_text(wb_text)
+                self._bible.key_worldbuilding_passages = passages
+                self._bible.global_foreshadowing = foreshadowing
+                self._bible.global_key_dialogues = dialogues
 
             if self._save_callback:
                 self._save_callback(self._bible)

@@ -227,6 +227,8 @@ class DeepSeekChatClient:
 
             full_reply: list[str] = []
             for chunk in stream:
+                if not chunk.choices:
+                    continue
                 delta = chunk.choices[0].delta
                 if delta and delta.content:
                     full_reply.append(delta.content)

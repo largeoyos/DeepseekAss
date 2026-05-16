@@ -83,24 +83,30 @@ class WorldBible:
 # ========== 序列化/反序列化 ==========
 
 
+def _filter_fields(cls, data: dict) -> dict:
+    """过滤 dict 只保留 dataclass 中定义的字段，兼容 schema 变化"""
+    return {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
+
+
 def _from_dict(cls, data: dict):
     """递归反序列化 dataclass"""
     if cls == CharacterEntry:
         rels = [Relationship(**r) for r in data.get("relationships", [])]
-        return CharacterEntry(relationships=rels, **{k: v for k, v in data.items() if k != "relationships"})
+        base = _filter_fields(cls, {k: v for k, v in data.items() if k != "relationships"})
+        return CharacterEntry(relationships=rels, **base)
     if cls == WorldBible:
         return WorldBible(
             characters=[_from_dict(CharacterEntry, c) for c in data.get("characters", [])],
-            locations=[LocationEntry(**l) for l in data.get("locations", [])],
+            locations=[LocationEntry(**_filter_fields(LocationEntry, l)) for l in data.get("locations", [])],
             rules=list(data.get("rules", [])),
-            timeline=[TimelineEntry(**t) for t in data.get("timeline", [])],
-            active_plot_threads=[PlotThread(**p) for p in data.get("active_plot_threads", [])],
+            timeline=[TimelineEntry(**_filter_fields(TimelineEntry, t)) for t in data.get("timeline", [])],
+            active_plot_threads=[PlotThread(**_filter_fields(PlotThread, p)) for p in data.get("active_plot_threads", [])],
             last_updated_chapter=data.get("last_updated_chapter", 0),
             key_worldbuilding_passages=list(data.get("key_worldbuilding_passages", [])),
             global_foreshadowing=list(data.get("global_foreshadowing", [])),
             global_key_dialogues=list(data.get("global_key_dialogues", [])),
         )
-    return cls(**data)
+    return cls(**_filter_fields(cls, data))
 
 
 def world_bible_to_dict(bible: WorldBible) -> dict:
@@ -366,7 +372,9 @@ def extract_and_merge_world_bible(
                     # 关系
                     for r in ch_data.get("relationships", []):
                         if not any(r.get("target") == rel.target for rel in existing.relationships):
-                            existing.relationships.append(Relationship(**r))
+                            # 过滤 LLM 可能输出的额外字段，只保留 Relationship 定义的字段
+                            rel_fields = {k: v for k, v in r.items() if k in Relationship.__dataclass_fields__}
+                            existing.relationships.append(Relationship(**rel_fields))
                     break
         else:
             entry = CharacterEntry(
@@ -382,7 +390,8 @@ def extract_and_merge_world_bible(
                 arc=ch_data.get("arc", "")[:200],
             )
             for r_data in ch_data.get("relationships", []):
-                entry.relationships.append(Relationship(**r_data))
+                rel_fields = {k: v for k, v in r_data.items() if k in Relationship.__dataclass_fields__}
+                entry.relationships.append(Relationship(**rel_fields))
             bible.characters.append(entry)
             existing_names.add(name)
 

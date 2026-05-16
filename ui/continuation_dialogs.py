@@ -10,19 +10,27 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 
-SUGGESTION_PROMPT = """你是一位资深小说编辑。请根据以下故事设定和剧情概要，给出 3-5 个下一章的发展方向建议。
+SUGGESTION_PROMPT = """你是一位资深小说编辑。请根据以下完整世界观设定和剧情进展，为下一章提供 3-5 个发展方向建议。
 
-每个建议需要：
+每个建议包含：
 1. 方向标题（10字以内）
 2. 核心冲突或看点
 3. 大致情节走向（50字以内）
 
-要求：建议有创意且符合已有设定。
+要求：
+- 建议必须有创意，且严格符合已有设定，不引入矛盾
+- 发展方向要与前文情节自然衔接，保持风格和基调一致
+- 聚焦于角色成长、人物关系变化和剧情推进
+- 避免涉及现实政治、社会批判、历史影射等严肃议题
+- 充分利用世界观中的角色、地点和规则来构思
 
-核心设定：
+【完整世界观设定】
+{world}
+
+【核心背景】
 {setting}
 
-剧情概要：
+【剧情进展】
 {plot}
 
 请按以下格式输出（每行一个方向）：
@@ -82,14 +90,103 @@ def analyze_source_text(client, source_text: str, model: str) -> dict:
     }
 
 
-def suggest_directions(client, setting: str, plot: str, model: str) -> list[str]:
+def _build_world_summary(world_data: dict | None) -> str:
+    """从世界书数据构建完整的世界观文本摘要"""
+    if not world_data:
+        return "（无）"
+
+    parts = []
+
+    chars = world_data.get("characters", [])
+    if chars:
+        lines = []
+        for c in chars[:8]:
+            info = c.get("name", "?")
+            traits = c.get("traits", "")
+            if traits:
+                info += f" | {traits[:150]}"
+            motivation = c.get("motivation", "")
+            if motivation:
+                info += f" | 动机：{motivation[:80]}"
+            arc = c.get("arc", "")
+            if arc:
+                info += f" | 弧光：{arc[:60]}"
+            status = c.get("status", "alive")
+            if status != "alive":
+                info += f" | 状态：{status}"
+            rels = c.get("relationships", [])
+            for r in rels[:2]:
+                info += f" | {r.get('type', '')}→{r.get('target', '')}"
+            lines.append(f"- {info}")
+        parts.append("【角色】\n" + "\n".join(lines))
+
+    locs = world_data.get("locations", [])
+    if locs:
+        lines = []
+        for l in locs[:6]:
+            info = l.get("name", "?")
+            desc = l.get("description", "")
+            if desc:
+                info += f"：{desc[:120]}"
+            atmos = l.get("atmosphere", "")
+            if atmos:
+                info += f"（{atmos[:40]}）"
+            lines.append(f"- {info}")
+        parts.append("【地点】\n" + "\n".join(lines))
+
+    rules = world_data.get("rules", [])
+    if rules:
+        lines = [f"- {r[:150]}" for r in rules[:5]]
+        parts.append("【世界规则】\n" + "\n".join(lines))
+
+    threads_any = world_data.get("plot_threads", [])
+    if not threads_any:
+        threads_any = world_data.get("active_plot_threads", [])
+    if threads_any:
+        lines = []
+        for p in threads_any[:6]:
+            status_tag = f"[{p.get('status', 'active')}]"
+            chars_in = p.get("involved_characters", [])
+            char_str = f" 涉及：{', '.join(chars_in[:4])}" if chars_in else ""
+            lines.append(f"- {p.get('name', '?')} {status_tag}: {p.get('description', '')[:150]}{char_str}")
+        if lines:
+            parts.append("【剧情线】\n" + "\n".join(lines))
+
+    timeline = world_data.get("timeline", [])
+    if timeline:
+        recent = timeline[-5:]
+        lines = []
+        for t in recent:
+            event = t.get("event", "")[:100]
+            sig = t.get("significance", "")
+            hint = ""
+            fh = t.get("foreshadowing_hints", [])
+            if fh:
+                hint = f" [伏笔：{fh[0][:40]}]"
+            lines.append(f"- {event}{' - ' + sig[:60] if sig else ''}{hint}")
+        parts.append("【近期事件】\n" + "\n".join(lines))
+
+    return "\n\n".join(parts)
+
+
+def suggest_directions(client, setting: str, plot: str, model: str,
+                       world_data: dict | None = None) -> list[str]:
     """
     AI 建议 3-5 个发展方向
+
+    Args:
+        world_data: 世界书数据（含角色/地点/规则/剧情线等）
 
     Returns:
         方向描述列表
     """
-    prompt = _safe_format(SUGGESTION_PROMPT, setting=setting[:1500], plot=plot[:1500])
+    world_summary = _build_world_summary(world_data)
+    prompt = _safe_format(
+        SUGGESTION_PROMPT,
+        world=world_summary[:2000],
+        setting=setting[:1500],
+        plot=plot[:1500],
+    )
     try:
         resp = client.chat.completions.create(
             model=model,
@@ -139,10 +236,9 @@ class ContinuationAnalysisDialog(QDialog):
         rules = self._world_data.get("rules", [])
         timeline = self._world_data.get("timeline", [])
         threads = self._world_data.get("plot_threads", [])
-        segments = self._world_data.get("key_settings_hints", [])
 
         summary = (
-            f"✅ 分析完成！共识别 {len(segments) or '?'} 个语义段落，提取到：\n"
+            f"✅ 分析完成！\n"
             f"  👥 角色 {len(chars)} 个  |  🏙️ 地点 {len(locs)} 个  |  📜 规则 {len(rules)} 条\n"
             f"  ⏱️ 事件 {len(timeline)} 个  |  🔗 剧情线 {len(threads)} 条\n\n"
             f"以下内容已保存到书架并加载到编辑面板，可在面板上直接修改。"
@@ -270,6 +366,7 @@ class ContinuationAnalysisDialog(QDialog):
             self._settings.get("background_story", ""),
             plot,
             wc,
+            self._world_data,
         )
 
     def _on_specify(self):

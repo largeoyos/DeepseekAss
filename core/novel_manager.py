@@ -110,7 +110,10 @@ class NovelManager:
         if os.path.exists(meta_path):
             with open(meta_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            return NovelMeta(**data)
+            # 过滤只保留 NovelMeta 定义的字段，兼容未来 JSON schema 变化
+            valid_fields = NovelMeta.__dataclass_fields__
+            filtered = {k: v for k, v in data.items() if k in valid_fields}
+            return NovelMeta(**filtered)
         return NovelMeta(title=title)
 
     def save_meta(self, title: str, **kwargs) -> NovelMeta:
@@ -505,17 +508,15 @@ class NovelManager:
                     temperature=0.3,
                 )
                 compressed_early = response.choices[0].message.content or ""
+                # 缓存成功压缩的结果
+                meta.compressed_early_summary = compressed_early
+                self._save_meta(title, meta)
             except Exception:
                 # 压缩失败时，仅返回最近 max_recent 章的摘要 + 早期章节计数提示
                 compressed_early = (
                     f"（前 {len(early_texts)} 章因篇幅过长已压缩。"
                     f"如需完整前情，请查阅 plot_summary.txt）"
                 )
-
-            # 缓存压缩结果
-            if compressed_early:
-                meta.compressed_early_summary = compressed_early
-                self._save_meta(title, meta)
 
         # 拼接最终前情提要
         parts = []

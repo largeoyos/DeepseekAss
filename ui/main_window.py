@@ -2203,13 +2203,17 @@ class DeepSeekChatGUI(QMainWindow):
 
         self._append_user_message(f"📖 生成第{self._novel_manager.get_next_chapter_num(title)}章：{chapter_title}")
 
+        # 在主线程中捕获 UI 值，避免后台线程访问 QWidget
+        plot_content = self._plot_edit.toPlainText().strip()
+        target_words = self._chapter_word_count.value()
+
         threading.Thread(
             target=self._run_chapter_generation,
-            args=(title, chapter_title),
+            args=(title, chapter_title, plot_content, target_words),
             daemon=True,
         ).start()
 
-    def _build_chapter_prompt(self, title: str, chapter_title: str) -> str:
+    def _build_chapter_prompt(self, title: str, chapter_title: str, plot_content: str = "") -> str:
         """构造章节续写的完整 User Prompt（含历史记录参考）"""
         chapter_num = self._novel_manager.get_next_chapter_num(title)
 
@@ -2225,12 +2229,15 @@ class DeepSeekChatGUI(QMainWindow):
         # 历史记录总结（前面各章的生成配置与风格参考）
         history = self._novel_manager.build_history_summary(title, exclude_chapter=chapter_num)
 
-        bio = self._protagonist_edit.toPlainText().strip()
-        bg = self._background_edit.toPlainText().strip()
-        demand = self._demand_edit.toPlainText().strip()
-
-        # 用户填入的本章节情节内容
-        plot_content = self._plot_edit.toPlainText().strip()
+        # 从策略对象读取（已在主线程中同步完毕），避免后台线程访问 QWidget
+        strategy = self._client.strategy
+        if isinstance(strategy, NovelStrategy):
+            bio = strategy.protagonist_bio
+            bg = strategy.background_story
+            demand = strategy.writing_demand
+        else:
+            bio = bg = demand = ""
+        # plot_content 在 _on_generate_chapter 中捕获后传入
 
         # 注入世界书信息
         world_bible_text = ""
@@ -2259,12 +2266,12 @@ class DeepSeekChatGUI(QMainWindow):
 
         return "\n".join(parts)
 
-    def _run_chapter_generation(self, title: str, chapter_title: str) -> None:
+    def _run_chapter_generation(self, title: str, chapter_title: str,
+                                 plot_content: str = "", target_words: int = 2000) -> None:
         """后台线程：生成章节 + 版本保存 + 摘要"""
         try:
             chapter_num = self._novel_manager.get_next_chapter_num(title)
 
-            target_words = self._chapter_word_count.value()
             strategy = self._client.strategy
             main_sys = (
                 "你是一位文笔细腻、想象力丰富的长篇小说作家。直接输出小说正文，"
@@ -2277,7 +2284,7 @@ class DeepSeekChatGUI(QMainWindow):
             if isinstance(strategy, NovelStrategy):
                 messages += strategy.build_system_messages()
 
-            user_prompt = self._build_chapter_prompt(title, chapter_title)
+            user_prompt = self._build_chapter_prompt(title, chapter_title, plot_content=plot_content)
             messages.append({"role": "user", "content": user_prompt})
 
             self._stream_signals.token.emit(f"\n\n📝 正在创作第 {chapter_num} 章「{chapter_title}」...\n\n")
@@ -2346,7 +2353,7 @@ class DeepSeekChatGUI(QMainWindow):
                 # 字数补充检查
                 from utils.supplement import count_cn, supplement_content
                 actual_words = count_cn(content)
-                target_chars = self._chapter_word_count.value()
+                target_chars = target_words
                 if actual_words < target_chars * 0.8 and actual_words > 0:
                     self._stream_signals.token.emit(f"\n📝 当前{actual_words}字，目标{target_chars}字，正在进行补充...\n")
                     try:
@@ -2748,7 +2755,7 @@ class DeepSeekChatGUI(QMainWindow):
 
     def _append_user_message(self, text: str) -> None:
         """追加用户消息到显示区域"""
-        escaped = text.replace("&", "&").replace("<", "<").replace(">", ">")
+        escaped = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         escaped = escaped.replace("\n", "<br>")
         js_safe = self._escape_for_js(escaped)
         script = f"""
@@ -3168,7 +3175,8 @@ class DeepSeekChatGUI(QMainWindow):
         )
         dlg.exec()
 
-    def _on_cont_suggest(self, setting: str, plot_outline: str, word_count: int) -> None:
+    def _on_cont_suggest(self, setting: str, plot_outline: str, word_count: int,
+                         world_data: dict | None = None) -> None:
         """AI 建议发展方向 → 用户选择 → 续写"""
         client = self._client.raw_client if hasattr(self, '_client') else None
         if client is None:
@@ -3181,7 +3189,8 @@ class DeepSeekChatGUI(QMainWindow):
         def _run():
             try:
                 self._stream_signals.token.emit("\n\n🎲 AI 正在分析发展方向...\n\n")
-                directions = suggest_directions(client, setting, plot_outline, self._client.model)
+                directions = suggest_directions(client, setting, plot_outline,
+                                                self._client.model, world_data)
                 self._stream_signals.finished.emit()
                 self._stream_signals.directions_ready.emit(directions, setting, plot_outline, word_count)
             except Exception as e:
@@ -3244,19 +3253,36 @@ class DeepSeekChatGUI(QMainWindow):
         if not world_data:
             return ""
         parts = []
+
+        # 活跃剧情线（详细）
         threads = world_data.get("plot_threads", [])
         if threads:
             active = [p for p in threads if p.get("status") == "active"]
             if active:
                 parts.append("当前活跃剧情线：")
-                for p in active[:3]:
-                    parts.append(f"- {p['name']}: {p.get('description', '')[:60]}")
+                for p in active[:4]:
+                    desc = p.get('description', '')[:100]
+                    chars = p.get("involved_characters", [])
+                    c_str = f" [角色：{', '.join(chars[:3])}]" if chars else ""
+                    parts.append(f"- {p['name']}: {desc}{c_str}")
+
+        # 已解决/休眠的剧情线（仍需留意）
+        resolved = [p for p in threads if p.get("status") != "active"]
+        if resolved:
+            parts.append("待回收剧情线：")
+            for p in resolved[:2]:
+                parts.append(f"- {p['name']} ({p.get('status', '')})")
+
+        # 最近事件
         timeline = world_data.get("timeline", [])
         if timeline:
-            recent = timeline[-3:]
+            recent = timeline[-5:]
             parts.append("最近事件：")
             for t in recent:
-                parts.append(f"- {t.get('event', '')[:60]}")
+                event = t.get('event', '')[:80]
+                sig = t.get('significance', '')[:40]
+                parts.append(f"- {event}" + (f" ({sig})" if sig else ""))
+
         return "\n".join(parts)
 
     def _on_cont_panel_suggest(self) -> None:
@@ -3268,7 +3294,8 @@ class DeepSeekChatGUI(QMainWindow):
         setting = settings.get("background_story", "")
         plot_context = self._build_cont_plot_context()
         word_count = self._continue_word_count.value()
-        self._on_cont_suggest(setting, plot_context, word_count)
+        world_data = getattr(self, '_cont_analysis_world_data', None)
+        self._on_cont_suggest(setting, plot_context, word_count, world_data)
 
     def _on_cont_panel_specify(self) -> None:
         """左侧面板按钮：我指定剧情"""
@@ -3468,17 +3495,19 @@ class DeepSeekChatGUI(QMainWindow):
                 self._close_btn.setText("⏳ 生成中...")
                 self._close_btn.setEnabled(False)
 
-                threading.Thread(target=self._do_regenerate, args=(data,), daemon=True).start()
+                # 在主线程捕获 UI 值
+                parent = self.parent()
+                _bg = parent._background_edit.toPlainText().strip()
+                _bio = parent._protagonist_edit.toPlainText().strip()
+                _demand = parent._demand_edit.toPlainText().strip()
 
-            def _do_regenerate(self, data: dict) -> None:
+                threading.Thread(target=self._do_regenerate, args=(data, _bg, _bio, _demand), daemon=True).start()
+
+            def _do_regenerate(self, data: dict, bg: str, bio: str, demand: str) -> None:
                 try:
                     parent = self.parent()
                     chapter_num = data["chapter_num"]
                     chapter_title = data.get("title", f"第{chapter_num}章")
-
-                    bg = parent._background_edit.toPlainText().strip()
-                    bio = parent._protagonist_edit.toPlainText().strip()
-                    demand = parent._demand_edit.toPlainText().strip()
 
                     messages = [
                         {"role": "system", "content": "你是一位文笔细腻、想象力丰富的小说家。直接输出重写后的小说正文，不要加任何解释、前言或后记。保持与原章节一致的风格和质量水准，严格按照用户提供的【核心设定】和【人物背景】。"},

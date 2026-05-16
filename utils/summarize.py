@@ -9,7 +9,6 @@
 
 import difflib
 import json
-import os
 import re
 import time
 from typing import Callable
@@ -146,7 +145,7 @@ BACKGROUND_PROMPT = """你是一位小说设定整理助手。以下是从一份
 确保 JSON 合法。"""
 
 
-def _call_api(client, messages, model, max_tokens=165536, temperature=0.1):
+def _call_api(client, messages, model, max_tokens=8192, temperature=0.1):
     """调用 API，带重试"""
     for attempt in range(3):
         try:
@@ -162,7 +161,6 @@ def _call_api(client, messages, model, max_tokens=165536, temperature=0.1):
                 time.sleep(2 ** attempt)
             else:
                 raise e
-    return ""
 
 
 def _parse_json(text: str) -> dict:
@@ -321,6 +319,7 @@ def extract_world_bible_from_segments(
     chapter_marker = 0
     # 用于 synthesis 步骤的全量累积数据
     all_segment_data = []
+    full_text = ""
 
     for idx, (title, content) in enumerate(segments):
         full_text += content
@@ -441,6 +440,8 @@ def extract_world_bible_from_segments(
                     "hint": hint[:50],
                     "relates_to": item.get("relates_to", "")[:20],
                 })
+
+            chapter_marker += 1
 
     # === 跨段落合成（仅段数 >= 3 时触发） ===
     if len(all_segment_data) >= 3:
