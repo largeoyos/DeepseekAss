@@ -58,6 +58,7 @@ from utils.export import (
     FORMAT_LABELS,
 )
 from ui.world_bible_dialog import WorldBibleDialog
+from ui.presets import PRESETS, CUSTOM_LABEL, COMBO_ITEMS
 from ui.continuation_dialogs import (
     analyze_source_text, suggest_directions,
     ContinuationAnalysisDialog, DirectionSelectionDialog,
@@ -89,6 +90,7 @@ class StreamSignals(QObject):
     error = pyqtSignal(str)
     analysis_done = pyqtSignal(str, str, str)     # setting, plot, source_text
     directions_ready = pyqtSignal(list, str, str, int)  # directions, setting, plot, word_count
+    novel_imported = pyqtSignal(str)               # 从源文档导入小说完成，参数：标题
 
 
 # ========== 模式配置 ==========
@@ -337,6 +339,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._stream_signals.error.connect(self._on_stream_error)
         self._stream_signals.analysis_done.connect(self._show_analysis_dialog)
         self._stream_signals.directions_ready.connect(self._show_direction_selector)
+        self._stream_signals.novel_imported.connect(self._on_novel_imported)
 
         # 小说管理器
         self._novel_manager = NovelManager()
@@ -350,6 +353,8 @@ class DeepSeekChatGUI(QMainWindow):
         self._streaming = False
         # 正在加载对话（阻止模式切换时覆盖显示）
         self._loading_conversation = False
+        # 参数预设守卫：预设驱动滑块时阻止 handler 切回"自定义"
+        self._preset_applying = False
 
         # 获取并验证 API Key（失败可重试）
         api_key = self._get_api_key_with_retry()
@@ -491,6 +496,18 @@ class DeepSeekChatGUI(QMainWindow):
         param_layout = QVBoxLayout(param_group)
         param_layout.setSpacing(4)
         param_layout.setContentsMargins(8, 4, 8, 4)
+
+        # ── 参数预设方案 ──
+        preset_row = QHBoxLayout()
+        preset_row.setContentsMargins(0, 0, 0, 0)
+        preset_label = QLabel("预设方案")
+        preset_label.setFixedWidth(60)
+        self._preset_combo = QComboBox()
+        self._preset_combo.addItems(COMBO_ITEMS)
+        self._preset_combo.currentTextChanged.connect(self._on_preset_changed)
+        preset_row.addWidget(preset_label)
+        preset_row.addWidget(self._preset_combo, stretch=1)
+        param_layout.addLayout(preset_row)
 
         # 温度
         temp_row = QHBoxLayout()
@@ -856,7 +873,7 @@ class DeepSeekChatGUI(QMainWindow):
         word_label.setFixedWidth(36)
         self._chapter_word_count = QSpinBox()
         self._chapter_word_count.setRange(100, 100000)
-        self._chapter_word_count.setValue(2000)
+        self._chapter_word_count.setValue(10000)
         self._chapter_word_count.setSingleStep(500)
         self._chapter_word_count.setSuffix(" 字")
         word_row.addWidget(word_label)
@@ -995,7 +1012,7 @@ class DeepSeekChatGUI(QMainWindow):
         word_label.setFixedWidth(36)
         self._continue_word_count = QSpinBox()
         self._continue_word_count.setRange(100, 100000)
-        self._continue_word_count.setValue(2000)
+        self._continue_word_count.setValue(10000)
         self._continue_word_count.setSingleStep(500)
         self._continue_word_count.setSuffix(" 字")
         word_row.addWidget(word_label)
@@ -1452,21 +1469,44 @@ class DeepSeekChatGUI(QMainWindow):
         self._client.set_temperature(temp)
         self._temp_value.setText(f"{temp:.2f}")
         self._update_status()
+        if not self._preset_applying and self._preset_combo.currentText() != CUSTOM_LABEL:
+            self._preset_combo.setCurrentText(CUSTOM_LABEL)
 
     def _on_top_p_changed(self, value: int) -> None:
         top_p = value / 100.0
         self._client.set_top_p(top_p)
         self._top_p_value.setText(f"{top_p:.2f}")
         self._update_status()
+        if not self._preset_applying and self._preset_combo.currentText() != CUSTOM_LABEL:
+            self._preset_combo.setCurrentText(CUSTOM_LABEL)
 
     def _on_fp_changed(self, value: int) -> None:
         fp = value / 100.0
         self._client.set_frequency_penalty(fp)
         self._fp_value.setText(f"{fp:.2f}")
         self._update_status()
+        if not self._preset_applying and self._preset_combo.currentText() != CUSTOM_LABEL:
+            self._preset_combo.setCurrentText(CUSTOM_LABEL)
 
     def _on_mt_changed(self, value: int) -> None:
         self._client.set_max_tokens(value)
+        self._update_status()
+        if not self._preset_applying and self._preset_combo.currentText() != CUSTOM_LABEL:
+            self._preset_combo.setCurrentText(CUSTOM_LABEL)
+
+    def _on_preset_changed(self, text: str) -> None:
+        """参数预设下拉框切换时应用预设值。"""
+        if text == CUSTOM_LABEL:
+            return
+        preset = PRESETS.get(text)
+        if preset is None:
+            return
+        self._preset_applying = True
+        self._temp_slider.setValue(preset["temp"])
+        self._top_p_slider.setValue(preset["top_p"])
+        self._fp_slider.setValue(preset["fp"])
+        self._mt_spin.setValue(preset["max_tokens"])
+        self._preset_applying = False
         self._update_status()
 
     def _sync_sliders_to_client(self) -> None:
@@ -2366,42 +2406,159 @@ class DeepSeekChatGUI(QMainWindow):
             self._novel_manager.save_world_bible(title, dlg.get_bible())
             QMessageBox.information(self, "提示", "世界书已保存。")
 
-    # ========== 📄 分段摘要 ==========
+    # ========== 📄 分段摘要（导入新小说） ==========
 
     def _on_split_summarize(self) -> None:
-        """对选定文件进行分段摘要"""
-        file_path, _ = QFileDialog.getOpenFileName(
-            self,
-            "选择要摘要的文档",
-            "",
-            "文本文件 (*.txt *.md);;所有文件 (*.*)",
-        )
-        if not file_path:
+        """
+        从源文档创建新小说：AI语义分段 → 提取世界观 → 写入世界书/meta → 自动加载UI
+        仅用于新小说创建（已有章节会警告）。
+        """
+        from strategies.novel_strategy import NovelStrategy
+        mode_ok = isinstance(self._client.strategy, NovelStrategy) if hasattr(self, '_client') else False
+        if not mode_ok or not hasattr(self, '_client') or self._client is None:
+            QMessageBox.warning(self, "提示", "分段摘要导入仅支持小说模式。请先切换到小说模式。")
             return
-        from utils.summarize import split_and_summarize
-        client = self._client.raw_client if hasattr(self, '_client') else None
+
+        # 检查是否为新小说（无章节或用户确认覆盖）
+        title = self._novel_title_edit.text().strip()
+        if title:
+            next_ch = self._novel_manager.get_next_chapter_num(title)
+            if next_ch > 1:
+                reply = QMessageBox.question(
+                    self, "确认",
+                    f"「{title}」已有章节内容。\n"
+                    "分段摘要应用于从源文档创建新小说。\n"
+                    "继续将覆盖小说设定但保留章节内容。是否继续？",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+
+        client = self._client.raw_client
         if client is None:
             QMessageBox.warning(self, "错误", "客户端未初始化。")
             return
 
+        # 选择源文档
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "选择源文档（设定/大纲/草稿）", "",
+            "文本文件 (*.txt *.md);;所有文件 (*.*)",
+        )
+        if not file_path:
+            return
+
+        # 自动推断小说标题
+        if not title:
+            title = os.path.splitext(os.path.basename(file_path))[0]
+            self._novel_title_edit.setText(title)
+
         self._streaming = True
         self._assistant_text_buffer = []
-        self._append_user_message(f"📄 分段摘要：{os.path.basename(file_path)}")
+        self._append_user_message(f"📄 从文档导入小说：{os.path.basename(file_path)}")
 
         def _run():
             try:
-                self._stream_signals.token.emit(f"\n\n📄 正在对「{os.path.basename(file_path)}」进行分段摘要...\n\n")
-                segments = split_and_summarize(client, file_path, self._client.model)
-                for seg in segments:
-                    heading = seg.get("heading", "")
-                    summary = seg.get("summary", "")
-                    self._stream_signals.token.emit(f"**{heading}**\n{summary}\n\n")
-                self._stream_signals.token.emit("\n---\n✅ 分段摘要完成。\n")
+                from utils.summarize import segment_by_ai, extract_world_bible_from_segments, generate_novel_settings_from_world_bible
+                from core.world_bible import WorldBible, CharacterEntry, LocationEntry, TimelineEntry, PlotThread
+
+                model = self._client.model
+
+                # Phase 1: 读取文件 + AI 语义分段
+                self._stream_signals.token.emit(
+                    f"\n\n⏳ 第一步：AI 语义分段…\n"
+                )
+                with open(file_path, "r", encoding="utf-8") as f:
+                    text = f.read()
+                self._stream_signals.token.emit(f"  源文档: {len(text)} 字符\n")
+
+                segments = segment_by_ai(client, text, model)
+                self._stream_signals.token.emit(
+                    f"  ✅ AI 识别出 {len(segments)} 个逻辑段落\n\n"
+                )
+                for seg_title, seg_content in segments:
+                    preview = seg_content[:80].replace("\n", " ")
+                    self._stream_signals.token.emit(
+                        f"  📌 **{seg_title}** — {preview}…\n"
+                    )
+
+                # Phase 2: 逐段提取世界观
+                self._stream_signals.token.emit(f"\n⏳ 第二步：逐段提取世界观信息…\n")
+
+                def _progress(cur, total):
+                    if cur == 1 or cur % max(1, total // 5) == 0 or cur == total:
+                        self._stream_signals.token.emit(f"  提取进度: {cur}/{total}\n")
+
+                world_data = extract_world_bible_from_segments(
+                    client, segments, model, progress_callback=_progress,
+                )
+
+                # 汇报提取结果
+                self._stream_signals.token.emit(
+                    f"\n  📊 提取结果:\n"
+                    f"    👥 角色 {len(world_data.get('characters', []))} 个\n"
+                    f"    🏙️ 地点 {len(world_data.get('locations', []))} 个\n"
+                    f"    📜 规则 {len(world_data.get('rules', []))} 条\n"
+                    f"    ⏱️ 事件 {len(world_data.get('timeline', []))} 个\n"
+                    f"    🔗 剧情线 {len(world_data.get('plot_threads', []))} 条\n"
+                )
+
+                # Phase 3: 创建小说目录 + 保存世界书
+                self._stream_signals.token.emit(f"\n⏳ 第三步：创建小说「{title}」并保存数据…\n")
+                self._novel_manager.create_book(title)
+
+                bible = WorldBible(
+                    characters=[CharacterEntry(**c) for c in world_data.get("characters", [])],
+                    locations=[LocationEntry(**l) for l in world_data.get("locations", [])],
+                    rules=list(world_data.get("rules", [])),
+                    timeline=[TimelineEntry(**t) for t in world_data.get("timeline", [])],
+                    active_plot_threads=[PlotThread(**p) for p in world_data.get("plot_threads", [])],
+                    last_updated_chapter=0,
+                )
+                self._novel_manager.save_world_bible(title, bible)
+                self._stream_signals.token.emit(f"  ✅ 世界书已保存\n")
+
+                # Phase 4: 生成小说设定（背景/主角/写作要求）
+                self._stream_signals.token.emit(f"⏳ 第四步：生成小说设定…\n")
+                settings = generate_novel_settings_from_world_bible(client, world_data, model)
+
+                self._novel_manager.save_meta(
+                    title,
+                    protagonist_bio=settings.get("protagonist_bio", ""),
+                    background_story=settings.get("background_story", ""),
+                    writing_demand=settings.get("writing_demand", ""),
+                )
+                self._stream_signals.token.emit(
+                    f"  ✅ 设定已保存至 meta.json\n"
+                )
+
+                # Phase 5: 触发主线程加载 UI
+                self._stream_signals.token.emit(
+                    f"\n{'='*50}\n"
+                    f"✅ 全部完成！「{title}」创建成功\n"
+                    f"  • {len(segments)} 个语义段落已分段\n"
+                    f"  • 世界书已建立（{len(world_data.get('characters', []))}角色 + "
+                    f"{len(world_data.get('locations', []))}地点 + "
+                    f"{len(world_data.get('rules', []))}规则）\n"
+                    f"  • 小说设定已生成并加载\n"
+                    f"  • 现在可以直接生成章节了！\n"
+                    f"{'='*50}\n"
+                )
+                self._stream_signals.novel_imported.emit(title)
                 self._stream_signals.finished.emit()
+
             except Exception as e:
+                import traceback
+                self._stream_signals.token.emit(f"\n❌ 错误: {e}\n")
+                self._stream_signals.token.emit(f"\n```\n{traceback.format_exc()}\n```\n")
                 self._stream_signals.error.emit(f"分段摘要失败: {e}")
 
         threading.Thread(target=_run, daemon=True).start()
+
+    def _on_novel_imported(self, title: str) -> None:
+        """主线程：导入完成后刷新书架并加载设定到 UI"""
+        self._refresh_novel_bookshelf()
+        self._bookshelf_combo.setCurrentText(title)
+        # _on_book_selected 会通过信号自动触发，加载设定到编辑框
 
     # ========== 🔍 续写分析流程 ==========
 

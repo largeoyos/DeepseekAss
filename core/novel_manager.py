@@ -738,9 +738,6 @@ class NovelManager:
         from core.world_bible import world_bible_to_dict
         wb_path = self._world_bible_path(title)
         os.makedirs(os.path.dirname(wb_path), exist_ok=True)
-        try:
-            data = world_bible_to_dict(bible)
-            with open(wb_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+        data = world_bible_to_dict(bible)
+        with open(wb_path, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)

@@ -147,21 +147,21 @@ EXTRACT_PROMPT = """你是一个专业的小说分析工具。请分析以下章
 
 请严格按照以下 JSON 格式输出，不包含任何其他文字：
 
-{{
+{
   "characters": [
-    {{"name": "角色名", "aliases": ["别名"], "traits": "性格/外貌/能力描述（50字内）", "status": "alive/dead/missing/transformed"}}
+    {"name": "角色名", "aliases": ["别名"], "traits": "性格/外貌/能力描述（50字内）", "status": "alive/dead/missing/transformed"}
   ],
   "locations": [
-    {{"name": "地点名", "description": "地点描述（30字内）", "significance": "重要性"}}
+    {"name": "地点名", "description": "地点描述（30字内）", "significance": "重要性"}
   ],
   "rules": ["世界观规则1", "规则2"],
   "timeline": [
-    {{"event": "核心事件（30字内）", "significance": "意义"}}
+    {"event": "核心事件（30字内）", "significance": "意义"}
   ],
   "plot_threads": [
-    {{"name": "剧情线索名", "status": "active/resolved/dormant", "involved_characters": ["角色名"], "description": "描述（30字内）"}}
+    {"name": "剧情线索名", "status": "active/resolved/dormant", "involved_characters": ["角色名"], "description": "描述（30字内）"}
   ]
-}}
+}
 
 如果没有某项内容，用空数组 []。确保 JSON 合法。
 

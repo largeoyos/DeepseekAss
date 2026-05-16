@@ -177,7 +177,7 @@ class ContinuationAnalysisDialog(QDialog):
         word_row.addWidget(QLabel("目标字数："))
         self._word_count = QSpinBox()
         self._word_count.setRange(100, 100000)
-        self._word_count.setValue(2000)
+        self._word_count.setValue(10000)
         self._word_count.setSingleStep(500)
         self._word_count.setSuffix(" 字")
         word_row.addWidget(self._word_count)
