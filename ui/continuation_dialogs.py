@@ -114,8 +114,8 @@ class ContinuationAnalysisDialog(QDialog):
         super().__init__(parent)
         self._world_data = world_data
         self._settings = settings
-        self._on_suggest = on_suggest
-        self._on_specify = on_specify
+        self._suggest_callback = on_suggest
+        self._specify_callback = on_specify
         self.setWindowTitle("分析完成 - 提取结果总览")
         self.resize(700, 550)
         self.setModal(True)
@@ -236,19 +236,39 @@ class ContinuationAnalysisDialog(QDialog):
 
         layout.addLayout(btn_row)
 
+    def _build_plot_context(self) -> str:
+        """从 world_data 构建当前剧情摘要，供发展方向建议使用"""
+        parts = []
+        threads = self._world_data.get("plot_threads", [])
+        if threads:
+            active = [p for p in threads if p.get("status") == "active"]
+            if active:
+                parts.append("当前活跃剧情线：")
+                for p in active[:3]:
+                    parts.append(f"- {p['name']}: {p.get('description', '')[:60]}")
+        timeline = self._world_data.get("timeline", [])
+        if timeline:
+            recent = timeline[-3:]
+            parts.append("最近事件：")
+            for t in recent:
+                parts.append(f"- {t.get('event', '')[:60]}")
+        return "\n".join(parts)
+
     def _on_suggest(self):
         wc = self.parent()._continue_word_count.value() if hasattr(self.parent(), '_continue_word_count') else 10000
-        self._on_suggest(
+        plot = self._build_plot_context()
+        self._suggest_callback(
             self._settings.get("background_story", ""),
-            "",
+            plot,
             wc,
         )
 
     def _on_specify(self):
         wc = self.parent()._continue_word_count.value() if hasattr(self.parent(), '_continue_word_count') else 10000
-        self._on_specify(
+        plot = self._build_plot_context()
+        self._specify_callback(
             self._settings.get("background_story", ""),
-            "",
+            plot,
             wc,
         )
 

@@ -1573,8 +1573,10 @@ class DeepSeekChatGUI(QMainWindow):
         self._btn_group.setVisible(is_chat_mode)
         self._history_group.setVisible(is_chat_mode)
 
+        # 进入需要书架的页面时刷新（小说/续写都刷）
+        self._refresh_novel_bookshelf()
+
         if is_novel:
-            self._refresh_novel_bookshelf()
             self._on_book_selected(self._bookshelf_combo.currentText())
             if not self._loading_conversation:
                 self._display.setHtml(md_to_html(strategy.get_welcome_message()))
@@ -1881,6 +1883,9 @@ class DeepSeekChatGUI(QMainWindow):
         title = text if text and not text.startswith("（暂无小说") else None
         if not title:
             self._cont_chapter_info_label.setText("尚未选择小说")
+            self._cont_protagonist_edit.clear()
+            self._cont_background_edit.clear()
+            self._cont_demand_edit.clear()
             return
 
         meta = self._novel_manager.load_meta(title)
@@ -1998,8 +2003,10 @@ class DeepSeekChatGUI(QMainWindow):
             QMessageBox.warning(self, "提示", "请先在书架中选择一部小说。")
             return
 
-        # 获取源文本
-        source_text = self._read_continuation_source()
+        # 获取源文本（优先使用分析时缓存的内容）
+        source_text = getattr(self, '_cont_analysis_source', "")
+        if not source_text:
+            source_text = self._read_continuation_source()
         if not source_text:
             QMessageBox.warning(self, "提示", "请先选择续写源文档或文件夹。")
             return
@@ -2615,7 +2622,6 @@ class DeepSeekChatGUI(QMainWindow):
             return
 
         # 如果当前是续写模式且章节模式已勾选 → 触发续写章节生成
-        from strategies.continuation_strategy import ContinuationStrategy
         if (
             isinstance(self._client.strategy, ContinuationStrategy)
             and self._cont_chapter_mode_check.isChecked()
@@ -3068,9 +3074,9 @@ class DeepSeekChatGUI(QMainWindow):
         def _run():
             try:
                 self._stream_signals.token.emit("\n\n🎲 AI 正在分析发展方向...\n\n")
-                directions = suggest_directions(client, setting, "", self._client.model)
+                directions = suggest_directions(client, setting, plot_outline, self._client.model)
                 self._stream_signals.finished.emit()
-                self._stream_signals.directions_ready.emit(directions, setting, "", word_count)
+                self._stream_signals.directions_ready.emit(directions, setting, plot_outline, word_count)
             except Exception as e:
                 self._stream_signals.error.emit(f"方向建议失败: {e}")
 
@@ -3473,7 +3479,7 @@ class DeepSeekChatGUI(QMainWindow):
 
     def _on_export_cont_chapter(self) -> None:
         """续写面板：导出当前章节"""
-        title = self._bookshelf_combo.currentText().strip()
+        title = self._get_current_book_title()
         if not title:
             QMessageBox.warning(self, "提示", "请先选择一本小说。")
             return
@@ -3495,7 +3501,7 @@ class DeepSeekChatGUI(QMainWindow):
 
     def _on_export_cont_book(self) -> None:
         """续写面板：导出整本小说"""
-        title = self._bookshelf_combo.currentText().strip()
+        title = self._get_current_book_title()
         if not title:
             QMessageBox.warning(self, "提示", "请先选择一本小说。")
             return
