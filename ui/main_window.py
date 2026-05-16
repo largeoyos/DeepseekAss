@@ -1166,6 +1166,27 @@ class DeepSeekChatGUI(QMainWindow):
         self._continue_plot.setMinimumHeight(60)
         layout.addWidget(self._continue_plot)
 
+        # ── 续写辅助：AI 建议 / 自行指定剧情 ──
+        plot_helper_row = QHBoxLayout()
+        cont_suggest_btn = QPushButton("🎲 AI 建议发展方向")
+        cont_suggest_btn.setStyleSheet("""
+            QPushButton { background: #2d6b2d; color: white; border: none;
+                          border-radius: 6px; padding: 6px 12px; font-weight: bold; }
+            QPushButton:hover { background: #3d8b3d; }
+        """)
+        cont_suggest_btn.clicked.connect(self._on_cont_panel_suggest)
+        plot_helper_row.addWidget(cont_suggest_btn)
+
+        cont_specify_btn = QPushButton("📝 我指定剧情")
+        cont_specify_btn.setStyleSheet("""
+            QPushButton { background: #6b4d2d; color: white; border: none;
+                          border-radius: 6px; padding: 6px 12px; font-weight: bold; }
+            QPushButton:hover { background: #8b6d3d; }
+        """)
+        cont_specify_btn.clicked.connect(self._on_cont_panel_specify)
+        plot_helper_row.addWidget(cont_specify_btn)
+        layout.addLayout(plot_helper_row)
+
         # ── 生成下一章按钮 ──
         cont_generate_btn = QPushButton("🚀 生成下一章")
         cont_generate_btn.setMinimumHeight(40)
@@ -1910,6 +1931,22 @@ class DeepSeekChatGUI(QMainWindow):
         self._cont_demand_edit.blockSignals(True)
         self._cont_demand_edit.setPlainText(meta.writing_demand)
         self._cont_demand_edit.blockSignals(False)
+
+        # 同步分析上下文，使左侧面板的 AI 建议 / 我指定剧情按钮可用
+        self._cont_analysis_settings = {
+            "background_story": meta.background_story or "",
+            "protagonist_bio": meta.protagonist_bio or "",
+            "writing_demand": meta.writing_demand or "",
+        }
+        wb = self._novel_manager.load_world_bible(title)
+        self._cont_analysis_world_data = {
+            "characters": [{"name": c.name, "traits": c.traits} for c in wb.characters],
+            "locations": [{"name": l.name, "description": l.description} for l in wb.locations],
+            "rules": list(wb.rules),
+            "timeline": [{"event": t.event, "significance": t.significance} for t in wb.timeline],
+            "plot_threads": [{"name": p.name, "status": p.status, "description": p.description} for p in wb.active_plot_threads],
+        }
+
         next_ch = self._novel_manager.get_next_chapter_num(title)
         chapters = self._novel_manager.list_chapters(title)
         self._cont_chapter_info_label.setText(
@@ -2055,7 +2092,7 @@ class DeepSeekChatGUI(QMainWindow):
         """续写面板：导入完成后刷新书架并加载设定到 UI"""
         self._refresh_novel_bookshelf()
         self._cont_bookshelf_combo.setCurrentText(title)
-        # _on_cont_book_selected 会通过信号自动触发
+        self._on_cont_book_selected(title)
 
     def _read_continuation_source(self) -> str:
         """读取续写源文档/文件夹内容"""
@@ -2876,7 +2913,9 @@ class DeepSeekChatGUI(QMainWindow):
                 )
                 with open(file_path, "r", encoding="utf-8") as f:
                     text = f.read()
-                self._stream_signals.token.emit(f"  源文档: {len(text)} 字符\n")
+                _chars = len(text)
+                _words = len(text.replace('\n', '').replace('\r', '').replace(' ', '').replace('　', ''))
+                self._stream_signals.token.emit(f"  读到 {_words} 个字，{_chars} 个字符\n")
 
                 segments = segment_by_ai(client, text, model)
                 self._stream_signals.token.emit(
@@ -2900,6 +2939,8 @@ class DeepSeekChatGUI(QMainWindow):
                 )
 
                 # 汇报提取结果
+                wb_count = len(world_data.get("key_worldbuilding", []))
+                fs_count = len(world_data.get("global_foreshadowing", []))
                 self._stream_signals.token.emit(
                     f"\n  📊 提取结果:\n"
                     f"    👥 角色 {len(world_data.get('characters', []))} 个\n"
@@ -2907,6 +2948,7 @@ class DeepSeekChatGUI(QMainWindow):
                     f"    📜 规则 {len(world_data.get('rules', []))} 条\n"
                     f"    ⏱️ 事件 {len(world_data.get('timeline', []))} 个\n"
                     f"    🔗 剧情线 {len(world_data.get('plot_threads', []))} 条\n"
+                    + (f"    📖 关键设定 {wb_count} 条 | 🔮 伏笔 {fs_count} 条\n" if wb_count or fs_count else "")
                 )
 
                 # Phase 3: 创建小说目录 + 保存世界书
@@ -2920,6 +2962,9 @@ class DeepSeekChatGUI(QMainWindow):
                     timeline=[TimelineEntry(**t) for t in world_data.get("timeline", [])],
                     active_plot_threads=[PlotThread(**p) for p in world_data.get("plot_threads", [])],
                     last_updated_chapter=0,
+                    key_worldbuilding_passages=list(world_data.get("key_worldbuilding", [])),
+                    global_foreshadowing=list(world_data.get("global_foreshadowing", [])),
+                    global_key_dialogues=list(world_data.get("global_key_dialogues", [])),
                 )
                 self._novel_manager.save_world_bible(title, bible)
                 self._stream_signals.token.emit(f"  ✅ 世界书已保存\n")
@@ -2965,7 +3010,7 @@ class DeepSeekChatGUI(QMainWindow):
         """主线程：导入完成后刷新书架并加载设定到 UI"""
         self._refresh_novel_bookshelf()
         self._bookshelf_combo.setCurrentText(title)
-        # _on_book_selected 会通过信号自动触发，加载设定到编辑框
+        self._on_book_selected(title)
 
     # ========== 🔍 续写分析流程 ==========
 
@@ -3026,6 +3071,9 @@ class DeepSeekChatGUI(QMainWindow):
 
                 si = self._stream_signals
                 si.token.emit(f"\n\n🔍 第一步：AI 语义分段…\n")
+                _chars = len(source_text)
+                _words = len(source_text.replace('\n', '').replace('\r', '').replace(' ', '').replace('　', ''))
+                si.token.emit(f"  读到 {_words} 个字，{_chars} 个字符\n")
 
                 segments = segment_by_ai(client, source_text, model)
                 si.token.emit(f"  ✅ 识别出 {len(segments)} 个逻辑段落\n")
@@ -3036,8 +3084,12 @@ class DeepSeekChatGUI(QMainWindow):
                 chars = len(world_data.get("characters", []))
                 locs = len(world_data.get("locations", []))
                 rules = len(world_data.get("rules", []))
+                wb_count = len(world_data.get("key_worldbuilding", []))
+                fs_count = len(world_data.get("global_foreshadowing", []))
                 si.token.emit(
-                    f"  ✅ 提取到: {chars}角色 / {locs}地点 / {rules}规则\n"
+                    f"  ✅ 提取到: {chars}角色 / {locs}地点 / {rules}规则"
+                    + (f" / {wb_count}关键设定 / {fs_count}伏笔" if wb_count or fs_count else "")
+                    + "\n"
                 )
 
                 si.token.emit(f"\n⏳ 第三步：创建小说并保存数据…\n")
@@ -3051,6 +3103,9 @@ class DeepSeekChatGUI(QMainWindow):
                     timeline=[TimelineEntry(**t) for t in world_data.get("timeline", [])],
                     active_plot_threads=[PlotThread(**p) for p in world_data.get("plot_threads", [])],
                     last_updated_chapter=0,
+                    key_worldbuilding_passages=list(world_data.get("key_worldbuilding", [])),
+                    global_foreshadowing=list(world_data.get("global_foreshadowing", [])),
+                    global_key_dialogues=list(world_data.get("global_key_dialogues", [])),
                 )
                 self._novel_manager.save_world_bible(title, bible)
 
@@ -3180,6 +3235,51 @@ class DeepSeekChatGUI(QMainWindow):
             args=(book_title, chapter_num, chapter_title, source_text, requirement, word_count, plot, setting),
             daemon=True,
         ).start()
+
+    # ========== 📋 左侧面板续写辅助按钮（替代弹窗中的功能） ==========
+
+    def _build_cont_plot_context(self) -> str:
+        """从分析数据构建剧情上下文"""
+        world_data = getattr(self, '_cont_analysis_world_data', None)
+        if not world_data:
+            return ""
+        parts = []
+        threads = world_data.get("plot_threads", [])
+        if threads:
+            active = [p for p in threads if p.get("status") == "active"]
+            if active:
+                parts.append("当前活跃剧情线：")
+                for p in active[:3]:
+                    parts.append(f"- {p['name']}: {p.get('description', '')[:60]}")
+        timeline = world_data.get("timeline", [])
+        if timeline:
+            recent = timeline[-3:]
+            parts.append("最近事件：")
+            for t in recent:
+                parts.append(f"- {t.get('event', '')[:60]}")
+        return "\n".join(parts)
+
+    def _on_cont_panel_suggest(self) -> None:
+        """左侧面板按钮：AI 建议发展方向"""
+        settings = getattr(self, '_cont_analysis_settings', None)
+        if not settings:
+            QMessageBox.warning(self, "提示", "请先分析源文档以获取故事上下文。")
+            return
+        setting = settings.get("background_story", "")
+        plot_context = self._build_cont_plot_context()
+        word_count = self._continue_word_count.value()
+        self._on_cont_suggest(setting, plot_context, word_count)
+
+    def _on_cont_panel_specify(self) -> None:
+        """左侧面板按钮：我指定剧情"""
+        settings = getattr(self, '_cont_analysis_settings', None)
+        if not settings:
+            QMessageBox.warning(self, "提示", "请先分析源文档以获取故事上下文。")
+            return
+        setting = settings.get("background_story", "")
+        plot_context = self._build_cont_plot_context()
+        word_count = self._continue_word_count.value()
+        self._on_cont_specify(setting, plot_context, word_count)
 
     # ========== ⚙ 章节管理对话框 ==========
 

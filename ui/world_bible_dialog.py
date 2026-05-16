@@ -61,6 +61,7 @@ class WorldBibleDialog(QDialog):
         self._rule_edit = self._make_tab("规则", "\n".join(self._bible.rules))
         self._timeline_edit = self._make_tab("时间线", self._format_timeline())
         self._plot_edit = self._make_tab("剧情线", self._format_plot_threads())
+        self._worldbuilding_edit = self._make_tab("设定与伏笔", self._format_worldbuilding())
 
         layout.addWidget(self._tabs)
 
@@ -100,8 +101,18 @@ class WorldBibleDialog(QDialog):
             lines.append(f"  状态：{c.status}")
             if rels:
                 lines.append(f"  关系：{rels}")
+            if c.motivation:
+                lines.append(f"  动机：{c.motivation}")
+            if c.arc:
+                lines.append(f"  成长弧线：{c.arc}")
             if c.notes:
                 lines.append(f"  备注：{c.notes}")
+            if c.key_details:
+                for kd in c.key_details:
+                    lines.append(f"  📌 关键细节：{kd}")
+            if c.key_dialogues:
+                for kd in c.key_dialogues:
+                    lines.append(f"  💬 关键台词：{kd}")
             lines.append(f"  首登场：第{c.first_appearance}章\n")
         return "\n".join(lines) if self._bible.characters else "(尚未提取到角色信息)"
 
@@ -111,6 +122,11 @@ class WorldBibleDialog(QDialog):
             lines.append(f"【{l.name}】")
             lines.append(f"  描述：{l.description}")
             lines.append(f"  重要度：{l.significance}")
+            if l.atmosphere:
+                lines.append(f"  氛围：{l.atmosphere}")
+            if l.key_details:
+                for kd in l.key_details:
+                    lines.append(f"  📌 关键描写：{kd}")
             lines.append(f"  首登场：第{l.first_appearance}章\n")
         return "\n".join(lines) if self._bible.locations else "(尚未提取到地点信息)"
 
@@ -118,6 +134,12 @@ class WorldBibleDialog(QDialog):
         lines = ["# 时间线（按章节）\n"]
         for t in self._bible.timeline:
             lines.append(f"- 第{t.chapter}章：{t.event} ({t.significance})")
+            if t.key_passages:
+                for kp in t.key_passages[:2]:
+                    lines.append(f"  📄 原文段落：{kp}")
+            if t.foreshadowing_hints:
+                for fh in t.foreshadowing_hints:
+                    lines.append(f"  🔮 伏笔：{fh}")
         return "\n".join(lines) if self._bible.timeline else "(尚未提取到时间线)"
 
     def _format_plot_threads(self) -> str:
@@ -128,8 +150,47 @@ class WorldBibleDialog(QDialog):
             lines.append(f"【{p.name}】（{p.status}）")
             lines.append(f"  重要性：{imp_map.get(p.importance, p.importance)}")
             lines.append(f"  描述：{p.description}")
-            lines.append(f"  涉及角色：{chars}\n")
+            lines.append(f"  涉及角色：{chars}")
+            if p.key_details:
+                for kd in p.key_details:
+                    lines.append(f"  📌 关键细节：{kd}")
+            if p.foreshadowing_related:
+                for fr in p.foreshadowing_related:
+                    lines.append(f"  🔮 关联伏笔：{fr}")
+            lines.append("")
         return "\n".join(lines) if self._bible.active_plot_threads else "(尚未提取到剧情线)"
+
+    def _format_worldbuilding(self) -> str:
+        lines = ["# 关键设定与伏笔\n"]
+        if self._bible.key_worldbuilding_passages:
+            lines.append("## 世界观设定段落\n")
+            for item in self._bible.key_worldbuilding_passages:
+                lines.append(f"【{item.get('topic', '')}】")
+                lines.append(f"  {item.get('passage', '')}")
+                lines.append(f"  （第{item.get('chapter', '?')}章）\n")
+        if self._bible.global_foreshadowing:
+            lines.append("## 全局伏笔\n")
+            for item in self._bible.global_foreshadowing:
+                hint = item.get('hint', '')
+                relates = item.get('relates_to', '')
+                if relates:
+                    lines.append(f"  🔮 {hint} → 关联：{relates}")
+                else:
+                    lines.append(f"  🔮 {hint}")
+        if self._bible.global_key_dialogues:
+            lines.append("\n## 关键对话\n")
+            for item in self._bible.global_key_dialogues:
+                speaker = item.get('speaker', '')
+                dialogue = item.get('dialogue', '')
+                ctx = item.get('context', '')
+                parts = f"  💬 {speaker}：{dialogue}"
+                if ctx:
+                    parts += f"（{ctx}）"
+                lines.append(parts)
+        result = "\n".join(lines)
+        if result.strip() == "# 关键设定与伏笔\n":
+            return "(尚未提取到关键设定与伏笔)"
+        return result
 
     def _parse_characters_from_text(self, text: str) -> list:
         """从编辑后的文本重新解析角色列表"""
@@ -142,7 +203,7 @@ class WorldBibleDialog(QDialog):
                 if current and current.get("name"):
                     characters.append(CharacterEntry(**current))
                 name = line.strip("【】").strip()
-                current = {"name": name, "aliases": [], "traits": "", "relationships": [], "status": "alive", "importance": "normal", "first_appearance": 0, "notes": ""}
+                current = {"name": name, "aliases": [], "traits": "", "relationships": [], "status": "alive", "importance": "normal", "first_appearance": 0, "notes": "", "key_details": [], "key_dialogues": [], "motivation": "", "arc": ""}
             elif line.startswith("重要性：") and current:
                 imp_raw = line[4:].strip()
                 imp_map = {"重要": "major", "普通": "normal", "次要": "minor"}
@@ -153,8 +214,16 @@ class WorldBibleDialog(QDialog):
                 current["status"] = line[3:].strip()
             elif line.startswith("别名：") and current:
                 current["aliases"] = [a.strip() for a in line[3:].strip().split("、") if a.strip()]
+            elif line.startswith("动机：") and current:
+                current["motivation"] = line[3:].strip()
+            elif line.startswith("成长弧线：") and current:
+                current["arc"] = line[5:].strip()
             elif line.startswith("备注：") and current:
                 current["notes"] = line[3:].strip()
+            elif line.startswith("📌 关键细节：") and current:
+                current.setdefault("key_details", []).append(line[7:].strip())
+            elif line.startswith("💬 关键台词：") and current:
+                current.setdefault("key_dialogues", []).append(line[7:].strip())
             elif line.startswith("首登场：") and current:
                 try:
                     current["first_appearance"] = int(''.join(filter(str.isdigit, line[4:])))

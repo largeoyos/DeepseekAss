@@ -171,7 +171,7 @@ class ContinuationAnalysisDialog(QDialog):
 
         # 角色标签页
         char_text = "\n".join(
-            f"- {c['name']}：{c.get('traits', '')[:80]}"
+            f"- {c['name']}：{c.get('traits', '')[:200]}"
             for c in chars
         ) or "(未提取到角色)"
         char_edit = QTextEdit()
@@ -181,7 +181,7 @@ class ContinuationAnalysisDialog(QDialog):
 
         # 地点标签页
         loc_text = "\n".join(
-            f"- {l['name']}：{l.get('description', '')[:60]}"
+            f"- {l['name']}：{l.get('description', '')[:150]}"
             for l in locs
         ) or "(未提取到地点)"
         loc_edit = QTextEdit()
@@ -190,7 +190,7 @@ class ContinuationAnalysisDialog(QDialog):
         tabs.addTab(loc_edit, f"地点 ({len(locs)})")
 
         # 规则标签页
-        rule_text = "\n".join(f"- {r[:80]}" for r in rules) or "(未提取到规则)"
+        rule_text = "\n".join(f"- {r[:200]}" for r in rules) or "(未提取到规则)"
         rule_edit = QTextEdit()
         rule_edit.setPlainText(rule_text)
         rule_edit.setStyleSheet("background: #2d2d2d; color: #e0e0e0; border: 1px solid #444;")
@@ -198,7 +198,7 @@ class ContinuationAnalysisDialog(QDialog):
 
         # 剧情线标签页
         thread_text = "\n".join(
-            f"- {p['name']} [{p.get('status', 'active')}]: {p.get('description', '')[:60]}"
+            f"- {p['name']} [{p.get('status', 'active')}]: {p.get('description', '')[:150]}"
             for p in threads
         ) or "(未提取到剧情线)"
         thread_edit = QTextEdit()
@@ -208,7 +208,7 @@ class ContinuationAnalysisDialog(QDialog):
 
         # 时间线标签页
         tl_text = "\n".join(
-            f"- {t.get('event', '')[:60]} ({t.get('significance', '')[:40]})"
+            f"- {t.get('event', '')[:150]} ({t.get('significance', '')[:100]})"
             for t in timeline
         ) or "(未提取到时间线)"
         tl_edit = QTextEdit()

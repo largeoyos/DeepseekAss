@@ -7,6 +7,7 @@
 - 自动生成小说设定（背景故事、主角描述）
 """
 
+import difflib
 import json
 import os
 import re
@@ -34,14 +35,15 @@ SEGMENT_PROMPT = """你是一位文本分析专家。请分析以下文本，根
 {text}"""
 
 
-EXTRACT_PROMPT = """你是一个小说信息提取器。请严格根据以下文本内容，提取其中涉及的角色、地点、世界观规则、事件和剧情线索。
+EXTRACT_PROMPT = """你是一个小说信息深度提取专家。请严格根据以下文本内容，深度提取其中的角色、地点、世界观规则、事件和剧情线索。
 
 文本标题：{title}
 
 约束：
 - 严格基于原文，不要添加社会学分析、心理描写分析或道德评判
-- 如果原文未明确说明，不要臆测角色动机或社会背景
-- 只陈述事实，控制在字段限定的字数内
+- 对于标注了【原文引用】的字段，直接从原文复制原文，不要改写或概括
+- 对于未标注【原文引用】的字段，可以适当概括但保留所有关键信息
+- 宁多勿少，不确定该不该提取的信息请提取出来
 
 {dedup_context}
 
@@ -52,17 +54,58 @@ EXTRACT_PROMPT = """你是一个小说信息提取器。请严格根据以下文
 
 {{
   "characters": [
-    {{"name": "角色名", "aliases": ["别名"], "traits": "性格/外貌/能力描述（50字内）", "status": "alive/dead/missing/transformed", "importance": "major/normal/minor"}}
+    {{
+      "name": "角色名",
+      "aliases": ["别名", "别称"],
+      "traits": "【500字内】性格描写、外貌特征、能力特长——尽可能详细地从原文提取",
+      "relationships": [
+        {{"target": "关系对象", "type": "friend/enemy/family/master/student/ally/rival/lover", "description": "关系描述（30字内）"}}
+      ],
+      "status": "alive/dead/missing/transformed",
+      "importance": "major/normal/minor",
+      "key_details": ["【原文引用】从原文中直接复制关于该角色的重要描述片段（每段100字内）"],
+      "key_dialogues": ["【原文引用】从原文中直接复制该角色说出的重要台词（每句100字内）"],
+      "motivation": "该角色的核心动机/目标（100字内）",
+      "arc": "该角色的成长弧线/变化趋势（100字内）"
+    }}
   ],
   "locations": [
-    {{"name": "地点名", "description": "地点描述（30字内）", "significance": "重要性"}}
+    {{
+      "name": "地点名",
+      "description": "【300字内】地点的外观、氛围、布局等详细描述",
+      "significance": "【200字内】该地点在故事中的重要性/象征意义",
+      "key_details": ["【原文引用】从原文中直接复制关于该地点的重要描写片段"],
+      "atmosphere": "【200字内】该地点的氛围/给人的感觉"
+    }}
   ],
-  "rules": ["世界观规则1", "规则2"],
+  "rules": ["世界观规则1（完整保留原文描述）", "规则2"],
   "timeline": [
-    {{"event": "核心事件（30字内）", "significance": "意义"}}
+    {{
+      "event": "【200字内】核心事件的详细描述",
+      "significance": "【200字内】该事件的影响/意义",
+      "key_passages": ["【原文引用】从原文中直接复制该事件中最重要的一段描写"],
+      "foreshadowing_hints": ["该事件中埋下的伏笔或暗示（50字内）"]
+    }}
   ],
   "plot_threads": [
-    {{"name": "剧情线索名", "status": "active/resolved/dormant", "importance": "major/normal/minor", "involved_characters": ["角色名"], "description": "描述（30字内）"}}
+    {{
+      "name": "剧情线索名",
+      "status": "active/resolved/dormant",
+      "importance": "major/normal/minor",
+      "involved_characters": ["角色名"],
+      "description": "【300字内】该线索的详细描述",
+      "key_details": ["【原文引用】关于该剧情线的重要原文片段"],
+      "foreshadowing_related": ["该剧情线涉及的前期伏笔（50字内）"]
+    }}
+  ],
+  "key_worldbuilding": [
+    {{"topic": "设定主题", "passage": "【原文引用】从原文中直接复制重要的世界观设定段落（300字内）"}}
+  ],
+  "global_key_dialogues": [
+    {{"speaker": "说话者", "dialogue": "【原文引用】重要对话原文", "context": "对话背景（30字内）"}}
+  ],
+  "global_foreshadowing": [
+    {{"hint": "伏笔内容（50字内）", "relates_to": "可能相关的剧情线或角色（20字内）"}}
   ]
 }
 
@@ -145,6 +188,81 @@ def _safe_format(template: str, **kwargs) -> str:
     return result
 
 
+def _verify_verbatim(text: str, source: str) -> str:
+    """将 LLM 输出的引用文本与源文本做模糊匹配，替换为精确原文"""
+    if not text or not source:
+        return text
+    if text in source:
+        return text
+    matches = difflib.SequenceMatcher(None, text, source).get_matching_blocks()
+    if matches:
+        best = max(matches, key=lambda m: m.size)
+        if best.size >= max(5, len(text) * 0.7) and best.b >= 0:
+            return source[best.b:best.b + best.size]
+    return text
+
+
+def _merge_list_dedup(target: list, source: list) -> None:
+    """向 target 追加 source 中不重复的字符串"""
+    seen = set(target)
+    for item in source:
+        if isinstance(item, str) and item not in seen:
+            target.append(item)
+            seen.add(item)
+
+
+SYNTHESIS_PROMPT = """你是一个小说信息合成专家。以下是从同一部作品的多个段落中分别提取的世界观信息。
+请在保留所有原文引用信息的前提下，合成、去重、整合为一份统一的结构化数据。
+
+核心任务：
+1. **合并同名角色**：将同一角色的信息合并，累加 aliases、key_details、key_dialogues
+2. **交叉识别**：识别跨段落出现的同一人物/地点/剧情线，统一命名（合并同人异名时用出现次数较多的名称）
+3. **去重**：去除重复的规则、事件、关键细节
+4. **优先级**：重要性更高的版本优先，详细信息累积
+5. **全局识别**：从各段落的零散信息中识别出全局性的伏笔（global_foreshadowing）、关键世界观段落（key_worldbuilding）
+6. **保留原文引用**：所有 key_details、key_dialogues、key_passages 等原文引用字段必须原样保留，不要改写
+
+输入数据：
+{accumulated_data}
+
+请按以下 JSON 格式输出：
+{{
+  "characters": [
+    {{
+      "name": "角色名",
+      "aliases": ["别名"],
+      "traits": "整合后的详细描述",
+      "relationships": [{{"target": "关系对象", "type": "关系类型", "description": "描述"}}],
+      "status": "alive/dead/missing/transformed",
+      "importance": "major/normal/minor",
+      "key_details": ["合并所有段落中关于该角色的原文引用，去重"],
+      "key_dialogues": ["合并所有段落中该角色的台词，去重"],
+      "motivation": "合并后的动机描述",
+      "arc": "合并后的角色弧线"
+    }}
+  ],
+  "locations": [...],
+  "rules": ["去重后的规则列表"],
+  "timeline": [{"event": "事件", "significance": "意义", "key_passages": [...], "foreshadowing_hints": [...]}],
+  "plot_threads": [
+    {{
+      "name": "剧情线名",
+      "status": "active/resolved/dormant",
+      "importance": "major/normal/minor",
+      "involved_characters": ["角色"],
+      "description": "描述",
+      "key_details": ["原文引用"],
+      "foreshadowing_related": ["相关伏笔"]
+    }}
+  ],
+  "key_worldbuilding": [{{"topic": "主题", "passage": "原文引用"}}],
+  "global_key_dialogues": [{{"speaker": "说话者", "dialogue": "原文", "context": "背景"}}],
+  "global_foreshadowing": [{{"hint": "伏笔", "relates_to": "关联"}}]
+}}
+
+如果没有某项内容，用空数组 []。确保 JSON 合法。"""
+
+
 # ========== 对外接口 ==========
 
 
@@ -185,13 +303,8 @@ def extract_world_bible_from_segments(
     对每个语义段落提取世界观信息，合并为完整数据。
 
     Returns:
-        {
-            "characters": [...],
-            "locations": [...],
-            "rules": [...],
-            "timeline": [...],
-            "plot_threads": [...],
-        }
+        dict with keys: characters, locations, rules, timeline, plot_threads,
+                        key_worldbuilding, global_foreshadowing, global_key_dialogues
     """
     merged = {
         "characters": [],
@@ -199,19 +312,25 @@ def extract_world_bible_from_segments(
         "rules": [],
         "timeline": [],
         "plot_threads": [],
+        "key_worldbuilding": [],
+        "global_foreshadowing": [],
+        "global_key_dialogues": [],
     }
     seen_names = {"characters": set(), "locations": set(), "rules": set(), "plot_threads": set()}
-    # 用 chapter_num=1 标记所有条目都来自初始导入（区别于后续章节生成的条目）
+    # 用 chapter_marker=0 标记所有条目都来自初始导入
     chapter_marker = 0
+    # 用于 synthesis 步骤的全量累积数据
+    all_segment_data = []
 
     for idx, (title, content) in enumerate(segments):
+        full_text += content
         if progress_callback:
             progress_callback(idx + 1, len(segments))
 
         # 控制每段送审长度
-        content_sample = content[:4000]
+        content_sample = content[:6000]
 
-        # 去重上下文：告知 LLM 已提取的角色，避免同名不同写
+        # 去重上下文
         known_chars = list(seen_names["characters"])
         if known_chars:
             dedup_context = (
@@ -229,6 +348,8 @@ def extract_world_bible_from_segments(
         except Exception:
             continue
 
+        all_segment_data.append(data)
+
         # 合并角色
         for ch in data.get("characters", []):
             name = ch.get("name", "").strip()
@@ -238,10 +359,15 @@ def extract_world_bible_from_segments(
             merged["characters"].append({
                 "name": name,
                 "aliases": ch.get("aliases", []),
-                "traits": ch.get("traits", "")[:200],
+                "traits": ch.get("traits", "")[:500],
+                "relationships": ch.get("relationships", []),
                 "status": ch.get("status", "alive"),
                 "importance": ch.get("importance", "normal"),
                 "first_appearance": chapter_marker,
+                "key_details": [_verify_verbatim(kd, content) for kd in ch.get("key_details", [])],
+                "key_dialogues": [_verify_verbatim(kd, content) for kd in ch.get("key_dialogues", [])],
+                "motivation": ch.get("motivation", "")[:200],
+                "arc": ch.get("arc", "")[:200],
             })
 
         # 合并地点
@@ -252,9 +378,11 @@ def extract_world_bible_from_segments(
             seen_names["locations"].add(name)
             merged["locations"].append({
                 "name": name,
-                "description": loc.get("description", "")[:100],
-                "significance": loc.get("significance", "")[:100],
+                "description": loc.get("description", "")[:300],
+                "significance": loc.get("significance", "")[:200],
                 "first_appearance": chapter_marker,
+                "key_details": [_verify_verbatim(kd, content) for kd in loc.get("key_details", [])],
+                "atmosphere": loc.get("atmosphere", "")[:200],
             })
 
         # 合并规则
@@ -270,8 +398,10 @@ def extract_world_bible_from_segments(
             if event:
                 merged["timeline"].append({
                     "chapter": chapter_marker,
-                    "event": event[:100],
-                    "significance": t.get("significance", "")[:100],
+                    "event": event[:200],
+                    "significance": t.get("significance", "")[:200],
+                    "key_passages": [_verify_verbatim(kp, content) for kp in t.get("key_passages", [])],
+                    "foreshadowing_hints": [fh[:50] for fh in t.get("foreshadowing_hints", [])],
                 })
 
         # 合并剧情线
@@ -285,10 +415,119 @@ def extract_world_bible_from_segments(
                 "status": pt.get("status", "active"),
                 "importance": pt.get("importance", "normal"),
                 "involved_characters": pt.get("involved_characters", []),
-                "description": pt.get("description", "")[:200],
+                "description": pt.get("description", "")[:300],
+                "key_details": [_verify_verbatim(kd, content) for kd in pt.get("key_details", [])],
+                "foreshadowing_related": [fr[:50] for fr in pt.get("foreshadowing_related", [])],
             })
 
+        # 合并顶层字段
+        for item in data.get("key_worldbuilding", []):
+            topic = item.get("topic", "").strip()
+            passage = _verify_verbatim(item.get("passage", "").strip(), content)
+            if topic and passage:
+                merged["key_worldbuilding"].append({"topic": topic, "passage": passage[:300]})
+        for item in data.get("global_key_dialogues", []):
+            dialogue = _verify_verbatim(item.get("dialogue", "").strip(), content)
+            if dialogue:
+                merged["global_key_dialogues"].append({
+                    "speaker": item.get("speaker", "").strip(),
+                    "dialogue": dialogue,
+                    "context": item.get("context", "")[:30],
+                })
+        for item in data.get("global_foreshadowing", []):
+            hint = item.get("hint", "").strip()
+            if hint:
+                merged["global_foreshadowing"].append({
+                    "hint": hint[:50],
+                    "relates_to": item.get("relates_to", "")[:20],
+                })
+
+    # === 跨段落合成（仅段数 >= 3 时触发） ===
+    if len(all_segment_data) >= 3:
+        try:
+            _run_synthesis(client, merged, model)
+        except Exception:
+            pass  # 合成失败不影响已有提取结果
+
     return merged
+
+
+def _run_synthesis(client, merged: dict, model: str) -> None:
+    """跨段落合成步骤：调用 API 去重、合并、识别全局信息"""
+    # 构建累积数据摘要
+    summary_parts = []
+    chars = merged.get("characters", [])
+    locs = merged.get("locations", [])
+    threads = merged.get("plot_threads", [])
+
+    if chars:
+        summary_parts.append("【角色】" + "、".join(c["name"] for c in chars[:10]))
+    if locs:
+        summary_parts.append("【地点】" + "、".join(l["name"] for l in locs[:10]))
+    if threads:
+        summary_parts.append("【剧情线】" + "、".join(p["name"] for p in threads[:10]))
+    summary_parts.append(f"规则 {len(merged.get('rules', []))} 条")
+    summary_parts.append(f"事件 {len(merged.get('timeline', []))} 个")
+    summary_text = "\n".join(summary_parts)
+
+    # 将已提取的简要数据传给 synthesis prompt
+    import json as _json
+    accumulated = _json.dumps({
+        "characters": [{"name": c["name"], "traits": c.get("traits", "")[:100], "key_details": c.get("key_details", [])[:3]} for c in chars],
+        "locations": [{"name": l["name"], "description": l.get("description", "")[:100], "key_details": l.get("key_details", [])[:3]} for l in locs[:10]],
+        "plot_threads": [{"name": p["name"], "description": p.get("description", "")[:100], "key_details": p.get("key_details", [])[:3]} for p in threads[:10]],
+        "timeline_count": len(merged.get("timeline", [])),
+        "rules_count": len(merged.get("rules", [])),
+        "key_worldbuilding": merged.get("key_worldbuilding", [])[:3],
+        "global_foreshadowing": merged.get("global_foreshadowing", [])[:3],
+    }, ensure_ascii=False)
+
+    prompt = _safe_format(SYNTHESIS_PROMPT, accumulated_data=accumulated)
+    try:
+        raw = _call_api(client, [{"role": "user", "content": prompt}], model, max_tokens=4096, temperature=0.1)
+        syn_data = _parse_json(raw)
+    except Exception:
+        return
+
+    # 合并 synthesis 结果回 merged
+    # 角色：追加合成发现的新 key_details/key_dialogues
+    syn_chars = {c["name"]: c for c in syn_data.get("characters", []) if c.get("name")}
+    for existing in merged.get("characters", []):
+        syn = syn_chars.get(existing["name"])
+        if syn:
+            _merge_list_dedup(existing.setdefault("key_details", []), syn.get("key_details", []))
+            _merge_list_dedup(existing.setdefault("key_dialogues", []), syn.get("key_dialogues", []))
+            if syn.get("motivation") and not existing.get("motivation"):
+                existing["motivation"] = syn["motivation"][:200]
+            if syn.get("arc") and not existing.get("arc"):
+                existing["arc"] = syn["arc"][:200]
+
+    # 剧情线：追加合成发现的关键细节和伏笔
+    syn_threads = {p["name"]: p for p in syn_data.get("plot_threads", []) if p.get("name")}
+    for existing in merged.get("plot_threads", []):
+        syn = syn_threads.get(existing["name"])
+        if syn:
+            _merge_list_dedup(existing.setdefault("key_details", []), syn.get("key_details", []))
+            _merge_list_dedup(existing.setdefault("foreshadowing_related", []), syn.get("foreshadowing_related", []))
+
+    # 顶层字段
+    for item in syn_data.get("key_worldbuilding", []):
+        topic = item.get("topic", "").strip()
+        passage = item.get("passage", "").strip()
+        if topic and passage and not any(ex.get("topic") == topic for ex in merged.get("key_worldbuilding", [])):
+            merged.setdefault("key_worldbuilding", []).append({"topic": topic, "passage": passage[:300]})
+    for item in syn_data.get("global_foreshadowing", []):
+        hint = item.get("hint", "").strip()
+        if hint and not any(f.get("hint") == hint for f in merged.get("global_foreshadowing", [])):
+            merged.setdefault("global_foreshadowing", []).append({"hint": hint[:50], "relates_to": item.get("relates_to", "")[:20]})
+    for item in syn_data.get("global_key_dialogues", []):
+        dialogue = item.get("dialogue", "").strip()
+        if dialogue and not any(d.get("dialogue") == dialogue for d in merged.get("global_key_dialogues", [])):
+            merged.setdefault("global_key_dialogues", []).append({
+                "speaker": item.get("speaker", "").strip(),
+                "dialogue": dialogue,
+                "context": item.get("context", "")[:30],
+            })
 
 
 def generate_novel_settings_from_world_bible(
@@ -307,22 +546,23 @@ def generate_novel_settings_from_world_bible(
         }
     """
     # 格式化世界书数据供 prompt 使用
+    max_entries = 15
     chars_str = "\n".join(
-        f"- {c['name']}（{'、'.join(c.get('aliases', []))}）: {c.get('traits', '')[:100]}"
-        for c in world_data.get("characters", [])[:10]
+        f"- {c['name']}（{'、'.join(c.get('aliases', []))}）: {c.get('traits', '')[:300]}"
+        for c in world_data.get("characters", [])[:max_entries]
     ) or "（无）"
     locs_str = "\n".join(
-        f"- {l['name']}: {l.get('description', '')[:60]}"
-        for l in world_data.get("locations", [])[:10]
+        f"- {l['name']}: {l.get('description', '')[:200]}"
+        for l in world_data.get("locations", [])[:max_entries]
     ) or "（无）"
-    rules_str = "\n".join(f"- {r[:80]}" for r in world_data.get("rules", [])[:10]) or "（无）"
+    rules_str = "\n".join(f"- {r[:150]}" for r in world_data.get("rules", [])[:max_entries]) or "（无）"
     plot_str = "\n".join(
-        f"- {p['name']} [{p.get('status', 'active')}]: {p.get('description', '')[:60]}"
-        for p in world_data.get("plot_threads", [])[:10]
+        f"- {p['name']} [{p.get('status', 'active')}]: {p.get('description', '')[:150]}"
+        for p in world_data.get("plot_threads", [])[:max_entries]
     ) or "（无）"
     timeline_str = "\n".join(
-        f"- {t.get('event', '')[:60]}"
-        for t in world_data.get("timeline", [])[:10]
+        f"- {t.get('event', '')[:150]}"
+        for t in world_data.get("timeline", [])[:max_entries]
     ) or "（无）"
 
     prompt = _safe_format(BACKGROUND_PROMPT,
