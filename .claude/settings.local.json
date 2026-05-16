@@ -10,7 +10,12 @@
       "Bash(python -c \"import py_compile; py_compile.compile\\('ui/main_window.py', doraise=True\\); print\\('Syntax OK'\\)\")",
       "Bash(python *)",
       "Bash(pip show *)",
-      "WebSearch"
+      "WebSearch",
+      "Bash(git remote *)",
+      "Bash(git push *)",
+      "Bash(git show *)",
+      "Bash(del *)",
+      "PowerShell(Remove-Item *)"
     ]
   }
 }

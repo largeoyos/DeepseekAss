@@ -58,7 +58,6 @@ python gui_main.py
 - **`base_strategy.py`** (`BaseStrategy` 抽象基类) — 提供 `get_name()`、`get_system_prompt()` 以及推荐模型/temperature/top_p/max_tokens/frequency_penalty 等可覆写属性的接口。
 - **`role_play_strategy.py`** — 角色描述、故事背景、回复模式（第一人称角色 vs 第三人称叙述者）。
 - **`novel_strategy.py`** — 小说标题、章节标题、主角简介、世界观设定、写作要求。章节模式标志可启用自动章节生成工作流。
-- **`code_assistant_strategy.py`** — 带有固定系统提示词的简单模式，推荐低 temperature（0.1）和 deepseek-reasoner 模型。
 - **`continuation_strategy.py`** — 续写小说模式，基于外部文档续写后续章节，复用 `NovelManager` 保管章节。
 
 ### 工具 (`utils/`)

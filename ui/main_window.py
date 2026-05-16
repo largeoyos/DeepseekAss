@@ -47,7 +47,6 @@ from core.conversation_manager import ConversationManager
 from strategies import (
     RolePlayStrategy,
     NovelStrategy,
-    CodeAssistantStrategy,
     ContinuationStrategy,
 )
 from utils.export import (
@@ -57,6 +56,22 @@ from utils.export import (
     EXPORT_FORMATS,
     FORMAT_LABELS,
 )
+from utils.summarize import split_and_summarize
+from utils.supplement import count_cn, supplement_content
+from core.world_bible import extract_and_merge_world_bible, format_world_bible_for_prompt
+from ui.continuation_dialogs import (
+    analyze_source_text, suggest_directions,
+    ContinuationAnalysisDialog, DirectionSelectionDialog,
+)
+from ui.world_bible_dialog import WorldBibleDialog
+from utils.summarize import split_and_summarize
+from utils.supplement import count_cn, supplement_content
+from core.world_bible import extract_and_merge_world_bible, format_world_bible_for_prompt
+from ui.continuation_dialogs import (
+    analyze_source_text, suggest_directions,
+    ContinuationAnalysisDialog, DirectionSelectionDialog,
+)
+from ui.world_bible_dialog import WorldBibleDialog
 
 
 # ========== 自定义输入框（拦截 Ctrl+Enter） ==========
@@ -89,7 +104,6 @@ class StreamSignals(QObject):
 STRATEGY_OPTIONS = {
     "角色扮演": RolePlayStrategy,
     "小说写作": NovelStrategy,
-    "代码助手": CodeAssistantStrategy,
     "续写小说": ContinuationStrategy,
 }
 
@@ -285,7 +299,6 @@ INITIAL_HTML = f"""
     <table style="box-shadow:none;">
       <tr><td style="border:none; padding:8px 0;"><strong>🎭 角色扮演</strong></td><td style="border:none; padding:8px 0; color:#999;">模拟特定人物/身份的对话风格</td></tr>
       <tr><td style="border:none; padding:8px 0;"><strong>📚 小说写作</strong></td><td style="border:none; padding:8px 0; color:#999;">创意写作、情节构思、文笔润色（支持书架管理 + 章节续写）</td></tr>
-      <tr><td style="border:none; padding:8px 0;"><strong>💻 代码助手</strong></td><td style="border:none; padding:8px 0; color:#999;">编程帮助、Debug、代码审查</td></tr>
     </table>
 
     <h3 style="margin-top:20px; font-size:15px;">可用模型</h3>
@@ -560,7 +573,7 @@ class DeepSeekChatGUI(QMainWindow):
         layout.addWidget(param_group)
 
         # ── 操作按钮 ──
-        btn_group = QGroupBox("操作")
+        self._self._btn_group = QGroupBox("操作")
         btn_layout = QVBoxLayout(btn_group)
         btn_layout.setContentsMargins(8, 4, 8, 4)
         btn_layout.setSpacing(4)
@@ -842,6 +855,20 @@ class DeepSeekChatGUI(QMainWindow):
         self._plot_edit.setMinimumHeight(80)
         layout.addWidget(self._plot_edit)
 
+        # ── 目标字数 ──
+        word_row = QHBoxLayout()
+        word_row.setContentsMargins(0, 0, 0, 0)
+        word_label = QLabel("字数")
+        word_label.setFixedWidth(36)
+        self._chapter_word_count = QSpinBox()
+        self._chapter_word_count.setRange(100, 100000)
+        self._chapter_word_count.setValue(2000)
+        self._chapter_word_count.setSingleStep(500)
+        self._chapter_word_count.setSuffix(" 字")
+        word_row.addWidget(word_label)
+        word_row.addWidget(self._chapter_word_count, stretch=1)
+        layout.addLayout(word_row)
+
         # ── 生成章节按钮 ──
         generate_btn = QPushButton("🚀 生成下一章")
         generate_btn.setMinimumHeight(40)
@@ -886,6 +913,18 @@ class DeepSeekChatGUI(QMainWindow):
         manage_chapters_btn.setMinimumHeight(32)
         manage_chapters_btn.clicked.connect(self._on_manage_chapters)
         layout.addWidget(manage_chapters_btn)
+
+        # ── 世界书 + 分段摘要按钮 ──
+        tool_row = QHBoxLayout()
+        world_bible_btn = QPushButton("📖 世界书")
+        world_bible_btn.setToolTip("查看/编辑已建立的世界观设定库")
+        world_bible_btn.clicked.connect(self._on_world_bible)
+        tool_row.addWidget(world_bible_btn)
+        split_summary_btn = QPushButton("📄 分段摘要")
+        split_summary_btn.setToolTip("对选定的文件进行分段摘要分析")
+        split_summary_btn.clicked.connect(self._on_split_summarize)
+        tool_row.addWidget(split_summary_btn)
+        layout.addLayout(tool_row)
 
         # ── 导出按钮 ──
         export_label = QLabel("导出")
@@ -980,8 +1019,27 @@ class DeepSeekChatGUI(QMainWindow):
         self._continue_plot.setMinimumHeight(60)
         layout.addWidget(self._continue_plot)
 
-        # ── 开始续写按钮 ──
-        continue_btn = QPushButton("开始续写")
+        # ── 分析源文档按钮 ──
+        analyze_cont_btn = QPushButton("🔍 分析源文档")
+        analyze_cont_btn.setMinimumHeight(36)
+        analyze_cont_btn.setStyleSheet("""
+            QPushButton {
+                background: #2d5a8b;
+                color: white;
+                border: none;
+                border-radius: 6px;
+                padding: 8px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: #3d7abb;
+            }
+        """)
+        analyze_cont_btn.clicked.connect(self._on_analyze_continuation)
+        layout.addWidget(analyze_cont_btn)
+
+        # ── 直接续写按钮 ──
+        continue_btn = QPushButton("开始续写（直接续写，跳过分析）")
         continue_btn.setMinimumHeight(40)
         continue_btn.setStyleSheet("""
             QPushButton {
@@ -1378,6 +1436,11 @@ class DeepSeekChatGUI(QMainWindow):
         self._toggle_role_play_panel(is_role_play)
         self._toggle_continuation_panel(is_continuation)
 
+        # 操作/对话历史面板仅在聊天模式可见
+        is_chat_mode = is_role_play
+        self._btn_group.setVisible(is_chat_mode)
+        self._history_group.setVisible(is_chat_mode)
+
         if is_novel:
             self._refresh_novel_bookshelf()
             self._on_book_selected(self._bookshelf_combo.currentText())
@@ -1685,6 +1748,14 @@ class DeepSeekChatGUI(QMainWindow):
         self._streaming = True
         self._assistant_text_buffer = []
 
+        # 同步 UI 值到策略对象
+        if isinstance(self._client.strategy, NovelStrategy):
+            self._client.strategy.chapter_title = chapter_title
+            self._client.strategy.novel_title = title
+            self._client.strategy.protagonist_bio = self._protagonist_edit.toPlainText().strip()
+            self._client.strategy.background_story = self._background_edit.toPlainText().strip()
+            self._client.strategy.writing_demand = self._demand_edit.toPlainText().strip()
+
         self._append_user_message(f"📖 生成第{self._novel_manager.get_next_chapter_num(title)}章：{chapter_title}")
 
         threading.Thread(
@@ -1716,7 +1787,19 @@ class DeepSeekChatGUI(QMainWindow):
         # 用户填入的本章节情节内容
         plot_content = self._plot_edit.toPlainText().strip()
 
+        # 注入世界书信息
+        world_bible_text = ""
+        try:
+            bible = self._novel_manager.load_world_bible(title)
+            if bible and (bible.characters or bible.locations or bible.rules or bible.active_plot_threads):
+                from core.world_bible import format_world_bible_for_prompt
+                world_bible_text = format_world_bible_for_prompt(bible)
+        except Exception:
+            pass
+
         parts = [f"【前情提要】：\n{summary}\n"]
+        if world_bible_text:
+            parts.append(f"【世界书（已建立设定库）】：\n{world_bible_text}\n")
         if history and history != "暂无历史记录。" and history != "暂无历史记录（排除当前章节后）。":
             parts.append(f"【历史生成记录参考（前面各章风格/配置）】：\n{history}\n")
         parts.append(f"现在请开始撰写第 {chapter_num} 章：{chapter_title}。\n")
@@ -1736,10 +1819,16 @@ class DeepSeekChatGUI(QMainWindow):
         try:
             chapter_num = self._novel_manager.get_next_chapter_num(title)
 
-            target_words = max(2000, self._client.max_tokens // 2)
-            messages = [
-                {"role": "system", "content": f"你是一位文笔细腻、想象力丰富的长篇小说作家。直接输出小说正文，绝对不要添加任何解释、前言、章节概括或作者的话。本章字数不少于{target_words}字，要求情节饱满、细节丰富、场景描写生动。开头用悬念或场景快速切入，结尾适当留悬念。严格按照用户提供的【核心设定】和【人物背景】保持一致性。"},
-            ]
+            target_words = self._chapter_word_count.value()
+            strategy = self._client.strategy
+            if isinstance(strategy, NovelStrategy):
+                system_msgs = strategy.build_system_messages()
+                main_sys = f"你是一位文笔细腻、想象力丰富的长篇小说作家。直接输出小说正文，绝对不要添加任何解释、前言、章节概括或作者的话。本章字数不少于{target_words}字，要求情节饱满、细节丰富、场景描写生动。开头用悬念或场景快速切入，结尾适当留悬念。严格按照用户提供的【核心设定】和【人物背景】保持一致性。"
+                messages = [{"role": "system", "content": main_sys}] + system_msgs
+            else:
+                messages = [
+                    {"role": "system", "content": f"你是一位文笔细腻、想象力丰富的长篇小说作家。直接输出小说正文，绝对不要添加任何解释、前言、章节概括或作者的话。本章字数不少于{target_words}字，要求情节饱满、细节丰富、场景描写生动。开头用悬念或场景快速切入，结尾适当留悬念。严格按照用户提供的【核心设定】和【人物背景】保持一致性。"},
+                ]
 
             bg = self._background_edit.toPlainText().strip()
             bio = self._protagonist_edit.toPlainText().strip()
@@ -1813,6 +1902,40 @@ class DeepSeekChatGUI(QMainWindow):
                     title, chapter_num, chapter_title, summary
                 )
                 self._stream_signals.token.emit(f"📋 剧情摘要已同步至记忆库。\n\n")
+
+                # 字数补充检查
+                from utils.supplement import count_cn, supplement_content
+                actual_words = count_cn(content)
+                target_chars = self._chapter_word_count.value()
+                if actual_words < target_chars * 0.8 and actual_words > 0:
+                    self._stream_signals.token.emit(f"\n📝 当前{actual_words}字，目标{target_chars}字，正在进行补充...\n")
+                    try:
+                        supplemented = supplement_content(
+                            self._client.raw_client, content, target_chars, actual_words,
+                            chapter_title, self._client.model, self._client.temperature
+                        )
+                        if supplemented and len(supplemented) > len(content):
+                            content = supplemented
+                            file_path, saved_version = self._novel_manager.save_chapter_version(
+                                title, chapter_num, chapter_title, content, version=saved_version
+                            )
+                            final_words = count_cn(content)
+                            self._stream_signals.token.emit(f"✅ 补充完成，总字数：{final_words}字 (v{saved_version})\n")
+                    except Exception as supp_e:
+                        self._stream_signals.token.emit(f"⚠️ 补充过程出错: {supp_e}\n")
+
+                # 更新世界书
+                self._stream_signals.token.emit("📖 正在更新世界书...\n")
+                try:
+                    from core.world_bible import extract_and_merge_world_bible
+                    bible = self._novel_manager.load_world_bible(title)
+                    updated_bible = extract_and_merge_world_bible(
+                        self._client.raw_client, content, chapter_num, bible, self._client.model
+                    )
+                    self._novel_manager.save_world_bible(title, updated_bible)
+                    self._stream_signals.token.emit("✅ 世界书已更新。\n")
+                except Exception as wb_e:
+                    self._stream_signals.token.emit(f"⚠️ 世界书更新跳过: {wb_e}\n")
 
             self._refresh_chapter_info_display(title)
             next_ch = self._novel_manager.get_next_chapter_num(title)
@@ -2034,6 +2157,39 @@ class DeepSeekChatGUI(QMainWindow):
             )
             self._stream_signals.token.emit("📋 剧情摘要已同步至记忆库。\n")
 
+            # 字数补充检查
+            from utils.supplement import count_cn, supplement_content
+            actual_words = count_cn(content)
+            if actual_words < word_count * 0.8 and actual_words > 0:
+                self._stream_signals.token.emit(f"\n📝 当前{actual_words}字，目标{word_count}字，正在进行补充...\n")
+                try:
+                    supplemented = supplement_content(
+                        self._client.raw_client, content, word_count, actual_words,
+                        chapter_title, self._client.model, self._client.temperature
+                    )
+                    if supplemented and len(supplemented) > len(content):
+                        content = supplemented
+                        file_path, saved_version = self._novel_manager.save_chapter_version(
+                            book_title, chapter_num, chapter_title, content, version=saved_version
+                        )
+                        final_words = count_cn(content)
+                        self._stream_signals.token.emit(f"✅ 补充完成，总字数：{final_words}字 (v{saved_version})\n")
+                except Exception as supp_e:
+                    self._stream_signals.token.emit(f"⚠️ 补充过程出错: {supp_e}\n")
+
+            # 更新世界书
+            self._stream_signals.token.emit("📖 正在更新世界书...\n")
+            try:
+                from core.world_bible import extract_and_merge_world_bible
+                bible = self._novel_manager.load_world_bible(book_title)
+                updated_bible = extract_and_merge_world_bible(
+                    self._client.raw_client, content, chapter_num, bible, self._client.model
+                )
+                self._novel_manager.save_world_bible(book_title, updated_bible)
+                self._stream_signals.token.emit("✅ 世界书已更新。\n")
+            except Exception as wb_e:
+                self._stream_signals.token.emit(f"⚠️ 世界书更新跳过: {wb_e}\n")
+
             self._refresh_chapter_info_display(book_title)
             self._stream_signals.token.emit(
                 f"\n📖 下一章：第{self._novel_manager.get_next_chapter_num(book_title)}章\n"
@@ -2189,6 +2345,229 @@ class DeepSeekChatGUI(QMainWindow):
             else:
                 lines.append(f"  · 第{ch['num']}章「{ch['title']}」")
         self._chapter_info_label.setText("\n".join(lines))
+
+    # ========== 📖 世界书对话框 ==========
+
+    def _on_world_bible(self) -> None:
+        """打开世界书编辑对话框"""
+        title = self._novel_title_edit.text().strip()
+        if not title:
+            QMessageBox.warning(self, "提示", "请先选择或创建一本小说。")
+            return
+        from ui.world_bible_dialog import WorldBibleDialog
+        bible = self._novel_manager.load_world_bible(title)
+        dlg = WorldBibleDialog(self, bible)
+        if dlg.exec() == QDialog.DialogCode.Accepted:
+            self._novel_manager.save_world_bible(title, dlg.get_bible())
+            QMessageBox.information(self, "提示", "世界书已保存。")
+
+    # ========== 📄 分段摘要 ==========
+
+    def _on_split_summarize(self) -> None:
+        """对选定文件进行分段摘要"""
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "选择要摘要的文档",
+            "",
+            "文本文件 (*.txt *.md);;所有文件 (*.*)",
+        )
+        if not file_path:
+            return
+        from utils.summarize import split_and_summarize
+        client = self._client.raw_client if hasattr(self, '_client') else None
+        if client is None:
+            QMessageBox.warning(self, "错误", "客户端未初始化。")
+            return
+
+        self._streaming = True
+        self._assistant_text_buffer = []
+        self._append_user_message(f"📄 分段摘要：{os.path.basename(file_path)}")
+
+        def _run():
+            try:
+                self._stream_signals.token.emit(f"\n\n📄 正在对「{os.path.basename(file_path)}」进行分段摘要...\n\n")
+                segments = split_and_summarize(client, file_path, self._client.model)
+                for seg in segments:
+                    heading = seg.get("heading", "")
+                    summary = seg.get("summary", "")
+                    self._stream_signals.token.emit(f"**{heading}**\n{summary}\n\n")
+                self._stream_signals.token.emit("\n---\n✅ 分段摘要完成。\n")
+                self._stream_signals.finished.emit()
+            except Exception as e:
+                self._stream_signals.error.emit(f"分段摘要失败: {e}")
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    # ========== 🔍 续写分析流程 ==========
+
+    def _on_analyze_continuation(self) -> None:
+        """分析源文档 → 弹出设定编辑对话框"""
+        if self._streaming:
+            return
+        source_file = self._continue_file_path.text().strip()
+        source_folder = self._continue_folder_path.text().strip()
+        if not source_file and not source_folder:
+            QMessageBox.warning(self, "提示", "请先选择续写源文档或文件夹。")
+            return
+
+        source_text = ""
+        if source_file:
+            if not os.path.isfile(source_file):
+                QMessageBox.warning(self, "错误", f"文件不存在：{source_file}")
+                return
+            try:
+                with open(source_file, "r", encoding="utf-8") as f:
+                    source_text = f.read()
+            except UnicodeDecodeError:
+                try:
+                    with open(source_file, "r", encoding="gbk") as f:
+                        source_text = f.read()
+                except Exception as e:
+                    QMessageBox.warning(self, "错误", f"无法读取文件：{e}")
+                    return
+            except Exception as e:
+                QMessageBox.warning(self, "错误", f"无法读取文件：{e}")
+                return
+        elif source_folder:
+            if not os.path.isdir(source_folder):
+                QMessageBox.warning(self, "错误", f"文件夹不存在：{source_folder}")
+                return
+            ext_map = {".txt", ".md", ".html", ".htm"}
+            files = sorted(f for f in os.listdir(source_folder) if os.path.splitext(f)[1].lower() in ext_map)
+            if not files:
+                QMessageBox.warning(self, "提示", "文件夹中没有找到文本文件。")
+                return
+            parts = []
+            for fname in files:
+                fpath = os.path.join(source_folder, fname)
+                try:
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        content = f.read()
+                except UnicodeDecodeError:
+                    try:
+                        with open(fpath, "r", encoding="gbk") as f:
+                            content = f.read()
+                    except Exception:
+                        content = f"[无法读取：{fname}]\n"
+                except Exception:
+                    content = f"[无法读取：{fname}]\n"
+                parts.append(f"===== {fname} =====\n{content}")
+            source_text = "\n\n".join(parts)
+
+        if not source_text.strip():
+            QMessageBox.warning(self, "提示", "源文档内容为空。")
+            return
+
+        client = self._client.raw_client if hasattr(self, '_client') else None
+        if client is None:
+            QMessageBox.warning(self, "错误", "客户端未初始化。")
+            return
+
+        model = self._client.model
+        self._streaming = True
+        self._assistant_text_buffer = []
+        self._append_user_message(f"🔍 分析源文档：{os.path.basename(source_file) if source_file else os.path.basename(source_folder)}")
+
+        def _run_analyze():
+            try:
+                self._stream_signals.token.emit("\n\n🔍 正在分析源文档，提取核心设定和剧情概要...\n\n")
+                setting, plot = analyze_source_text(client, source_text, model)
+                self._stream_signals.token.emit("✅ 分析完成。\n")
+                self._stream_signals.finished.emit()
+
+                from PyQt6.QtCore import QMetaObject, Qt, Q_ARG
+                QMetaObject.invokeMethod(
+                    self, "_show_analysis_dialog",
+                    Qt.ConnectionType.QueuedConnection,
+                    Q_ARG(str, setting), Q_ARG(str, plot),
+                    Q_ARG(str, source_text),
+                )
+            except Exception as e:
+                self._stream_signals.error.emit(f"分析失败: {e}")
+
+        threading.Thread(target=_run_analyze, daemon=True).start()
+
+    def _show_analysis_dialog(self, setting: str, plot: str, source_text: str) -> None:
+        """在主线程显示分析结果对话框"""
+        self._streaming = False
+        self._cont_analysis_source = source_text
+        self._cont_analysis_setting = setting
+        self._cont_analysis_plot = plot
+
+        dlg = ContinuationAnalysisDialog(
+            self, setting, plot,
+            on_suggest=self._on_cont_suggest,
+            on_specify=self._on_cont_specify,
+        )
+        dlg.exec()
+
+    def _on_cont_suggest(self, setting: str, plot_outline: str, word_count: int) -> None:
+        """AI 建议发展方向 → 用户选择 → 续写"""
+        client = self._client.raw_client if hasattr(self, '_client') else None
+        if client is None:
+            return
+
+        self._streaming = True
+        self._assistant_text_buffer = []
+        self._append_user_message("🎲 AI 建议发展方向")
+
+        def _run():
+            try:
+                self._stream_signals.token.emit("\n\n🎲 AI 正在分析发展方向...\n\n")
+                directions = suggest_directions(client, setting, plot_outline, self._client.model)
+                self._stream_signals.finished.emit()
+
+                from PyQt6.QtCore import QMetaObject, Qt
+                QMetaObject.invokeMethod(
+                    self, "_show_direction_selector",
+                    Qt.ConnectionType.QueuedConnection,
+                    arguments=(directions, setting, plot_outline, word_count),
+                )
+            except Exception as e:
+                self._stream_signals.error.emit(f"方向建议失败: {e}")
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _show_direction_selector(self, directions: list, setting: str, plot_outline: str, word_count: int):
+        """在主线程显示方向选择对话框"""
+        self._streaming = False
+        dlg = DirectionSelectionDialog(self, directions)
+        if dlg.exec() == QDialog.DialogCode.Accepted and dlg.selected_direction:
+            self._do_continuation_with_context(setting, plot_outline, dlg.selected_direction, word_count)
+
+    def _on_cont_specify(self, setting: str, plot_outline: str, word_count: int) -> None:
+        """用户指定剧情 → 续写"""
+        plot = self._continue_plot.toPlainText().strip()
+        self._do_continuation_with_context(setting, plot_outline, plot, word_count)
+
+    def _do_continuation_with_context(self, setting: str, plot_outline: str, plot_content: str, word_count: int) -> None:
+        """带分析上下文的续写执行"""
+        source_text = getattr(self, '_cont_analysis_source', "")
+        if not source_text:
+            QMessageBox.warning(self, "错误", "分析上下文丢失，请重新分析。")
+            return
+
+        book_title = self._bookshelf_combo.currentText().strip()
+        if not book_title:
+            book_title = "续写作品"
+            self._novel_manager.create_book(book_title)
+            self._refresh_novel_bookshelf()
+            self._bookshelf_combo.setCurrentText(book_title)
+
+        chapter_num = self._novel_manager.get_next_chapter_num(book_title)
+        chapter_title = f"续写 (第{chapter_num}章)"
+        requirement = self._continue_requirement.toPlainText().strip()
+        plot = plot_content
+
+        self._streaming = True
+        self._assistant_text_buffer = []
+        self._append_user_message(f"📝 续写第{chapter_num}章：{chapter_title}")
+
+        threading.Thread(
+            target=self._run_continuation,
+            args=(book_title, chapter_num, chapter_title, source_text, requirement, word_count, plot),
+            daemon=True,
+        ).start()
 
     # ========== ⚙ 章节管理对话框 ==========
 
