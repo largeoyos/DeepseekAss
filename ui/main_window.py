@@ -14,6 +14,7 @@ import threading
 from PyQt6.QtCore import Qt, pyqtSignal, QObject
 from PyQt6.QtWidgets import (
     QApplication,
+    QDialog,
     QMainWindow,
     QWidget,
     QVBoxLayout,
@@ -56,22 +57,11 @@ from utils.export import (
     EXPORT_FORMATS,
     FORMAT_LABELS,
 )
-from utils.summarize import split_and_summarize
-from utils.supplement import count_cn, supplement_content
-from core.world_bible import extract_and_merge_world_bible, format_world_bible_for_prompt
+from ui.world_bible_dialog import WorldBibleDialog
 from ui.continuation_dialogs import (
     analyze_source_text, suggest_directions,
     ContinuationAnalysisDialog, DirectionSelectionDialog,
 )
-from ui.world_bible_dialog import WorldBibleDialog
-from utils.summarize import split_and_summarize
-from utils.supplement import count_cn, supplement_content
-from core.world_bible import extract_and_merge_world_bible, format_world_bible_for_prompt
-from ui.continuation_dialogs import (
-    analyze_source_text, suggest_directions,
-    ContinuationAnalysisDialog, DirectionSelectionDialog,
-)
-from ui.world_bible_dialog import WorldBibleDialog
 
 
 # ========== 自定义输入框（拦截 Ctrl+Enter） ==========
@@ -97,6 +87,8 @@ class StreamSignals(QObject):
     token = pyqtSignal(str)
     finished = pyqtSignal()
     error = pyqtSignal(str)
+    analysis_done = pyqtSignal(str, str, str)     # setting, plot, source_text
+    directions_ready = pyqtSignal(list, str, str, int)  # directions, setting, plot, word_count
 
 
 # ========== 模式配置 ==========
@@ -343,6 +335,8 @@ class DeepSeekChatGUI(QMainWindow):
         self._stream_signals.token.connect(self._on_stream_token)
         self._stream_signals.finished.connect(self._on_stream_finished)
         self._stream_signals.error.connect(self._on_stream_error)
+        self._stream_signals.analysis_done.connect(self._show_analysis_dialog)
+        self._stream_signals.directions_ready.connect(self._show_direction_selector)
 
         # 小说管理器
         self._novel_manager = NovelManager()
@@ -573,8 +567,8 @@ class DeepSeekChatGUI(QMainWindow):
         layout.addWidget(param_group)
 
         # ── 操作按钮 ──
-        self._self._btn_group = QGroupBox("操作")
-        btn_layout = QVBoxLayout(btn_group)
+        self._btn_group = QGroupBox("操作")
+        btn_layout = QVBoxLayout(self._btn_group)
         btn_layout.setContentsMargins(8, 4, 8, 4)
         btn_layout.setSpacing(4)
 
@@ -599,7 +593,7 @@ class DeepSeekChatGUI(QMainWindow):
         clear_btn.clicked.connect(self._on_clear)
         btn_layout.addWidget(clear_btn)
 
-        layout.addWidget(btn_group)
+        layout.addWidget(self._btn_group)
 
         # ── 💬 对话历史 ──
         self._history_group = QGroupBox("💬 对话历史")
@@ -608,7 +602,7 @@ class DeepSeekChatGUI(QMainWindow):
         history_layout.setSpacing(4)
 
         save_hist_btn = QPushButton("💾 保存当前对话")
-        save_hist_btn.clicked.connect(self. _on_save_conversation)
+        save_hist_btn.clicked.connect(self._on_save_conversation)
         history_layout.addWidget(save_hist_btn)
 
         hist_list_row = QHBoxLayout()
@@ -1821,21 +1815,16 @@ class DeepSeekChatGUI(QMainWindow):
 
             target_words = self._chapter_word_count.value()
             strategy = self._client.strategy
+            main_sys = (
+                "你是一位文笔细腻、想象力丰富的长篇小说作家。直接输出小说正文，"
+                "绝对不要添加任何解释、前言、章节概括或作者的话。"
+                f"本章字数不少于{target_words}字，要求情节饱满、细节丰富、场景描写生动。"
+                "开头用悬念或场景快速切入，结尾适当留悬念。"
+                "严格按照用户提供的【核心设定】和【人物背景】保持一致性。"
+            )
+            messages = [{"role": "system", "content": main_sys}]
             if isinstance(strategy, NovelStrategy):
-                system_msgs = strategy.build_system_messages()
-                main_sys = f"你是一位文笔细腻、想象力丰富的长篇小说作家。直接输出小说正文，绝对不要添加任何解释、前言、章节概括或作者的话。本章字数不少于{target_words}字，要求情节饱满、细节丰富、场景描写生动。开头用悬念或场景快速切入，结尾适当留悬念。严格按照用户提供的【核心设定】和【人物背景】保持一致性。"
-                messages = [{"role": "system", "content": main_sys}] + system_msgs
-            else:
-                messages = [
-                    {"role": "system", "content": f"你是一位文笔细腻、想象力丰富的长篇小说作家。直接输出小说正文，绝对不要添加任何解释、前言、章节概括或作者的话。本章字数不少于{target_words}字，要求情节饱满、细节丰富、场景描写生动。开头用悬念或场景快速切入，结尾适当留悬念。严格按照用户提供的【核心设定】和【人物背景】保持一致性。"},
-                ]
-
-            bg = self._background_edit.toPlainText().strip()
-            bio = self._protagonist_edit.toPlainText().strip()
-            if bg:
-                messages.append({"role": "system", "content": f"【核心设定】：\n{bg}"})
-            if bio:
-                messages.append({"role": "system", "content": f"【人物背景】：\n{bio}"})
+                messages += strategy.build_system_messages()
 
             user_prompt = self._build_chapter_prompt(title, chapter_title)
             messages.append({"role": "user", "content": user_prompt})
@@ -2354,7 +2343,6 @@ class DeepSeekChatGUI(QMainWindow):
         if not title:
             QMessageBox.warning(self, "提示", "请先选择或创建一本小说。")
             return
-        from ui.world_bible_dialog import WorldBibleDialog
         bible = self._novel_manager.load_world_bible(title)
         dlg = WorldBibleDialog(self, bible)
         if dlg.exec() == QDialog.DialogCode.Accepted:
@@ -2474,14 +2462,7 @@ class DeepSeekChatGUI(QMainWindow):
                 setting, plot = analyze_source_text(client, source_text, model)
                 self._stream_signals.token.emit("✅ 分析完成。\n")
                 self._stream_signals.finished.emit()
-
-                from PyQt6.QtCore import QMetaObject, Qt, Q_ARG
-                QMetaObject.invokeMethod(
-                    self, "_show_analysis_dialog",
-                    Qt.ConnectionType.QueuedConnection,
-                    Q_ARG(str, setting), Q_ARG(str, plot),
-                    Q_ARG(str, source_text),
-                )
+                self._stream_signals.analysis_done.emit(setting, plot, source_text)
             except Exception as e:
                 self._stream_signals.error.emit(f"分析失败: {e}")
 
@@ -2516,13 +2497,7 @@ class DeepSeekChatGUI(QMainWindow):
                 self._stream_signals.token.emit("\n\n🎲 AI 正在分析发展方向...\n\n")
                 directions = suggest_directions(client, setting, plot_outline, self._client.model)
                 self._stream_signals.finished.emit()
-
-                from PyQt6.QtCore import QMetaObject, Qt
-                QMetaObject.invokeMethod(
-                    self, "_show_direction_selector",
-                    Qt.ConnectionType.QueuedConnection,
-                    arguments=(directions, setting, plot_outline, word_count),
-                )
+                self._stream_signals.directions_ready.emit(directions, setting, plot_outline, word_count)
             except Exception as e:
                 self._stream_signals.error.emit(f"方向建议失败: {e}")
 

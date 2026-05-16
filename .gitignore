@@ -20,3 +20,8 @@ build/
 Thumbs.db
 
 /bookshelf
+/conversations
+
+# Temp files
+tempCodeRunnerFile.py
+

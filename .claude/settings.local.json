@@ -15,7 +15,9 @@
       "Bash(git push *)",
       "Bash(git show *)",
       "Bash(del *)",
-      "PowerShell(Remove-Item *)"
+      "PowerShell(Remove-Item *)",
+      "Bash(D:\\\\soft\\\\py12\\\\python.exe *)",
+      "Bash(\"D:\\\\soft\\\\py12\\\\python.exe\" gui_main.py)"
     ]
   }
 }

@@ -21,16 +21,17 @@ from PyQt6.QtWidgets import (
 class WorldBibleDialog(QDialog):
     """世界书查看/编辑对话框"""
 
-    def __init__(self, parent, world_bible, save_callback):
+    def __init__(self, parent, world_bible, save_callback=None):
         """
         Args:
             parent: 父窗口
             world_bible: WorldBible 对象 (from core.world_bible)
-            save_callback: 保存回调，参数为 WorldBible
+            save_callback: 可选，保存回调，参数为 WorldBible
         """
         super().__init__(parent)
         self._bible = world_bible
         self._save_callback = save_callback
+        self._saved = False
         self.setWindowTitle("📖 世界书 - 已建立的设定与世界观")
         self.resize(700, 500)
         self.setModal(True)
@@ -149,6 +150,10 @@ class WorldBibleDialog(QDialog):
             characters.append(CharacterEntry(**current))
         return characters
 
+    def get_bible(self):
+        """返回修改后的 WorldBible 对象（在 exec 返回 Accepted 后调用）"""
+        return self._bible
+
     def _on_save(self):
         """保存所有标签页的修改回 WorldBible"""
         try:
@@ -162,7 +167,11 @@ class WorldBibleDialog(QDialog):
             if rule_text and "尚未提取到" not in rule_text:
                 self._bible.rules = [r.strip() for r in rule_text.split("\n") if r.strip() and not r.startswith("#")]
 
-            self._save_callback(self._bible)
-            QMessageBox.information(self, "成功", "世界书已保存。")
+            if self._save_callback:
+                self._save_callback(self._bible)
+                QMessageBox.information(self, "成功", "世界书已保存。")
+            else:
+                self._saved = True
+                self.accept()
         except Exception as e:
             QMessageBox.critical(self, "错误", f"保存失败: {e}")

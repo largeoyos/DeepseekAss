@@ -716,3 +716,31 @@ class NovelManager:
 
     def _summary_path(self, title: str) -> str:
         return os.path.join(self._book_dir(title), "plot_summary.txt")
+
+    def _world_bible_path(self, title: str) -> str:
+        return os.path.join(self._book_dir(title), "world_bible.json")
+
+    def load_world_bible(self, title: str):
+        """加载小说的世界书，返回 WorldBible 对象，不存在则返回空 WorldBible"""
+        from core.world_bible import WorldBible, dict_to_world_bible
+        wb_path = self._world_bible_path(title)
+        if os.path.exists(wb_path):
+            try:
+                with open(wb_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                return dict_to_world_bible(data)
+            except Exception:
+                return WorldBible()
+        return WorldBible()
+
+    def save_world_bible(self, title: str, bible) -> None:
+        """保存世界书到文件"""
+        from core.world_bible import world_bible_to_dict
+        wb_path = self._world_bible_path(title)
+        os.makedirs(os.path.dirname(wb_path), exist_ok=True)
+        try:
+            data = world_bible_to_dict(bible)
+            with open(wb_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
