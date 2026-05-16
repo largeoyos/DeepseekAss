@@ -1655,17 +1655,34 @@ class DeepSeekChatGUI(QMainWindow):
         if isinstance(self._client.strategy, NovelStrategy):
             self._client.strategy.chapter_title = text.strip()
 
+    def _auto_save_novel_settings(self) -> None:
+        """自动保存当前小说的设定到 meta.json"""
+        title = self._novel_title_edit.text().strip()
+        if not title or title.startswith("（暂无小说"):
+            return
+        # 确保小说目录存在
+        self._novel_manager.create_book(title)
+        self._novel_manager.save_meta(
+            title,
+            protagonist_bio=self._protagonist_edit.toPlainText().strip(),
+            background_story=self._background_edit.toPlainText().strip(),
+            writing_demand=self._demand_edit.toPlainText().strip(),
+        )
+
     def _on_protagonist_changed(self) -> None:
         if isinstance(self._client.strategy, NovelStrategy):
             self._client.strategy.protagonist_bio = self._protagonist_edit.toPlainText().strip()
+            self._auto_save_novel_settings()
 
     def _on_background_changed(self) -> None:
         if isinstance(self._client.strategy, NovelStrategy):
             self._client.strategy.background_story = self._background_edit.toPlainText().strip()
+            self._auto_save_novel_settings()
 
     def _on_demand_changed(self) -> None:
         if isinstance(self._client.strategy, NovelStrategy):
             self._client.strategy.writing_demand = self._demand_edit.toPlainText().strip()
+            self._auto_save_novel_settings()
 
     def _on_chapter_mode_toggled(self, checked: bool) -> None:
         if isinstance(self._client.strategy, NovelStrategy):
