@@ -2615,6 +2615,11 @@ class DeepSeekChatGUI(QMainWindow):
             QMessageBox.warning(self, "提示", "源文档内容为空，无法续写。")
             return
 
+        # 检查当前选择的书是否已有章节
+        book_title = self._get_current_book_title()
+        if book_title and not self._check_book_empty(book_title):
+            return
+
         # ── 段落预览弹窗 ──
         client = self._client.raw_client if hasattr(self, '_client') else None
         dlg = SectionPreviewDialog(
@@ -3197,6 +3202,39 @@ class DeepSeekChatGUI(QMainWindow):
         self._bookshelf_combo.setCurrentText(title)
         self._on_book_selected(title)
 
+    def _check_book_empty(self, title: str) -> bool:
+        """检查目标书是否完全空（无章节、无设定、无世界书），非空时弹警告并返回 False"""
+        chapters = self._novel_manager.list_chapters(title)
+        if chapters:
+            QMessageBox.warning(
+                self, "提示",
+                f"「{title}」已有 {len(chapters)} 个章节，\n"
+                f"请先创建一本新小说，或选择一个空书架。"
+            )
+            return False
+
+        meta = self._novel_manager.load_meta(title)
+        if meta.protagonist_bio or meta.background_story or meta.writing_demand:
+            QMessageBox.warning(
+                self, "提示",
+                f"「{title}」已有设定信息，\n"
+                f"请先创建一本新小说，或选择一个空书架。"
+            )
+            return False
+
+        bible = self._novel_manager.load_world_bible(title)
+        if (bible.characters or bible.locations or bible.rules
+                or bible.active_plot_threads or bible.key_worldbuilding_passages
+                or bible.global_foreshadowing or bible.global_key_dialogues):
+            QMessageBox.warning(
+                self, "提示",
+                f"「{title}」已有世界书信息，\n"
+                f"请先创建一本新小说，或选择一个空书架。"
+            )
+            return False
+
+        return True
+
     # ========== 🔍 续写分析流程 ==========
 
     def _on_analyze_continuation(self) -> None:
@@ -3228,6 +3266,9 @@ class DeepSeekChatGUI(QMainWindow):
                 title = os.path.basename(source_folder)
             else:
                 title = "续写作品"
+
+        if not self._check_book_empty(title):
+            return
 
         # ── 段落预览弹窗 ──
         dlg = SectionPreviewDialog(
@@ -3266,20 +3307,6 @@ class DeepSeekChatGUI(QMainWindow):
         if not sections:
             QMessageBox.warning(self, "提示", "段落列表为空，无法分析。")
             return
-
-        # 检查目标书是否已有章节
-        existing_chapters = self._novel_manager.list_chapters(title)
-        if existing_chapters:
-            reply = QMessageBox.question(
-                self, "确认覆盖",
-                f"「{title}」已有 {len(existing_chapters)} 个章节。\n\n"
-                f"导入源文档将清空这些章节。确定继续吗？\n\n"
-                f"建议：若想保留现有章节，请先创建一本新小说。",
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                QMessageBox.StandardButton.No,
-            )
-            if reply != QMessageBox.StandardButton.Yes:
-                return
 
         model = self._client.model
         self._streaming = True

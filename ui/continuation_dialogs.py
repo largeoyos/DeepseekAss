@@ -634,7 +634,9 @@ class SectionPreviewDialog(QDialog):
             self._section_list.setCurrentRow(0)
 
     def _on_section_selected(self, row: int):
-        """段落选中 → 预览内容"""
+        """段落选中 → 预览内容（文件模式专用；文件夹模式由 _on_folder_file_selected 处理）"""
+        if self._source_text is None:
+            return  # 文件夹模式下此处理器不应触发，但 _build_ui 连接了信号
         if 0 <= row < len(self._sections_data):
             _, content = self._sections_data[row]
             self._preview_edit.setPlainText(content[:2000])
