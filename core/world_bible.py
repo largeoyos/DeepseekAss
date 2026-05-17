@@ -329,6 +329,10 @@ def extract_and_merge_world_bible(
     existing_bible: WorldBible | None,
     model: str,
     global_user_prompt: str = "",
+    story_context: str = "",
+    background_story: str = "",
+    protagonist_bio: str = "",
+    writing_demand: str = "",
 ) -> WorldBible:
     """
     分析章节内容，提取世界观信息并与现有世界书合并
@@ -340,6 +344,10 @@ def extract_and_merge_world_bible(
         existing_bible: 现有的世界书，None 表示新建
         model: 模型名称
         global_user_prompt: 用户全局提示词（偏好参考）
+        story_context: 前文摘要（用于批量导入时逐章积累）
+        background_story: 世界观设定背景
+        protagonist_bio: 主角描述
+        writing_demand: 写作要求
 
     Returns:
         合并后的 WorldBible
@@ -349,7 +357,21 @@ def extract_and_merge_world_bible(
     # 截取前 6000 字分析
     content_sample = chapter_content[:6000]
 
-    user_content = EXTRACT_PROMPT + content_sample
+    # 如果有故事背景上下文，构建 prompt 前缀
+    ctx_parts = []
+    if background_story or protagonist_bio or story_context or writing_demand:
+        ctx_parts.append("【故事背景】")
+        if background_story:
+            ctx_parts.append(f"世界观设定：{background_story[:500]}")
+        if protagonist_bio:
+            ctx_parts.append(f"主角描述：{protagonist_bio[:500]}")
+        if story_context:
+            ctx_parts.append(f"前情提要：{story_context[:1000]}")
+        if writing_demand:
+            ctx_parts.append(f"写作要求：{writing_demand[:300]}")
+    prompt_prefix = ("\n".join(ctx_parts) + "\n\n") if ctx_parts else ""
+
+    user_content = prompt_prefix + EXTRACT_PROMPT + content_sample
     if global_user_prompt.strip():
         user_content += f"\n\n用户偏好参考: {global_user_prompt}"
 

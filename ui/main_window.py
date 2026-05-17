@@ -9,6 +9,7 @@ PyQt6 图形界面主窗口模块
 
 import json
 import os
+import re
 import sys
 import threading
 
@@ -39,7 +40,7 @@ from PyQt6.QtWidgets import (
     QButtonGroup,
     QFileDialog,
 )
-from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QColor, QIcon
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineSettings
 import markdown as md_lib
@@ -496,6 +497,20 @@ class DeepSeekChatGUI(QMainWindow):
         self._display.setHtml(INITIAL_HTML)
         self._mode_stack.setCurrentIndex(0)  # 默认显示角色扮演面板
         self._refresh_history_list()
+
+    def closeEvent(self, event):
+        """关闭窗口时检查是否正在流式输出"""
+        if self._streaming:
+            reply = QMessageBox.question(
+                self, "确认退出",
+                "AI 正在生成回答中，确定要退出吗？",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.No:
+                event.ignore()
+                return
+        event.accept()
 
     def _build_left_panel(self) -> QWidget:
         """构建左侧控制面板（含小说专属区域）"""
@@ -3156,6 +3171,9 @@ class DeepSeekChatGUI(QMainWindow):
         """
         新版分析：读取源文档 → AI 语义分段 → 结构化提取世界观
         → 创建小说 → 保存世界书 → 保存设定 → 自动加载 UI
+
+        如果选择的是文件夹且包含数字命名的文件（1.txt, 2.txt...），
+        则改用逐章批量导入流程。
         """
         if self._streaming:
             return
@@ -3181,6 +3199,20 @@ class DeepSeekChatGUI(QMainWindow):
                 title = os.path.basename(source_folder)
             else:
                 title = "续写作品"
+
+        # 检测文件夹 + 数字命名文件 → 走逐章批量导入
+        if source_folder and self._has_numbered_files(source_folder):
+            self._streaming = True
+            self._assistant_text_buffer = []
+            self._append_user_message(f"📂 批量导入章节 → {title}")
+            self._cont_analysis_source = source_text
+            self._cont_analysis_source_path = source_folder
+            threading.Thread(
+                target=self._run_batch_folder_import,
+                args=(title, source_folder, self._client.model, client),
+                daemon=True,
+            ).start()
+            return
 
         # 检查目标书是否已有章节，防止导入源文档覆盖现有数据
         existing_chapters = self._novel_manager.list_chapters(title)
@@ -3295,6 +3327,160 @@ class DeepSeekChatGUI(QMainWindow):
                 self._stream_signals.error.emit(f"分析失败: {e}")
 
         threading.Thread(target=_run_analyze, daemon=True).start()
+
+    # ========== 📂 批量导入章节（文件夹模式） ==========
+
+    def _has_numbered_files(self, folder_path: str) -> bool:
+        """检测文件夹是否包含数字命名的文本文件（如 1.txt, 2.txt...）"""
+        ext_map = {".txt", ".md"}
+        for fname in os.listdir(folder_path):
+            ext = os.path.splitext(fname)[1].lower()
+            if ext in ext_map:
+                stem = os.path.splitext(fname)[0]
+                if re.search(r'\d+', stem):
+                    return True
+        return False
+
+    def _run_batch_folder_import(self, title: str, folder_path: str, model: str, client) -> None:
+        """
+        后台线程：逐章批量导入文件夹中的数字命名文件
+
+        将每个文件视为一个章节，按数字顺序依次处理：
+        1. 读取文件内容
+        2. 带上已有世界观上下文，调用 extract_and_merge_world_bible 提取并合并
+        3. 生成章节摘要并追加到 plot_summary
+        4. 保存章节文件
+        5. 所有章节处理完成后生成小说设定
+        """
+        try:
+            from core.world_bible import WorldBible, extract_and_merge_world_bible
+            from utils.summarize import generate_novel_settings_from_world_bible
+
+            si = self._stream_signals
+            _global_prompt = self._client.global_user_prompt
+
+            # 扫描文件夹，提取数字命名文件并排序
+            ext_map = {".txt", ".md"}
+            files = []
+            for fname in os.listdir(folder_path):
+                ext = os.path.splitext(fname)[1].lower()
+                if ext not in ext_map:
+                    continue
+                stem = os.path.splitext(fname)[0]
+                nums = re.findall(r'\d+', stem)
+                if nums:
+                    files.append((int(nums[0]), fname))
+
+            if not files:
+                si.token.emit("❌ 文件夹中没有找到数字命名的文本文件（如 1.txt, 2.txt...）\n")
+                self._stream_signals.error.emit("文件夹中未找到数字命名的文件")
+                return
+
+            files.sort(key=lambda x: x[0])
+            total = len(files)
+            si.token.emit(f"📂 检测到 {total} 个章节文件，开始逐章导入…\n\n")
+
+            # 创建小说
+            self._novel_manager.create_book(title)
+            world_bible = WorldBible()
+
+            for idx, (chapter_num, fname) in enumerate(files, 1):
+                fpath = os.path.join(folder_path, fname)
+
+                # 读取文件内容
+                content = ""
+                for enc in ("utf-8", "gbk"):
+                    try:
+                        with open(fpath, "r", encoding=enc) as f:
+                            content = f.read()
+                        break
+                    except UnicodeDecodeError:
+                        continue
+                if not content:
+                    si.token.emit(f"  ⏭️ [{idx}/{total}] 跳过 {fname}（无法读取）\n")
+                    continue
+
+                chapter_title = os.path.splitext(fname)[0]
+                si.token.emit(f"  📖 [{idx}/{total}] 第{chapter_num}章「{chapter_title}」…\n")
+
+                # 加载前文摘要（每章重新加载，因为 plot_summary 在不断增加）
+                story_context = ""
+                try:
+                    summary = self._novel_manager.load_smart_summary(
+                        title, client, next_chapter_num=chapter_num,
+                        model=model, global_user_prompt=_global_prompt,
+                    )
+                    if summary and "故事刚刚开始" not in summary:
+                        story_context = summary
+                except Exception:
+                    pass
+
+                # 加载 meta 中的设定
+                meta = self._novel_manager.load_meta(title)
+
+                # 提取并合并世界书（带上全局上下文）
+                world_bible = extract_and_merge_world_bible(
+                    client, content, chapter_num, world_bible,
+                    model, global_user_prompt=_global_prompt,
+                    story_context=story_context,
+                    background_story=meta.background_story,
+                    protagonist_bio=meta.protagonist_bio,
+                    writing_demand=meta.writing_demand,
+                )
+                self._novel_manager.save_world_bible(title, world_bible)
+
+                # 生成章节摘要
+                summary_text = self._novel_manager.generate_summary(
+                    client, content, chapter_num, chapter_title,
+                    model=model, global_user_prompt=_global_prompt,
+                )
+                self._novel_manager.append_summary(title, chapter_num, chapter_title, summary_text)
+
+                # 保存章节文件（自动管理版本）
+                self._novel_manager.save_chapter_version(
+                    title, chapter_num, chapter_title, content,
+                )
+
+                si.token.emit(f"    ✅ 世界书已更新 | 摘要已保存\n")
+
+            # 所有章节处理完成 → 从世界书生成小说设定
+            si.token.emit(f"\n⏳ 正在从世界书生成小说设定……\n")
+            world_data_for_settings = {
+                "characters": world_bible.characters,
+                "locations": world_bible.locations,
+                "rules": world_bible.rules,
+                "plot_threads": world_bible.active_plot_threads,
+                "timeline": world_bible.timeline,
+            }
+            settings = generate_novel_settings_from_world_bible(
+                client, world_data_for_settings, model,
+                global_user_prompt=_global_prompt,
+            )
+            self._novel_manager.save_meta(
+                title,
+                protagonist_bio=settings.get("protagonist_bio", ""),
+                background_story=settings.get("background_story", ""),
+                writing_demand=settings.get("writing_demand", ""),
+            )
+
+            si.token.emit(
+                f"\n{'='*50}\n"
+                f"✅ 批量导入完成！「{title}」共导入 {total} 章\n"
+                f"  • 世界书累积: {len(world_bible.characters)}角色 / {len(world_bible.locations)}地点 / {len(world_bible.rules)}规则\n"
+                f"  • 小说设定已从世界书生成\n"
+                f"{'='*50}\n"
+            )
+
+            # 触发 UI 刷新
+            self._stream_signals.novel_imported.emit(title)
+
+        except Exception as e:
+            import traceback
+            self._stream_signals.token.emit(f"\n❌ 批量导入失败: {e}\n")
+            self._stream_signals.token.emit(f"\n```\n{traceback.format_exc()}\n```\n")
+            self._stream_signals.error.emit(f"批量导入失败: {e}")
+        finally:
+            self._streaming = False
 
     def _show_analysis_dialog(self, world_data_str: str, settings_str: str, title: str) -> None:
         """在主线程显示分析结果对话框"""
@@ -4147,6 +4333,10 @@ class DeepSeekChatGUI(QMainWindow):
 def run_gui() -> None:
     """启动 GUI 应用"""
     app = QApplication(sys.argv)
+    icon_path = os.path.join(os.path.dirname(__file__), "icon.svg")
+    if os.path.exists(icon_path):
+        icon = QIcon(icon_path)
+        app.setWindowIcon(icon)
     window = DeepSeekChatGUI()
     window.showMaximized()
     sys.exit(app.exec())
