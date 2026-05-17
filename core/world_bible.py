@@ -328,6 +328,7 @@ def extract_and_merge_world_bible(
     chapter_num: int,
     existing_bible: WorldBible | None,
     model: str,
+    global_user_prompt: str = "",
 ) -> WorldBible:
     """
     分析章节内容，提取世界观信息并与现有世界书合并
@@ -338,6 +339,7 @@ def extract_and_merge_world_bible(
         chapter_num: 当前章节编号
         existing_bible: 现有的世界书，None 表示新建
         model: 模型名称
+        global_user_prompt: 用户全局提示词（偏好参考）
 
     Returns:
         合并后的 WorldBible
@@ -347,10 +349,14 @@ def extract_and_merge_world_bible(
     # 截取前 6000 字分析
     content_sample = chapter_content[:6000]
 
+    user_content = EXTRACT_PROMPT + content_sample
+    if global_user_prompt.strip():
+        user_content += f"\n\n用户偏好参考: {global_user_prompt}"
+
     try:
         response = client.chat.completions.create(
             model=model,
-            messages=[{"role": "user", "content": EXTRACT_PROMPT + content_sample}],
+            messages=[{"role": "user", "content": user_content}],
             max_tokens=4096,
             temperature=0.1,
         )

@@ -44,6 +44,7 @@ class DeepSeekChatClient:
         self._max_tokens = strategy.recommended_max_tokens
         self._frequency_penalty = strategy.recommended_frequency_penalty
         self._messages: list[dict] = []
+        self._global_user_prompt: str = ""
 
         # 初始化系统提示词
         self._reset_conversation()
@@ -98,6 +99,15 @@ class DeepSeekChatClient:
     def recommended_frequency_penalty(self) -> float:
         """返回当前策略推荐的 frequency_penalty 值"""
         return self._strategy.recommended_frequency_penalty
+
+    @property
+    def global_user_prompt(self) -> str:
+        """返回用户全局提示词（写作偏好）"""
+        return self._global_user_prompt
+
+    @global_user_prompt.setter
+    def global_user_prompt(self, value: str) -> None:
+        self._global_user_prompt = value
 
     @property
     def messages(self) -> list[dict]:

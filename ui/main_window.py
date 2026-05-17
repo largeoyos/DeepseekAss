@@ -7,6 +7,7 @@ PyQt6 图形界面主窗口模块
 - 小说写作模式：书架管理、章节控制、参数设定、自动摘要
 """
 
+import json
 import os
 import sys
 import threading
@@ -29,6 +30,7 @@ from PyQt6.QtWidgets import (
     QInputDialog,
     QMessageBox,
     QGroupBox,
+    QStackedWidget,
     QSpinBox,
     QLineEdit,
     QCheckBox,
@@ -37,6 +39,7 @@ from PyQt6.QtWidgets import (
     QButtonGroup,
     QFileDialog,
 )
+from PyQt6.QtGui import QColor
 from PyQt6.QtWebEngineWidgets import QWebEngineView
 from PyQt6.QtWebEngineCore import QWebEngineSettings
 import markdown as md_lib
@@ -63,6 +66,10 @@ from ui.continuation_dialogs import (
     analyze_source_text, suggest_directions,
     ContinuationAnalysisDialog, DirectionSelectionDialog,
 )
+
+
+# 用户全局提示词持久化文件
+_USER_PREFS_FILE = os.path.join(os.path.dirname(os.path.dirname(__file__)), "user_prefs.json")
 
 
 # ========== 自定义输入框（拦截 Ctrl+Enter） ==========
@@ -367,11 +374,21 @@ class DeepSeekChatGUI(QMainWindow):
         Config.API_KEY = api_key
 
         self._init_client()
+        # 加载用户全局提示词
+        loaded_prompt = self._load_global_user_prompt()
+        if loaded_prompt:
+            self._client.global_user_prompt = loaded_prompt
+
         self._init_ui()
         # 默认预设方案：狂野
         self._preset_combo.setCurrentText("狂野")
         self._apply_dark_theme()
         self._refresh_novel_bookshelf()
+
+        # 将已加载的全局提示词同步到两个面板
+        if self._client.global_user_prompt:
+            self._global_user_prompt_edit.setPlainText(self._client.global_user_prompt)
+            self._cont_global_user_prompt_edit.setPlainText(self._client.global_user_prompt)
 
     # ========== API Key ==========
 
@@ -437,6 +454,30 @@ class DeepSeekChatGUI(QMainWindow):
         strategy = RolePlayStrategy()
         self._client = DeepSeekChatClient(strategy=strategy, model=strategy.recommended_model)
 
+    def _load_global_user_prompt(self) -> str:
+        """从 user_prefs.json 加载全局提示词"""
+        try:
+            if os.path.exists(_USER_PREFS_FILE):
+                with open(_USER_PREFS_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                return data.get("global_user_prompt", "")
+        except Exception:
+            pass
+        return ""
+
+    def _save_global_user_prompt(self, prompt: str) -> None:
+        """保存全局提示词到 user_prefs.json"""
+        try:
+            data = {}
+            if os.path.exists(_USER_PREFS_FILE):
+                with open(_USER_PREFS_FILE, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            data["global_user_prompt"] = prompt
+            with open(_USER_PREFS_FILE, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            print(f"[Warning] Failed to save user prefs: {e}")
+
     def _init_ui(self) -> None:
         """构建 UI 布局"""
         self.setWindowTitle("DeepSeek 多功能聊天客户端")
@@ -458,9 +499,7 @@ class DeepSeekChatGUI(QMainWindow):
         self.setCentralWidget(splitter)
 
         self._display.setHtml(INITIAL_HTML)
-        self._toggle_novel_panel(False)      # 初始隐藏小说面板
-        self._toggle_role_play_panel(True)   # 初始显示角色扮演面板
-        self._toggle_continuation_panel(False)  # 初始隐藏续写面板
+        self._mode_stack.setCurrentIndex(0)  # 默认显示角色扮演面板
         self._refresh_history_list()
 
     def _build_left_panel(self) -> QWidget:
@@ -671,19 +710,21 @@ class DeepSeekChatGUI(QMainWindow):
         self._status_label = QLabel("当前模式: 角色扮演\n模型: deepseek-v4-flash")
         self._status_label.setWordWrap(True)
         status_layout.addWidget(self._status_label)
+        self._stream_count_label = QLabel("")
+        self._stream_count_label.setStyleSheet("color: #6a9955; font-size: 12px; padding: 2px 0;")
+        self._stream_count_label.setVisible(False)
+        status_layout.addWidget(self._stream_count_label)
         layout.addWidget(status_group)
 
-        # ── 🎭 角色扮演面板（默认显示，切换模式时隐藏）──
+        # ── 模式专属面板容器（QStackedWidget 切换不触发布局重排）──
         self._role_play_panel = self._build_role_play_panel()
-        layout.addWidget(self._role_play_panel)
-
-        # ── 📚 小说写作面板（默认隐藏）──
         self._novel_panel = self._build_novel_panel()
-        layout.addWidget(self._novel_panel)
-
-        # ── 📄 续写小说面板（默认隐藏）──
         self._continuation_panel = self._build_continuation_panel()
-        layout.addWidget(self._continuation_panel)
+        self._mode_stack = QStackedWidget()
+        self._mode_stack.addWidget(self._role_play_panel)    # idx 0
+        self._mode_stack.addWidget(self._novel_panel)        # idx 1
+        self._mode_stack.addWidget(self._continuation_panel) # idx 2
+        layout.addWidget(self._mode_stack)
 
         layout.addStretch()
         scroll.setWidget(container)
@@ -858,6 +899,21 @@ class DeepSeekChatGUI(QMainWindow):
         self._demand_edit.setMinimumHeight(48)
         self._demand_edit.textChanged.connect(self._on_demand_changed)
         layout.addWidget(self._demand_edit)
+
+        # ── 用户全局提示词 ──
+        global_prompt_label = QLabel("🌐 全局提示（写作偏好/风格，自动注入所有生成和摘要）")
+        global_prompt_label.setWordWrap(True)
+        layout.addWidget(global_prompt_label)
+        self._global_user_prompt_edit = QTextEdit()
+        self._global_user_prompt_edit.setPlaceholderText(
+            "在此填写您的写作偏好、习惯风格、常用要求等。\n"
+            "例如：我喜欢细腻的环境描写，对话要自然，每章结尾留悬念。\n"
+            "此提示词将自动注入所有生成和摘要请求中。"
+        )
+        self._global_user_prompt_edit.setMaximumHeight(80)
+        self._global_user_prompt_edit.setMinimumHeight(60)
+        self._global_user_prompt_edit.textChanged.connect(self._on_global_user_prompt_changed)
+        layout.addWidget(self._global_user_prompt_edit)
 
         # ── 本章情节输入 ──
         plot_label = QLabel("📝 本章情节输入（可选）")
@@ -1100,6 +1156,20 @@ class DeepSeekChatGUI(QMainWindow):
         self._cont_demand_edit.textChanged.connect(self._on_cont_demand_changed)
         layout.addWidget(self._cont_demand_edit)
 
+        # ── 用户全局提示词 ──
+        cont_global_prompt_label = QLabel("🌐 全局提示（写作偏好/风格，自动注入所有生成和摘要）")
+        cont_global_prompt_label.setWordWrap(True)
+        layout.addWidget(cont_global_prompt_label)
+        self._cont_global_user_prompt_edit = QTextEdit()
+        self._cont_global_user_prompt_edit.setPlaceholderText(
+            "在此填写您的写作偏好、习惯风格、常用要求等。\n"
+            "此提示词将自动注入所有生成和摘要请求中。"
+        )
+        self._cont_global_user_prompt_edit.setMaximumHeight(80)
+        self._cont_global_user_prompt_edit.setMinimumHeight(60)
+        self._cont_global_user_prompt_edit.textChanged.connect(self._on_global_user_prompt_changed)
+        layout.addWidget(self._cont_global_user_prompt_edit)
+
         # ── 保存/加载设定按钮 ──
         cont_save_settings_row = QHBoxLayout()
         cont_save_settings_btn = QPushButton("💾 保存小说设定")
@@ -1248,6 +1318,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._display.settings().setAttribute(
             QWebEngineSettings.WebAttribute.JavascriptEnabled, True
         )
+        self._display.page().setBackgroundColor(QColor("#1e1e1e"))
         self._display.setMinimumHeight(300)
         layout.addWidget(self._display, stretch=1)
 
@@ -1587,23 +1658,26 @@ class DeepSeekChatGUI(QMainWindow):
                 self._fp_slider.setValue(preset["fp"])
                 self._mt_spin.setValue(preset["max_tokens"])
         self._preset_applying = False
-        self._update_status()
 
-        # 切换专属面板可见性
+        # QStackedWidget 切换面板，零布局重排
         is_novel = isinstance(strategy, NovelStrategy)
         is_role_play = isinstance(strategy, RolePlayStrategy)
         is_continuation = isinstance(strategy, ContinuationStrategy)
-        self._toggle_novel_panel(is_novel)
-        self._toggle_role_play_panel(is_role_play)
-        self._toggle_continuation_panel(is_continuation)
+        if is_role_play:
+            self._mode_stack.setCurrentIndex(0)
+        elif is_novel:
+            self._mode_stack.setCurrentIndex(1)
+        elif is_continuation:
+            self._mode_stack.setCurrentIndex(2)
 
         # 操作/对话历史面板仅在聊天模式可见
         is_chat_mode = is_role_play
         self._btn_group.setVisible(is_chat_mode)
         self._history_group.setVisible(is_chat_mode)
 
-        # 进入需要书架的页面时刷新（小说/续写都刷）
-        self._refresh_novel_bookshelf()
+        # 只在进入小说/续写模式时刷新书架
+        if is_novel or is_continuation:
+            self._refresh_novel_bookshelf()
 
         if is_novel:
             self._on_book_selected(self._bookshelf_combo.currentText())
@@ -1677,15 +1751,6 @@ class DeepSeekChatGUI(QMainWindow):
     def _on_clear(self) -> None:
         self._client.clear_context()
         self._display.setHtml(INITIAL_HTML)
-
-    def _toggle_role_play_panel(self, visible: bool) -> None:
-        self._role_play_panel.setVisible(visible)
-
-    def _toggle_novel_panel(self, visible: bool) -> None:
-        self._novel_panel.setVisible(visible)
-
-    def _toggle_continuation_panel(self, visible: bool) -> None:
-        self._continuation_panel.setVisible(visible)
 
     def _update_status(self) -> None:
         self._status_label.setText(
@@ -1859,6 +1924,11 @@ class DeepSeekChatGUI(QMainWindow):
             self._client.strategy.background_story = meta.background_story
             self._client.strategy.writing_demand = meta.writing_demand
 
+        # 同步全局提示词到小说面板
+        self._global_user_prompt_edit.blockSignals(True)
+        self._global_user_prompt_edit.setPlainText(self._client.global_user_prompt)
+        self._global_user_prompt_edit.blockSignals(False)
+
     def _on_novel_title_changed(self, text: str) -> None:
         if isinstance(self._client.strategy, NovelStrategy):
             self._client.strategy.novel_title = text.strip()
@@ -1909,6 +1979,24 @@ class DeepSeekChatGUI(QMainWindow):
                     "💬 **自由对话模式** — 可随意交流写作问题"
                 )
 
+    def _on_global_user_prompt_changed(self) -> None:
+        """同步两个面板的全局提示词并持久化"""
+        sender = self.sender()
+        if sender == self._global_user_prompt_edit:
+            value = self._global_user_prompt_edit.toPlainText()
+            self._cont_global_user_prompt_edit.blockSignals(True)
+            self._cont_global_user_prompt_edit.setPlainText(value)
+            self._cont_global_user_prompt_edit.blockSignals(False)
+        elif sender == self._cont_global_user_prompt_edit:
+            value = self._cont_global_user_prompt_edit.toPlainText()
+            self._global_user_prompt_edit.blockSignals(True)
+            self._global_user_prompt_edit.setPlainText(value)
+            self._global_user_prompt_edit.blockSignals(False)
+        else:
+            return
+        self._client.global_user_prompt = value
+        self._save_global_user_prompt(value)
+
     # ========== 📄 续写面板 Handler（新增） ==========
 
     def _on_cont_book_selected(self, text: str) -> None:
@@ -1945,6 +2033,8 @@ class DeepSeekChatGUI(QMainWindow):
             "rules": list(wb.rules),
             "timeline": [{"event": t.event, "significance": t.significance} for t in wb.timeline],
             "plot_threads": [{"name": p.name, "status": p.status, "description": p.description} for p in wb.active_plot_threads],
+            "global_foreshadowing": list(wb.global_foreshadowing),
+            "key_worldbuilding": list(wb.key_worldbuilding_passages),
         }
 
         next_ch = self._novel_manager.get_next_chapter_num(title)
@@ -1952,6 +2042,11 @@ class DeepSeekChatGUI(QMainWindow):
         self._cont_chapter_info_label.setText(
             f"已有 {len(chapters)} 章，下一章编号: 第{next_ch}章"
         )
+
+        # 同步全局提示词到续写面板
+        self._cont_global_user_prompt_edit.blockSignals(True)
+        self._cont_global_user_prompt_edit.setPlainText(self._client.global_user_prompt)
+        self._cont_global_user_prompt_edit.blockSignals(False)
 
     def _on_cont_create_book(self) -> None:
         """续写面板：新建小说"""
@@ -2053,20 +2148,13 @@ class DeepSeekChatGUI(QMainWindow):
             QMessageBox.warning(self, "提示", "请先在书架中选择一部小说。")
             return
 
-        # 检查缓存是否有效：分析时记录的源路径与当前路径一致
-        current_source = (
-            self._continue_file_path.text().strip()
-            or self._continue_folder_path.text().strip()
-        )
-        cached_path = getattr(self, '_cont_analysis_source_path', "")
-        source_text = ""
-        if cached_path == current_source:
-            source_text = getattr(self, '_cont_analysis_source', "")
+        # 优先使用缓存（分析时保存的源文本），其次重新读取文件
+        source_text = getattr(self, '_cont_analysis_source', "")
         if not source_text:
             source_text = self._read_continuation_source()
-        if not source_text:
-            QMessageBox.warning(self, "提示", "请先选择续写源文档或文件夹。")
-            return
+            if source_text:
+                self._cont_analysis_source = source_text
+        # source_text 为空时仍可续写，仅 prompt 中不添加【原文内容】区块
 
         chapter_title = self._cont_chapter_title_edit.text().strip()
         if not chapter_title:
@@ -2224,6 +2312,7 @@ class DeepSeekChatGUI(QMainWindow):
             client=client,
             next_chapter_num=chapter_num,
             max_recent=3,
+            global_user_prompt=self._client.global_user_prompt,
         )
 
         # 历史记录总结（前面各章的生成配置与风格参考）
@@ -2263,6 +2352,10 @@ class DeepSeekChatGUI(QMainWindow):
             parts.append(f"【本章要求】：\n{demand}\n")
         if plot_content:
             parts.append(f"【本章已定情节（请严格据此扩展）】\n{plot_content}\n")
+
+        global_prompt = self._client.global_user_prompt
+        if global_prompt.strip():
+            parts.append(f"【用户偏好提示】: \n{global_prompt}\n")
 
         return "\n".join(parts)
 
@@ -2324,7 +2417,7 @@ class DeepSeekChatGUI(QMainWindow):
                     f"\n⚡ 该章节已有旧版本 v{old_active}。请点击右侧「⚙ 章节管理」按钮选择使用哪个版本。\n"
                 )
 
-            # 保存生成历史记录
+            # 保存生成历史记录（含已定情节，供重新生成时还原）
             content_preview = content.replace("\n", " ")
             self._novel_manager.save_generation_record(
                 title=title,
@@ -2338,12 +2431,14 @@ class DeepSeekChatGUI(QMainWindow):
                 max_tokens=self._client.max_tokens,
                 frequency_penalty=self._client.frequency_penalty,
                 content_preview=content_preview,
+                plot=plot_content,
             )
 
             if new_chapter:
                 self._stream_signals.token.emit("\n🔍 正在提炼剧情记忆...\n")
                 summary = self._novel_manager.generate_summary(
-                    self._client.raw_client, content, chapter_num, chapter_title
+                    self._client.raw_client, content, chapter_num, chapter_title,
+                    global_user_prompt=self._client.global_user_prompt
                 )
                 self._novel_manager.append_summary(
                     title, chapter_num, chapter_title, summary
@@ -2359,10 +2454,11 @@ class DeepSeekChatGUI(QMainWindow):
                     try:
                         supplemented = supplement_content(
                             self._client.raw_client, content, target_chars, actual_words,
-                            chapter_title, self._client.model, self._client.temperature
+                            chapter_title, self._client.model, self._client.temperature,
+                            global_user_prompt=self._client.global_user_prompt
                         )
-                        if supplemented and len(supplemented) > len(content):
-                            content = supplemented
+                        if supplemented:
+                            content = content + "\n\n" + supplemented
                             file_path, saved_version = self._novel_manager.save_chapter_version(
                                 title, chapter_num, chapter_title, content, version=saved_version
                             )
@@ -2377,7 +2473,8 @@ class DeepSeekChatGUI(QMainWindow):
                     from core.world_bible import extract_and_merge_world_bible
                     bible = self._novel_manager.load_world_bible(title)
                     updated_bible = extract_and_merge_world_bible(
-                        self._client.raw_client, content, chapter_num, bible, self._client.model
+                        self._client.raw_client, content, chapter_num, bible, self._client.model,
+                        global_user_prompt=self._client.global_user_prompt
                     )
                     self._novel_manager.save_world_bible(title, updated_bible)
                     self._stream_signals.token.emit("✅ 世界书已更新。\n")
@@ -2541,7 +2638,9 @@ class DeepSeekChatGUI(QMainWindow):
         """后台线程：执行续写（增强版：含世界书+剧情摘要+设定）"""
         try:
             # ── 构建 User Prompt（含前情提要 + 世界书 + 设定） ──
-            user_parts = [f"【原文内容】\n{source_text}\n"]
+            user_parts = []
+            if source_text:
+                user_parts.append(f"【原文内容】\n{source_text}\n")
 
             # 加载前情提要（复用小说模式的智能摘要算法）
             try:
@@ -2549,6 +2648,7 @@ class DeepSeekChatGUI(QMainWindow):
                     book_title, self._client.raw_client,
                     next_chapter_num=chapter_num,
                     model=self._client.model,
+                    global_user_prompt=self._client.global_user_prompt,
                 )
                 if summary and "故事刚刚开始" not in summary:
                     user_parts.append(f"【前情提要】\n{summary}\n")
@@ -2587,6 +2687,11 @@ class DeepSeekChatGUI(QMainWindow):
                 user_parts.append(f"【续写要求】\n{requirement}\n")
             if plot:
                 user_parts.append(f"【续写剧情走向】\n{plot}\n")
+
+            global_prompt = self._client.global_user_prompt
+            if global_prompt.strip():
+                user_parts.append(f"【用户偏好提示】: \n{global_prompt}\n")
+
             user_parts.append(
                 f"请直接输出续写正文，不要加任何解释或前言。字数不少于{word_count}字。"
             )
@@ -2620,7 +2725,7 @@ class DeepSeekChatGUI(QMainWindow):
                 f"✅ 续写完成，已保存版本 v{saved_version} → `{file_path}`\n"
             )
 
-            # 保存生成历史
+            # 保存生成历史（含续写要求与剧情走向，供重新生成时还原）
             self._novel_manager.save_generation_record(
                 title=book_title,
                 chapter_num=chapter_num,
@@ -2633,12 +2738,15 @@ class DeepSeekChatGUI(QMainWindow):
                 max_tokens=self._client.max_tokens,
                 frequency_penalty=self._client.frequency_penalty,
                 content_preview=content.replace("\n", " "),
+                requirement=requirement,
+                plot=plot,
             )
 
             # 提炼摘要
             self._stream_signals.token.emit("\n🔍 正在提炼剧情记忆...\n")
             summary = self._novel_manager.generate_summary(
-                self._client.raw_client, content, chapter_num, chapter_title
+                self._client.raw_client, content, chapter_num, chapter_title,
+                global_user_prompt=self._client.global_user_prompt
             )
             self._novel_manager.append_summary(
                 book_title, chapter_num, chapter_title, summary
@@ -2653,10 +2761,11 @@ class DeepSeekChatGUI(QMainWindow):
                 try:
                     supplemented = supplement_content(
                         self._client.raw_client, content, word_count, actual_words,
-                        chapter_title, self._client.model, self._client.temperature
+                        chapter_title, self._client.model, self._client.temperature,
+                        global_user_prompt=self._client.global_user_prompt
                     )
-                    if supplemented and len(supplemented) > len(content):
-                        content = supplemented
+                    if supplemented:
+                        content = content + "\n\n" + supplemented
                         file_path, saved_version = self._novel_manager.save_chapter_version(
                             book_title, chapter_num, chapter_title, content, version=saved_version
                         )
@@ -2671,7 +2780,8 @@ class DeepSeekChatGUI(QMainWindow):
                 from core.world_bible import extract_and_merge_world_bible
                 bible = self._novel_manager.load_world_bible(book_title)
                 updated_bible = extract_and_merge_world_bible(
-                    self._client.raw_client, content, chapter_num, bible, self._client.model
+                    self._client.raw_client, content, chapter_num, bible, self._client.model,
+                    global_user_prompt=self._client.global_user_prompt
                 )
                 self._novel_manager.save_world_bible(book_title, updated_bible)
                 self._stream_signals.token.emit("✅ 世界书已更新。\n")
@@ -2739,16 +2849,23 @@ class DeepSeekChatGUI(QMainWindow):
         self._assistant_text_buffer.append(token)
         full_text = "".join(self._assistant_text_buffer)
         self._render_assistant_stream(full_text)
+        # 实时显示已接收字符数
+        char_count = len(full_text)
+        self._stream_count_label.setText(f"⏳ 已接收 {char_count} 字符")
+        if not self._stream_count_label.isVisible():
+            self._stream_count_label.setVisible(True)
 
     def _on_stream_finished(self) -> None:
         """主线程：流式完成"""
         self._streaming = False
         full_text = "".join(self._assistant_text_buffer)
         self._render_assistant_message(full_text)
+        self._stream_count_label.setVisible(False)
 
     def _on_stream_error(self, error_msg: str) -> None:
         """主线程：流式出错"""
         self._streaming = False
+        self._stream_count_label.setVisible(False)
         QMessageBox.critical(self, "API 错误", f"调用失败：{error_msg}")
 
     # ========== 渲染 ==========
@@ -2924,7 +3041,8 @@ class DeepSeekChatGUI(QMainWindow):
                 _words = len(text.replace('\n', '').replace('\r', '').replace(' ', '').replace('　', ''))
                 self._stream_signals.token.emit(f"  读到 {_words} 个字，{_chars} 个字符\n")
 
-                segments = segment_by_ai(client, text, model)
+                _global_prompt = self._client.global_user_prompt
+                segments = segment_by_ai(client, text, model, global_user_prompt=_global_prompt)
                 self._stream_signals.token.emit(
                     f"  ✅ AI 识别出 {len(segments)} 个逻辑段落\n\n"
                 )
@@ -2943,6 +3061,7 @@ class DeepSeekChatGUI(QMainWindow):
 
                 world_data = extract_world_bible_from_segments(
                     client, segments, model, progress_callback=_progress,
+                    global_user_prompt=_global_prompt,
                 )
 
                 # 汇报提取结果
@@ -2978,7 +3097,7 @@ class DeepSeekChatGUI(QMainWindow):
 
                 # Phase 4: 生成小说设定（背景/主角/写作要求）
                 self._stream_signals.token.emit(f"⏳ 第四步：生成小说设定…\n")
-                settings = generate_novel_settings_from_world_bible(client, world_data, model)
+                settings = generate_novel_settings_from_world_bible(client, world_data, model, global_user_prompt=_global_prompt)
 
                 self._novel_manager.save_meta(
                     title,
@@ -3071,6 +3190,10 @@ class DeepSeekChatGUI(QMainWindow):
         self._assistant_text_buffer = []
         self._append_user_message(f"🔍 分析源文档并导入小说：{title}")
 
+        # 在线程启动前保存源文本，确保即使线程失败上下文也不丢失
+        self._cont_analysis_source = source_text
+        self._cont_analysis_source_path = source_file or source_folder or ""
+
         def _run_analyze():
             try:
                 from utils.summarize import segment_by_ai, extract_world_bible_from_segments, generate_novel_settings_from_world_bible
@@ -3082,11 +3205,12 @@ class DeepSeekChatGUI(QMainWindow):
                 _words = len(source_text.replace('\n', '').replace('\r', '').replace(' ', '').replace('　', ''))
                 si.token.emit(f"  读到 {_words} 个字，{_chars} 个字符\n")
 
-                segments = segment_by_ai(client, source_text, model)
+                _global_prompt = self._client.global_user_prompt
+                segments = segment_by_ai(client, source_text, model, global_user_prompt=_global_prompt)
                 si.token.emit(f"  ✅ 识别出 {len(segments)} 个逻辑段落\n")
 
                 si.token.emit(f"\n⏳ 第二步：逐段提取世界观信息…\n")
-                world_data = extract_world_bible_from_segments(client, segments, model)
+                world_data = extract_world_bible_from_segments(client, segments, model, global_user_prompt=_global_prompt)
 
                 chars = len(world_data.get("characters", []))
                 locs = len(world_data.get("locations", []))
@@ -3118,7 +3242,7 @@ class DeepSeekChatGUI(QMainWindow):
 
                 # 生成并保存小说设定
                 si.token.emit(f"⏳ 第四步：生成小说设定…\n")
-                settings = generate_novel_settings_from_world_bible(client, world_data, model)
+                settings = generate_novel_settings_from_world_bible(client, world_data, model, global_user_prompt=_global_prompt)
                 self._novel_manager.save_meta(
                     title,
                     protagonist_bio=settings.get("protagonist_bio", ""),
@@ -3141,8 +3265,6 @@ class DeepSeekChatGUI(QMainWindow):
                 # 保存分析数据供对话框使用
                 self._cont_analysis_world_data = world_data
                 self._cont_analysis_settings = settings
-                self._cont_analysis_source = source_text
-                self._cont_analysis_source_path = source_file or source_folder or ""
 
                 # 触发 UI 加载
                 self._stream_signals.novel_imported.emit(title)
@@ -3190,7 +3312,8 @@ class DeepSeekChatGUI(QMainWindow):
             try:
                 self._stream_signals.token.emit("\n\n🎲 AI 正在分析发展方向...\n\n")
                 directions = suggest_directions(client, setting, plot_outline,
-                                                self._client.model, world_data)
+                                                self._client.model, world_data,
+                                                global_user_prompt=self._client.global_user_prompt)
                 self._stream_signals.finished.emit()
                 self._stream_signals.directions_ready.emit(directions, setting, plot_outline, word_count)
             except Exception as e:
@@ -3218,8 +3341,10 @@ class DeepSeekChatGUI(QMainWindow):
         """带分析上下文的续写执行"""
         source_text = getattr(self, '_cont_analysis_source', "")
         if not source_text:
-            QMessageBox.warning(self, "错误", "分析上下文丢失，请重新分析。")
-            return
+            source_text = self._read_continuation_source()
+            if source_text:
+                self._cont_analysis_source = source_text
+        # source_text 为空时仍可续写，仅 prompt 中不添加【原文内容】区块
 
         book_title = self._get_current_book_title()
         if not book_title:
@@ -3460,7 +3585,8 @@ class DeepSeekChatGUI(QMainWindow):
                 if reply == QMessageBox.StandardButton.Yes and hasattr(self.parent(), "_client"):
                     try:
                         self._novel_mgr.rebuild_summary_from_active(
-                            self._client.raw_client, self._book_title
+                            self._client.raw_client, self._book_title,
+                            global_user_prompt=self._client.global_user_prompt
                         )
                         QMessageBox.information(self, "成功", "剧情摘要已重新生成。")
                     except Exception as e:
@@ -3500,14 +3626,26 @@ class DeepSeekChatGUI(QMainWindow):
                 _bg = parent._background_edit.toPlainText().strip()
                 _bio = parent._protagonist_edit.toPlainText().strip()
                 _demand = parent._demand_edit.toPlainText().strip()
+                _global_prompt = self._client.global_user_prompt
 
-                threading.Thread(target=self._do_regenerate, args=(data, _bg, _bio, _demand), daemon=True).start()
+                threading.Thread(target=self._do_regenerate, args=(data, _bg, _bio, _demand, _global_prompt), daemon=True).start()
 
-            def _do_regenerate(self, data: dict, bg: str, bio: str, demand: str) -> None:
+            def _do_regenerate(self, data: dict, bg: str, bio: str, demand: str, global_prompt: str = "") -> None:
                 try:
                     parent = self.parent()
                     chapter_num = data["chapter_num"]
                     chapter_title = data.get("title", f"第{chapter_num}章")
+
+                    # 从历史生成记录加载续写要求和剧情走向
+                    req = ""
+                    plot = ""
+                    record = self._novel_mgr.load_generation_record(
+                        self._book_title, chapter_num, data["version"]
+                    )
+                    if record:
+                        # requirement/plot 为空字符串时视为未保存
+                        req = record.get("requirement", "") or ""
+                        plot = record.get("plot", "") or ""
 
                     messages = [
                         {"role": "system", "content": "你是一位文笔细腻、想象力丰富的小说家。直接输出重写后的小说正文，不要加任何解释、前言或后记。保持与原章节一致的风格和质量水准，严格按照用户提供的【核心设定】和【人物背景】。"},
@@ -3519,9 +3657,21 @@ class DeepSeekChatGUI(QMainWindow):
                     if demand:
                         messages.append({"role": "system", "content": f"【写作要求】：\n{demand}"})
 
+                    # 加载世界书
+                    try:
+                        bible = self._novel_mgr.load_world_bible(self._book_title)
+                        if bible:
+                            from core.world_bible import format_world_bible_for_prompt
+                            wb_text = format_world_bible_for_prompt(bible)
+                            if wb_text.strip():
+                                messages.append({"role": "system", "content": f"【世界书（已建立设定库）】\n{wb_text}"})
+                    except Exception:
+                        pass
+
                     summary = self._novel_mgr.load_smart_summary(
                         self._book_title, client=self._client.raw_client,
                         next_chapter_num=chapter_num, max_recent=10,
+                        global_user_prompt=self._client.global_user_prompt,
                     )
 
                     old_content = self._novel_mgr.read_chapter_version(
@@ -3531,11 +3681,17 @@ class DeepSeekChatGUI(QMainWindow):
                     user_parts = [f"请创作小说的第 {chapter_num} 章，标题为「{chapter_title}」。\n"]
                     if summary and summary != "故事刚刚开始。":
                         user_parts.append(f"【前情提要】\n{summary}\n")
+                    if req:
+                        user_parts.append(f"【原文续写要求】\n{req}\n")
+                    if plot:
+                        user_parts.append(f"【原文续写剧情走向】\n{plot}\n")
                     if old_content:
                         preview = old_content.strip()
                         user_parts.append(
                             f"【参考：旧版本开头（你不需要完全照搬，仅用于保持风格一致性）】\n{preview}\n"
                         )
+                    if global_prompt.strip():
+                        user_parts.append(f"【用户偏好提示】: \n{global_prompt}\n")
                     user_parts.append(f"请直接输出第 {chapter_num} 章正文：")
                     messages.append({"role": "user", "content": "\n".join(user_parts)})
 

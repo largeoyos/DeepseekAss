@@ -10,19 +10,23 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt
 
-SUGGESTION_PROMPT = """你是一位资深小说编辑。请根据以下完整世界观设定和剧情进展，为下一章提供 3-5 个发展方向建议。
+SUGGESTION_PROMPT = """你是一位资深小说编辑。请根据以下完整世界观设定、待回收伏笔和剧情进展，为下一章提供 3-5 个发展方向建议。
 
 每个建议包含：
 1. 方向标题（10字以内）
-2. 核心冲突或看点
+2. 核心看点或情绪基调
 3. 大致情节走向（50字以内）
 
-要求：
-- 建议必须有创意，且严格符合已有设定，不引入矛盾
-- 发展方向要与前文情节自然衔接，保持风格和基调一致
-- 聚焦于角色成长、人物关系变化和剧情推进
+【核心规则——必须遵守】
+- 优先处理【待回收伏笔】中列出的未收束伏笔，每个方向至少回收或推进 1-2 条伏笔
+- 如果【待回收伏笔】列表非空，禁止提出完全无关的新方向；所有方向必须与已有伏笔产生关联
+- 如果【待回收伏笔】为空，则可以自由展开新剧情或深化已有的剧情线
+- 每个方向必须严格服务于全文的整体基调，延续已有风格和氛围
+- 情节推进方式与前文的叙事节奏一致——温馨则延续温暖，悬疑则保持张力，而非强行制造冲突
+- 聚焦于角色成长、人物关系深化、伏笔回收或世界观展开
+- 如果故事本身有冲突线，合理推进即可；如果故事是日常/氛围向，不要凭空制造戏剧冲突
 - 避免涉及现实政治、社会批判、历史影射等严肃议题
-- 充分利用世界观中的角色、地点和规则来构思
+- 充分利用世界观中的角色、地点、规则和关键设定来构思
 
 【完整世界观设定】
 {world}
@@ -34,8 +38,8 @@ SUGGESTION_PROMPT = """你是一位资深小说编辑。请根据以下完整世
 {plot}
 
 请按以下格式输出（每行一个方向）：
-方向1：标题 | 核心冲突 | 情节走向
-方向2：标题 | 核心冲突 | 情节走向"""
+方向1：标题 | 核心看点 | 情节走向
+方向2：标题 | 核心看点 | 情节走向"""
 
 
 def _safe_format(template: str, **kwargs) -> str:
@@ -47,7 +51,7 @@ def _safe_format(template: str, **kwargs) -> str:
     return result
 
 
-def analyze_source_text(client, source_text: str, model: str) -> dict:
+def analyze_source_text(client, source_text: str, model: str, global_user_prompt: str = "") -> dict:
     """
     新版分析：使用 AI 语义分段 + 结构化提取，返回可加载的小说设定。
 
@@ -57,6 +61,7 @@ def analyze_source_text(client, source_text: str, model: str) -> dict:
         client: OpenAI 客户端
         source_text: 源文档全文
         model: 模型名称
+        global_user_prompt: 用户全局提示词（偏好参考）
 
     Returns:
         {
@@ -75,13 +80,13 @@ def analyze_source_text(client, source_text: str, model: str) -> dict:
     from utils.summarize import segment_by_ai, extract_world_bible_from_segments, generate_novel_settings_from_world_bible
 
     # 1. AI 语义分段
-    segments = segment_by_ai(client, source_text, model)
+    segments = segment_by_ai(client, source_text, model, global_user_prompt=global_user_prompt)
 
     # 2. 逐段提取世界观
-    world_data = extract_world_bible_from_segments(client, segments, model)
+    world_data = extract_world_bible_from_segments(client, segments, model, global_user_prompt=global_user_prompt)
 
     # 3. 生成小说设定
-    settings = generate_novel_settings_from_world_bible(client, world_data, model)
+    settings = generate_novel_settings_from_world_bible(client, world_data, model, global_user_prompt=global_user_prompt)
 
     return {
         "world_data": world_data,
@@ -166,16 +171,43 @@ def _build_world_summary(world_data: dict | None) -> str:
             lines.append(f"- {event}{' - ' + sig[:60] if sig else ''}{hint}")
         parts.append("【近期事件】\n" + "\n".join(lines))
 
+    # 全局伏笔（待回收）
+    foreshadowing = world_data.get("global_foreshadowing", [])
+    if foreshadowing:
+        lines = []
+        for f in foreshadowing[:8]:
+            hint = f.get("hint", "")[:80]
+            relates = f.get("relates_to", "")
+            if relates:
+                lines.append(f"- 🔮 {hint} → 关联：{relates[:40]}")
+            else:
+                lines.append(f"- 🔮 {hint}")
+        parts.append("【待回收伏笔】\n" + "\n".join(lines))
+
+    # 关键世界观设定段落
+    wb_passages = world_data.get("key_worldbuilding", [])
+    if wb_passages:
+        lines = []
+        for item in wb_passages[:4]:
+            topic = item.get("topic", "")[:30]
+            passage = item.get("passage", "")[:100]
+            if topic and passage:
+                lines.append(f"- {topic}：{passage}")
+        if lines:
+            parts.append("【关键设定】\n" + "\n".join(lines))
+
     return "\n\n".join(parts)
 
 
 def suggest_directions(client, setting: str, plot: str, model: str,
-                       world_data: dict | None = None) -> list[str]:
+                       world_data: dict | None = None,
+                       global_user_prompt: str = "") -> list[str]:
     """
     AI 建议 3-5 个发展方向
 
     Args:
         world_data: 世界书数据（含角色/地点/规则/剧情线等）
+        global_user_prompt: 用户全局提示词（偏好参考）
 
     Returns:
         方向描述列表
@@ -187,6 +219,8 @@ def suggest_directions(client, setting: str, plot: str, model: str,
         setting=setting[:1500],
         plot=plot[:1500],
     )
+    if global_user_prompt.strip():
+        prompt += f"\n\n用户偏好参考: {global_user_prompt}"
     try:
         resp = client.chat.completions.create(
             model=model,

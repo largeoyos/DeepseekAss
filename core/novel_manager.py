@@ -370,7 +370,8 @@ class NovelManager:
         with open(summary_path, "a", encoding="utf-8") as f:
             f.write(f"\n第{chapter_num}章「{chapter_title}」摘要：{summary_text}\n")
 
-    def rebuild_summary_from_active(self, client, title: str, model: str = "deepseek-v4-flash") -> None:
+    def rebuild_summary_from_active(self, client, title: str, model: str = "deepseek-v4-flash",
+                                     global_user_prompt: str = "") -> None:
         """
         根据所有活跃章节重新生成完整 plot_summary.txt
         当用户切换活跃版本后调用此方法重建摘要
@@ -400,6 +401,7 @@ class NovelManager:
                             f"2. 人物关系变化或新人物登场\n"
                             f"3. 新出现的设定、伏笔或世界观信息\n"
                             f"4. 本章结尾状态（角色去向、悬念等）\n\n{content}"
+                            + (f"\n\n用户偏好参考: {global_user_prompt}" if global_user_prompt.strip() else "")
                         ),
                     }],
                     max_tokens=2000,
@@ -431,6 +433,7 @@ class NovelManager:
         next_chapter_num: int | None = None,
         max_recent: int = 3,
         model: str = "deepseek-v4-flash",
+        global_user_prompt: str = "",
     ) -> str:
         """
         智能选取前情提要：短篇全量返回，长篇自动压缩早期章节。
@@ -502,6 +505,7 @@ class NovelManager:
                             f"2. 仍然活跃的人物及其当前关系\n"
                             f"3. 仍在发挥作用的世界设定\n"
                             f"忽略已完结的支线和不再重要的细节。简洁为主：\n\n{early_block}"
+                            + (f"\n\n用户偏好参考: {global_user_prompt}" if global_user_prompt.strip() else "")
                         ),
                     }],
                     max_tokens=600,
@@ -558,6 +562,7 @@ class NovelManager:
         chapter_num: int,
         chapter_title: str,
         model: str = "deepseek-v4-flash",
+        global_user_prompt: str = "",
     ) -> str:
         """
         调用 API 生成章节摘要
@@ -583,6 +588,7 @@ class NovelManager:
                         f"2. 人物动向与关系变化\n"
                         f"3. 新设定、伏笔或世界观信息\n"
                         f"4. 结尾状态（悬念/去向）\n\n{chapter_content}"
+                        + (f"\n\n用户偏好参考: {global_user_prompt}" if global_user_prompt.strip() else "")
                     ),
                 }],
                 max_tokens=2000,
@@ -611,6 +617,8 @@ class NovelManager:
         max_tokens: int,
         frequency_penalty: float,
         content_preview: str,
+        requirement: str = "",
+        plot: str = "",
     ) -> str:
         """
         保存一次生成的完整配置记录（独立文件）
@@ -627,6 +635,8 @@ class NovelManager:
             max_tokens: 最大 token 数
             frequency_penalty: 频率惩罚
             content_preview: 生成内容前 500 字（用于摘要参考）
+            requirement: 续写要求（续写模式专用，用于重新生成时还原）
+            plot: 续写剧情走向 / AI 建议方向 / 已定情节（用于重新生成时还原）
 
         Returns:
             保存的文件路径
@@ -647,12 +657,27 @@ class NovelManager:
             "content_preview": content_preview,
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
+        if requirement:
+            record["requirement"] = requirement
+        if plot:
+            record["plot"] = plot
 
         filename = f"ch{chapter_num:04d}_v{version:03d}.json"
         file_path = os.path.join(history_dir, filename)
         with open(file_path, "w", encoding="utf-8") as f:
             json.dump(record, f, ensure_ascii=False, indent=2)
         return file_path
+
+    def load_generation_record(self, title: str, chapter_num: int, version: int) -> dict | None:
+        """加载指定章节和版本的生成记录"""
+        history_dir = self._history_dir(title)
+        filename = f"ch{chapter_num:04d}_v{version:03d}.json"
+        fpath = os.path.join(history_dir, filename)
+        try:
+            with open(fpath, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            return None
 
     def load_generation_history(self, title: str) -> list[dict]:
         """加载指定小说的所有历史记录，按章节号排序"""
