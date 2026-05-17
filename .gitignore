@@ -33,3 +33,6 @@ user_prefs.json
 vision.js
 TODOLIST.md
 /素材
+build.bat
+build.spec
+build.ps1
