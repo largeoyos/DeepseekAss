@@ -14,24 +14,30 @@ import time
 from typing import Callable
 
 
-SEGMENT_PROMPT = """你是一位文本分析专家。请分析以下文本，根据话题转折和语义变化，
-将文本划分为若干逻辑段落，并为每个段落拟定一个小标题。
+SEGMENT_PROMPT = """你是一个文本分析专家。请分析以下文本的话题转折点，将它划分为若干逻辑段落，并为每个段落拟定一个小标题。
+
+文本已按空行划分为段落，每个段落前有编号标记 [N]。
+
+只输出划分方案，不要重复原文。格式如下：
+
+【语义段落】小标题1
+段落 1-3
+
+【语义段落】小标题2
+段落 4-8
+
+...
+
+最后以「END」结束。
 
 要求：
-1. 在每个段落**前**单独一行插入标记：【语义段落】段落标题
-2. 保留所有原文内容，不要修改、省略或改写任何文字
-3. 保持原文的格式和换行
+- 标题简洁（10 字以内）
+- 话题一致的相邻段落应合并，话题转变时再分割
+- 覆盖所有段落，不要遗漏
+- 如果全文一气呵成，输出一个段落即可
 
-输出示例：
-【语义段落】世界背景设定
-这里是世界背景设定的内容……（原文完整保留）
-
-【语义段落】主要角色介绍
-这里是主要角色介绍的内容……（原文完整保留）
-
-开始处理：
-
-{text}"""
+文本内容：
+{numbered_text}"""
 
 
 EXTRACT_PROMPT = """你是一个小说信息深度提取专家。请严格根据以下文本内容，深度提取其中的角色、地点、世界观规则、事件和剧情线索。
@@ -325,48 +331,89 @@ def _title_chunk(client, chunk_text: str, model: str, global_user_prompt: str = 
         return "未命名段落"
 
 
+def _parse_segment_ranges(raw: str, paragraphs: list[str]) -> list[tuple[str, str]]:
+    """解析 AI 输出的段落范围标记，返回 [(title, content), ...]"""
+    total = len(paragraphs)
+    ranges: list[tuple[int, int, str]] = []
+
+    # 匹配：【语义段落】标题\n段落 X-Y
+    for m in re.finditer(
+        r'【语义段落】\s*(.+?)\s*\n\s*段落\s*(\d+)\s*[-~–—]\s*(\d+)',
+        raw,
+    ):
+        title = m.group(1).strip()
+        s, e = int(m.group(2)), int(m.group(3))
+        ranges.append((s, e, title))
+
+    if not ranges:
+        # 匹配：【语义段落】标题\n段落 X（单段落）
+        for m in re.finditer(r'【语义段落】\s*(.+?)\s*\n\s*段落\s*(\d+)', raw):
+            title = m.group(1).strip()
+            idx = int(m.group(2))
+            ranges.append((idx, idx, title))
+
+    if not ranges:
+        return []
+
+    ranges.sort(key=lambda x: x[0])
+
+    # 验证：范围必须从 1 开始连续覆盖，无缺口
+    cursor = 1
+    for s, e, _ in ranges:
+        if s > cursor:
+            return []  # 有缺口，解析失败
+        cursor = max(cursor, e + 1)
+    if cursor <= total * 0.5:
+        return []  # 覆盖不足一半
+
+    # 构建段落内容
+    segments = []
+    for s, e, title in ranges:
+        s = max(1, min(s, total))
+        e = max(s, min(e, total))
+        content = "\n\n".join(paragraphs[s - 1:e])
+        segments.append((title, content))
+    return segments
+
+
 def segment_by_ai(client, text: str, model: str, global_user_prompt: str = "") -> list[tuple[str, str]]:
     """
-    AI 语义分段：由大模型按话题转折划分逻辑段落。
+    AI 语义分段。
 
-    短文本（< 8000 字）使用原有方式：AI 一次性读完并插入标记。
-    长文本（>= 8000 字）改用分块方式避免输出截断：
-      先按段落边界切块（每块 ≤6000 字），再逐块请求 AI 标题。
-
-    Returns:
-        [(title, content), ...]  每个段落的标题和内容
+    策略：
+    1. 按空行切分为段落列表
+    2. 构造带 [N] 编号的文本发给 AI
+    3. AI 只输出段落范围（不输出原文），客户端按范围切分
+    4. 解析失败时降级为机械切分
     """
-    # 短文本走原有逻辑（AI 输出不易截断）
-    if len(text) < 8000:
-        prompt = _safe_format(SEGMENT_PROMPT, text=text)
+    paragraphs = [p.strip() for p in re.split(r'\n\s*\n', text) if p.strip()]
+
+    if len(paragraphs) <= 1:
+        return [("全文", text)]
+
+    try:
+        numbered = "\n\n".join(f"[{i + 1}] {p}" for i, p in enumerate(paragraphs))
+        prompt = _safe_format(SEGMENT_PROMPT, numbered_text=numbered)
         raw = _call_api(client, [{"role": "user", "content": prompt}], model,
                         global_user_prompt=global_user_prompt)
-
-        parts = re.split(r'^【语义段落】(.+)$', raw, flags=re.MULTILINE)
-        segments = []
-        for i in range(1, len(parts), 2):
-            title = parts[i].strip()
-            content = parts[i + 1].strip() if i + 1 < len(parts) else ""
-            if title and content:
-                segments.append((title, content))
-
+        segments = _parse_segment_ranges(raw, paragraphs)
         if segments:
             return segments
+    except Exception:
+        pass
 
-    # 长文本或不满足 AI 输出格式时：分块 + AI 标题
-    chunks = _split_by_paragraphs(text, max_chars=6000)
-    segments = []
-    for chunk in chunks:
-        if not chunk.strip():
-            continue
-        title = _title_chunk(client, chunk, model, global_user_prompt=global_user_prompt)
-        segments.append((title, chunk))
-
-    # 极端容错
-    if not segments:
-        segments = [("全文", text)]
-
-    return segments
+    # Fallback：按段落数均匀切分，每块取标题
+    n = len(paragraphs)
+    if n <= 5:
+        return [("全文", text)]
+    chunk_size = max(1, n // 3)
+    result = []
+    for i in range(0, n, chunk_size):
+        chunk = paragraphs[i:i + chunk_size]
+        title = _title_chunk(client, "\n\n".join(chunk), model,
+                             global_user_prompt=global_user_prompt)
+        result.append((title, "\n\n".join(chunk)))
+    return result
 
 
 def extract_world_bible_from_segments(
