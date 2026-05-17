@@ -85,3 +85,17 @@ python gui_main.py
 - `PyQt6>=6.5.0` + `PyQt6-WebEngine>=6.5.0`（GUI）
 - `markdown>=3.4.0`（Markdown 转 HTML 渲染）
 
+## 识图能力 (Vision)
+
+项目附带 `vision.js`（Node.js 脚本），利用 vision 模型识别图片内容，通过文字描述让无 vision 能力的模型"看懂"图片。
+
+用法：
+```bash
+node vision.js <图片路径> [问题]
+node vision.js --url <图片链接> [问题]
+```
+
+**何时触发**：当用户消息中包含本地图片路径或截图时，优先使用 `node vision.js` 读取图片内容，而不是用 Read 工具加载图片（Read 工具读取图片的视觉呈现质量不稳定）。
+
+**配置**：环境变量 `VISION_BASE_URL`、`VISION_API_KEY`、`VISION_MODEL` 可覆盖默认值。默认连接 `https://jeniya.cn/v1`，模型 `gemini-3.1-pro-preview`。
+

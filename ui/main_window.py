@@ -385,11 +385,6 @@ class DeepSeekChatGUI(QMainWindow):
         self._apply_dark_theme()
         self._refresh_novel_bookshelf()
 
-        # 将已加载的全局提示词同步到两个面板
-        if self._client.global_user_prompt:
-            self._global_user_prompt_edit.setPlainText(self._client.global_user_prompt)
-            self._cont_global_user_prompt_edit.setPlainText(self._client.global_user_prompt)
-
     # ========== API Key ==========
 
     def _get_api_key_with_retry(self) -> str | None:
@@ -804,6 +799,7 @@ class DeepSeekChatGUI(QMainWindow):
         apply_btn.clicked.connect(self._on_apply_role_settings)
         layout.addWidget(apply_btn)
 
+        layout.addStretch()
         return panel
 
     def _build_novel_panel(self) -> QGroupBox:
@@ -901,19 +897,19 @@ class DeepSeekChatGUI(QMainWindow):
         layout.addWidget(self._demand_edit)
 
         # ── 用户全局提示词 ──
-        global_prompt_label = QLabel("🌐 全局提示（写作偏好/风格，自动注入所有生成和摘要）")
-        global_prompt_label.setWordWrap(True)
-        layout.addWidget(global_prompt_label)
-        self._global_user_prompt_edit = QTextEdit()
-        self._global_user_prompt_edit.setPlaceholderText(
-            "在此填写您的写作偏好、习惯风格、常用要求等。\n"
-            "例如：我喜欢细腻的环境描写，对话要自然，每章结尾留悬念。\n"
-            "此提示词将自动注入所有生成和摘要请求中。"
+        global_prompt_btn = QPushButton("🌐 编辑全局偏好提示词")
+        global_prompt_btn.setMinimumHeight(32)
+        global_prompt_btn.setToolTip(
+            "点击编辑您的写作偏好、习惯风格等全局提示词，"
+            "将自动注入所有生成和摘要请求"
         )
-        self._global_user_prompt_edit.setMaximumHeight(80)
-        self._global_user_prompt_edit.setMinimumHeight(60)
-        self._global_user_prompt_edit.textChanged.connect(self._on_global_user_prompt_changed)
-        layout.addWidget(self._global_user_prompt_edit)
+        global_prompt_btn.setStyleSheet("""
+            QPushButton { background: #3a3a5a; color: #d4d4d4; border: 1px solid #5a5a7a;
+                          border-radius: 6px; padding: 4px 8px; font-size: 12px; }
+            QPushButton:hover { background: #4a4a6a; border-color: #7a7a9a; }
+        """)
+        global_prompt_btn.clicked.connect(self._on_edit_global_prompt)
+        layout.addWidget(global_prompt_btn)
 
         # ── 本章情节输入 ──
         plot_label = QLabel("📝 本章情节输入（可选）")
@@ -1157,18 +1153,19 @@ class DeepSeekChatGUI(QMainWindow):
         layout.addWidget(self._cont_demand_edit)
 
         # ── 用户全局提示词 ──
-        cont_global_prompt_label = QLabel("🌐 全局提示（写作偏好/风格，自动注入所有生成和摘要）")
-        cont_global_prompt_label.setWordWrap(True)
-        layout.addWidget(cont_global_prompt_label)
-        self._cont_global_user_prompt_edit = QTextEdit()
-        self._cont_global_user_prompt_edit.setPlaceholderText(
-            "在此填写您的写作偏好、习惯风格、常用要求等。\n"
-            "此提示词将自动注入所有生成和摘要请求中。"
+        cont_global_prompt_btn = QPushButton("🌐 编辑全局偏好提示词")
+        cont_global_prompt_btn.setMinimumHeight(32)
+        cont_global_prompt_btn.setToolTip(
+            "点击编辑您的写作偏好、习惯风格等全局提示词，"
+            "将自动注入所有生成和摘要请求"
         )
-        self._cont_global_user_prompt_edit.setMaximumHeight(80)
-        self._cont_global_user_prompt_edit.setMinimumHeight(60)
-        self._cont_global_user_prompt_edit.textChanged.connect(self._on_global_user_prompt_changed)
-        layout.addWidget(self._cont_global_user_prompt_edit)
+        cont_global_prompt_btn.setStyleSheet("""
+            QPushButton { background: #3a3a5a; color: #d4d4d4; border: 1px solid #5a5a7a;
+                          border-radius: 6px; padding: 4px 8px; font-size: 12px; }
+            QPushButton:hover { background: #4a4a6a; border-color: #7a7a9a; }
+        """)
+        cont_global_prompt_btn.clicked.connect(self._on_edit_global_prompt)
+        layout.addWidget(cont_global_prompt_btn)
 
         # ── 保存/加载设定按钮 ──
         cont_save_settings_row = QHBoxLayout()
@@ -1924,11 +1921,6 @@ class DeepSeekChatGUI(QMainWindow):
             self._client.strategy.background_story = meta.background_story
             self._client.strategy.writing_demand = meta.writing_demand
 
-        # 同步全局提示词到小说面板
-        self._global_user_prompt_edit.blockSignals(True)
-        self._global_user_prompt_edit.setPlainText(self._client.global_user_prompt)
-        self._global_user_prompt_edit.blockSignals(False)
-
     def _on_novel_title_changed(self, text: str) -> None:
         if isinstance(self._client.strategy, NovelStrategy):
             self._client.strategy.novel_title = text.strip()
@@ -1979,23 +1971,48 @@ class DeepSeekChatGUI(QMainWindow):
                     "💬 **自由对话模式** — 可随意交流写作问题"
                 )
 
-    def _on_global_user_prompt_changed(self) -> None:
-        """同步两个面板的全局提示词并持久化"""
-        sender = self.sender()
-        if sender == self._global_user_prompt_edit:
-            value = self._global_user_prompt_edit.toPlainText()
-            self._cont_global_user_prompt_edit.blockSignals(True)
-            self._cont_global_user_prompt_edit.setPlainText(value)
-            self._cont_global_user_prompt_edit.blockSignals(False)
-        elif sender == self._cont_global_user_prompt_edit:
-            value = self._cont_global_user_prompt_edit.toPlainText()
-            self._global_user_prompt_edit.blockSignals(True)
-            self._global_user_prompt_edit.setPlainText(value)
-            self._global_user_prompt_edit.blockSignals(False)
-        else:
-            return
-        self._client.global_user_prompt = value
-        self._save_global_user_prompt(value)
+    def _on_edit_global_prompt(self) -> None:
+        """打开编辑对话框，编辑用户全局提示词"""
+        from PyQt6.QtWidgets import QDialog, QVBoxLayout, QTextEdit, QHBoxLayout, QPushButton
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle("编辑全局偏好提示词")
+        dialog.resize(550, 350)
+
+        layout = QVBoxLayout(dialog)
+        hint = QLabel(
+            "此处的内容将自动注入所有章节生成、续写、重新生成、字数补充、\n"
+            "摘要生成、世界书提取和方向建议等请求。可用于表达您的写作偏好。"
+        )
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        edit = QTextEdit()
+        edit.setPlainText(self._client.global_user_prompt)
+        edit.setPlaceholderText(
+            "在此填写您的写作偏好、习惯风格、常用要求等。\n"
+            "例如：我喜欢细腻的环境描写，对话要自然，每章结尾留悬念。"
+        )
+        layout.addWidget(edit)
+
+        btn_layout = QHBoxLayout()
+        btn_layout.addStretch()
+
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(dialog.reject)
+        btn_layout.addWidget(cancel_btn)
+
+        ok_btn = QPushButton("确定")
+        ok_btn.setDefault(True)
+        ok_btn.clicked.connect(dialog.accept)
+        btn_layout.addWidget(ok_btn)
+
+        layout.addLayout(btn_layout)
+
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            value = edit.toPlainText()
+            self._client.global_user_prompt = value
+            self._save_global_user_prompt(value)
 
     # ========== 📄 续写面板 Handler（新增） ==========
 
@@ -2042,11 +2059,6 @@ class DeepSeekChatGUI(QMainWindow):
         self._cont_chapter_info_label.setText(
             f"已有 {len(chapters)} 章，下一章编号: 第{next_ch}章"
         )
-
-        # 同步全局提示词到续写面板
-        self._cont_global_user_prompt_edit.blockSignals(True)
-        self._cont_global_user_prompt_edit.setPlainText(self._client.global_user_prompt)
-        self._cont_global_user_prompt_edit.blockSignals(False)
 
     def _on_cont_create_book(self) -> None:
         """续写面板：新建小说"""
