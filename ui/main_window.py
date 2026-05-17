@@ -67,6 +67,7 @@ from ui.presets import PRESETS, CUSTOM_LABEL, COMBO_ITEMS
 from ui.continuation_dialogs import (
     analyze_source_text, suggest_directions,
     ContinuationAnalysisDialog, DirectionSelectionDialog,
+    SectionPreviewDialog,
 )
 
 
@@ -2614,6 +2615,31 @@ class DeepSeekChatGUI(QMainWindow):
             QMessageBox.warning(self, "提示", "源文档内容为空，无法续写。")
             return
 
+        # ── 段落预览弹窗 ──
+        client = self._client.raw_client if hasattr(self, '_client') else None
+        dlg = SectionPreviewDialog(
+            self,
+            source_text=source_text if not source_folder else None,
+            folder_path=source_folder,
+            client=client, model=self._client.model,
+            global_user_prompt=self._client.global_user_prompt,
+            mode="continue",
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        result = dlg.get_result()
+        if result:
+            if result["mode"] == "file" and result.get("sections"):
+                source_text = "\n\n".join(
+                    f"# {t}\n{c}" for t, c in result["sections"]
+                )
+            elif result["mode"] == "folder" and result.get("files"):
+                parts = []
+                for f in result["files"]:
+                    parts.append(f"===== {f['filename']} =====\n{f['full_content']}")
+                source_text = "\n\n".join(parts)
+
         # ── 确定目标书架 ──
         book_title = self._get_current_book_title()
         if not book_title:
@@ -3175,11 +3201,8 @@ class DeepSeekChatGUI(QMainWindow):
 
     def _on_analyze_continuation(self) -> None:
         """
-        新版分析：读取源文档 → AI 语义分段 → 结构化提取世界观
+        新版分析：读取源文档 → 段落预览弹窗 → 结构化提取世界观
         → 创建小说 → 保存世界书 → 保存设定 → 自动加载 UI
-
-        如果选择的是文件夹且包含数字命名的文件（1.txt, 2.txt...），
-        则改用逐章批量导入流程。
         """
         if self._streaming:
             return
@@ -3206,8 +3229,25 @@ class DeepSeekChatGUI(QMainWindow):
             else:
                 title = "续写作品"
 
-        # 检测文件夹 + 数字命名文件 → 走逐章批量导入
-        if source_folder and self._has_numbered_files(source_folder):
+        # ── 段落预览弹窗 ──
+        dlg = SectionPreviewDialog(
+            self,
+            source_text=source_text if not source_folder else None,
+            folder_path=source_folder,
+            client=client, model=self._client.model,
+            global_user_prompt=self._client.global_user_prompt,
+            mode="analyze",
+        )
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+
+        result = dlg.get_result()
+        if not result:
+            return
+
+        # 根据弹窗结果决定处理路径
+        if result["mode"] == "folder" and result.get("files"):
+            # 文件夹模式：批量导入（使用确认后的文件列表）
             self._streaming = True
             self._assistant_text_buffer = []
             self._append_user_message(f"📂 批量导入章节 → {title}")
@@ -3216,11 +3256,18 @@ class DeepSeekChatGUI(QMainWindow):
             threading.Thread(
                 target=self._run_batch_folder_import,
                 args=(title, source_folder, self._client.model, client),
+                kwargs={"files_list": result["files"]},
                 daemon=True,
             ).start()
             return
 
-        # 检查目标书是否已有章节，防止导入源文档覆盖现有数据
+        # 文件模式：使用确认后的段落直接进入分析
+        sections = result.get("sections", [])
+        if not sections:
+            QMessageBox.warning(self, "提示", "段落列表为空，无法分析。")
+            return
+
+        # 检查目标书是否已有章节
         existing_chapters = self._novel_manager.list_chapters(title)
         if existing_chapters:
             reply = QMessageBox.question(
@@ -3232,7 +3279,6 @@ class DeepSeekChatGUI(QMainWindow):
                 QMessageBox.StandardButton.No,
             )
             if reply != QMessageBox.StandardButton.Yes:
-                self._streaming = False  # 勿泄漏 streaming 状态
                 return
 
         model = self._client.model
@@ -3240,27 +3286,24 @@ class DeepSeekChatGUI(QMainWindow):
         self._assistant_text_buffer = []
         self._append_user_message(f"🔍 分析源文档并导入小说：{title}")
 
-        # 在线程启动前保存源文本，确保即使线程失败上下文也不丢失
         self._cont_analysis_source = source_text
         self._cont_analysis_source_path = source_file or source_folder or ""
 
-        def _run_analyze():
+        self._start_analysis_with_sections(title, source_text, sections, client)
+
+    def _start_analysis_with_sections(self, title: str, source_text: str, sections: list, client) -> None:
+        """后台线程：使用已确认的段落直接进行世界观提取（跳过 AI 分段）"""
+        def _run():
             try:
-                from utils.summarize import segment_by_ai, extract_world_bible_from_segments, generate_novel_settings_from_world_bible
+                from utils.summarize import extract_world_bible_from_segments, generate_novel_settings_from_world_bible
                 from core.world_bible import WorldBible, CharacterEntry, LocationEntry, TimelineEntry, PlotThread
 
                 si = self._stream_signals
-                si.token.emit(f"\n\n🔍 第一步：AI 语义分段…\n")
-                _chars = len(source_text)
-                _words = len(source_text.replace('\n', '').replace('\r', '').replace(' ', '').replace('　', ''))
-                si.token.emit(f"  读到 {_words} 个字，{_chars} 个字符\n")
-
                 _global_prompt = self._client.global_user_prompt
-                segments = segment_by_ai(client, source_text, model, global_user_prompt=_global_prompt)
-                si.token.emit(f"  ✅ 识别出 {len(segments)} 个逻辑段落\n")
 
-                si.token.emit(f"\n⏳ 第二步：逐段提取世界观信息…\n")
-                world_data = extract_world_bible_from_segments(client, segments, model, global_user_prompt=_global_prompt)
+                si.token.emit(f"\n✅ 已确认 {len(sections)} 个段落\n")
+                si.token.emit(f"\n⏳ 第一步：逐段提取世界观信息…\n")
+                world_data = extract_world_bible_from_segments(client, sections, self._client.model, global_user_prompt=_global_prompt)
 
                 chars = len(world_data.get("characters", []))
                 locs = len(world_data.get("locations", []))
@@ -3273,10 +3316,9 @@ class DeepSeekChatGUI(QMainWindow):
                     + "\n"
                 )
 
-                si.token.emit(f"\n⏳ 第三步：创建小说并保存数据…\n")
+                si.token.emit(f"\n⏳ 第二步：创建小说并保存数据…\n")
                 self._novel_manager.create_book(title)
 
-                # 保存世界书
                 bible = WorldBible(
                     characters=[CharacterEntry(**c) for c in world_data.get("characters", [])],
                     locations=[LocationEntry(**l) for l in world_data.get("locations", [])],
@@ -3290,9 +3332,8 @@ class DeepSeekChatGUI(QMainWindow):
                 )
                 self._novel_manager.save_world_bible(title, bible)
 
-                # 生成并保存小说设定
-                si.token.emit(f"⏳ 第四步：生成小说设定…\n")
-                settings = generate_novel_settings_from_world_bible(client, world_data, model, global_user_prompt=_global_prompt)
+                si.token.emit(f"⏳ 第三步：生成小说设定…\n")
+                settings = generate_novel_settings_from_world_bible(client, world_data, self._client.model, global_user_prompt=_global_prompt)
                 self._novel_manager.save_meta(
                     title,
                     protagonist_bio=settings.get("protagonist_bio", ""),
@@ -3304,7 +3345,7 @@ class DeepSeekChatGUI(QMainWindow):
                 si.token.emit(
                     f"\n{'='*50}\n"
                     f"✅ 分析完成！「{title}」创建成功\n"
-                    f"  • {len(segments)} 个语义段落\n"
+                    f"  • {len(sections)} 个语义段落\n"
                     f"  • 世界书 {chars}角色 + {locs}地点 + {rules}规则\n"
                     f"  • 小说设定已生成并加载到面板\n"
                     f"  • 现在可以点击「🚀 生成下一章」开始续写\n"
@@ -3312,18 +3353,11 @@ class DeepSeekChatGUI(QMainWindow):
                 )
                 si.finished.emit()
 
-                # 保存分析数据供对话框使用
                 self._cont_analysis_world_data = world_data
                 self._cont_analysis_settings = settings
-
-                # 触发 UI 加载
                 self._stream_signals.novel_imported.emit(title)
-
-                # 弹出分析结果对话框
-                world_data2 = world_data
-                settings2 = settings
                 self._stream_signals.analysis_done.emit(
-                    str(world_data2), str(settings2), title,
+                    str(world_data), str(settings), title,
                 )
 
             except Exception as e:
@@ -3332,7 +3366,7 @@ class DeepSeekChatGUI(QMainWindow):
                 self._stream_signals.token.emit(f"\n```\n{traceback.format_exc()}\n```\n")
                 self._stream_signals.error.emit(f"分析失败: {e}")
 
-        threading.Thread(target=_run_analyze, daemon=True).start()
+        threading.Thread(target=_run, daemon=True).start()
 
     # ========== 📂 批量导入章节（文件夹模式） ==========
 
@@ -3347,16 +3381,22 @@ class DeepSeekChatGUI(QMainWindow):
                     return True
         return False
 
-    def _run_batch_folder_import(self, title: str, folder_path: str, model: str, client) -> None:
+    def _run_batch_folder_import(self, title: str, folder_path: str, model: str, client,
+                                  files_list: list | None = None) -> None:
         """
         后台线程：逐章批量导入文件夹中的数字命名文件
 
         将每个文件视为一个章节，按数字顺序依次处理：
-        1. 读取文件内容
+        1. 读取文件内容（如传入了 files_list 则直接使用）
         2. 带上已有世界观上下文，调用 extract_and_merge_world_bible 提取并合并
         3. 生成章节摘要并追加到 plot_summary
         4. 保存章节文件
         5. 所有章节处理完成后生成小说设定
+
+        Args:
+            files_list: 可选，SectionPreviewDialog 确认后的文件列表。
+                        包含 chapter_num, filename, full_content, sections 等字段。
+                        传入后跳过文件夹扫描和文件读取。
         """
         try:
             from core.world_bible import WorldBible, extract_and_merge_world_bible
@@ -3365,47 +3405,62 @@ class DeepSeekChatGUI(QMainWindow):
             si = self._stream_signals
             _global_prompt = self._client.global_user_prompt
 
-            # 扫描文件夹，提取数字命名文件并排序
-            ext_map = {".txt", ".md"}
-            files = []
-            for fname in os.listdir(folder_path):
-                ext = os.path.splitext(fname)[1].lower()
-                if ext not in ext_map:
-                    continue
-                stem = os.path.splitext(fname)[0]
-                nums = re.findall(r'\d+', stem)
-                if nums:
-                    files.append((int(nums[0]), fname))
+            # 构建统一章节列表 [(chapter_num, fname, content), ...]
+            chapter_files: list[tuple[int, str, str]] = []
 
-            if not files:
-                si.token.emit("❌ 文件夹中没有找到数字命名的文本文件（如 1.txt, 2.txt...）\n")
-                self._stream_signals.error.emit("文件夹中未找到数字命名的文件")
+            if files_list:
+                # 使用弹窗确认后的文件列表（跳过扫描和读取）
+                for f in files_list:
+                    chapter_files.append((f["chapter_num"], f["filename"], f["full_content"]))
+                chapter_files.sort(key=lambda x: x[0])
+                total = len(chapter_files)
+                si.token.emit(f"📂 使用已确认的 {total} 个文件，开始逐章导入…\n\n")
+            else:
+                # 扫描文件夹，提取数字命名文件并排序
+                ext_map = {".txt", ".md"}
+                raw_files = []
+                for fname in os.listdir(folder_path):
+                    ext = os.path.splitext(fname)[1].lower()
+                    if ext not in ext_map:
+                        continue
+                    stem = os.path.splitext(fname)[0]
+                    nums = re.findall(r'\d+', stem)
+                    if nums:
+                        raw_files.append((int(nums[0]), fname))
+
+                if not raw_files:
+                    si.token.emit("❌ 文件夹中没有找到数字命名的文本文件（如 1.txt, 2.txt...）\n")
+                    self._stream_signals.error.emit("文件夹中未找到数字命名的文件")
+                    return
+
+                raw_files.sort(key=lambda x: x[0])
+                total = len(raw_files)
+                si.token.emit(f"📂 检测到 {total} 个章节文件，开始逐章导入…\n\n")
+
+                for chapter_num, fname in raw_files:
+                    fpath = os.path.join(folder_path, fname)
+                    content = ""
+                    for enc in ("utf-8", "gbk"):
+                        try:
+                            with open(fpath, "r", encoding=enc) as f:
+                                content = f.read()
+                            break
+                        except UnicodeDecodeError:
+                            continue
+                    if not content:
+                        continue
+                    chapter_files.append((chapter_num, fname, content))
+
+            if not chapter_files:
+                si.token.emit("❌ 没有可处理的章节文件。\n")
+                self._stream_signals.error.emit("没有可处理的章节文件")
                 return
-
-            files.sort(key=lambda x: x[0])
-            total = len(files)
-            si.token.emit(f"📂 检测到 {total} 个章节文件，开始逐章导入…\n\n")
 
             # 创建小说
             self._novel_manager.create_book(title)
             world_bible = WorldBible()
 
-            for idx, (chapter_num, fname) in enumerate(files, 1):
-                fpath = os.path.join(folder_path, fname)
-
-                # 读取文件内容
-                content = ""
-                for enc in ("utf-8", "gbk"):
-                    try:
-                        with open(fpath, "r", encoding=enc) as f:
-                            content = f.read()
-                        break
-                    except UnicodeDecodeError:
-                        continue
-                if not content:
-                    si.token.emit(f"  ⏭️ [{idx}/{total}] 跳过 {fname}（无法读取）\n")
-                    continue
-
+            for idx, (chapter_num, fname, content) in enumerate(chapter_files, 1):
                 chapter_title = os.path.splitext(fname)[0]
                 si.token.emit(f"  📖 [{idx}/{total}] 第{chapter_num}章「{chapter_title}」…\n")
 

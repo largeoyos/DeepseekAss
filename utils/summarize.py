@@ -395,8 +395,8 @@ def extract_world_bible_from_segments(
         "global_key_dialogues": [],
     }
     seen_names = {"characters": set(), "locations": set(), "rules": set(), "plot_threads": set()}
-    # 用 chapter_marker=0 标记所有条目都来自初始导入
-    chapter_marker = 0
+    # 用 chapter_marker 标记语义段落序号（从 1 开始，避免"第0章"）
+    chapter_marker = 1
     # 用于 synthesis 步骤的全量累积数据
     all_segment_data = []
     full_text = ""
@@ -830,3 +830,53 @@ def split_and_summarize(
             progress_callback(i, len(segments))
 
     return results
+
+
+# ========== 📑 段落检测与 # 标题解析 ==========
+
+
+def has_proper_sections(text: str) -> bool:
+    """
+    检查文本是否有正确的一级标题（#）划分。
+
+    要求：
+    - 有 2+ 个 # 标题行（仅一级，一个 # + 空格）
+    - 没有 ## 或 ### 标题行
+
+    Returns:
+        True 表示文本已正确划分，False 表示需要 AI 分段
+    """
+    h1_count = 0
+    has_h2_or_h3 = False
+    for line in text.split('\n'):
+        stripped = line.strip()
+        if re.match(r'^#[^#]', stripped):   # # 开头但不是 ## 或 ###
+            h1_count += 1
+        elif re.match(r'^#{2,3}\s', stripped):
+            has_h2_or_h3 = True
+    return h1_count >= 2 and not has_h2_or_h3
+
+
+def detect_sections(text: str) -> list[tuple[str, str]]:
+    """
+    按 # 一级标题解析文本段落。
+
+    Returns:
+        [(title, content), ...]  每个段落的标题和正文
+        如果没有正确的 # 划分则返回空列表
+    """
+    if not has_proper_sections(text):
+        return []
+
+    lines = text.split('\n')
+    h1_positions = [i for i, line in enumerate(lines) if re.match(r'^#\s', line.strip())]
+
+    sections = []
+    for idx, pos in enumerate(h1_positions):
+        heading = lines[pos].strip().lstrip('#').strip()
+        next_pos = h1_positions[idx + 1] if idx + 1 < len(h1_positions) else len(lines)
+        content = '\n'.join(lines[pos + 1:next_pos]).strip()
+        if heading and content:
+            sections.append((heading, content))
+
+    return sections

@@ -3,10 +3,15 @@
 提供分析结果展示、方向选择和续写参数设置等对话框
 """
 
+import os
+import re
+
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTabWidget,
     QTextEdit, QPushButton, QLabel, QMessageBox,
     QRadioButton, QButtonGroup, QSpinBox, QGroupBox,
+    QListWidget, QSplitter, QFrame, QAbstractItemView,
+    QListWidgetItem,
 )
 from PyQt6.QtCore import Qt
 
@@ -451,3 +456,357 @@ class DirectionSelectionDialog(QDialog):
             btn = self._group.button(checked_id)
             self.selected_direction = btn.text() if btn else None
         self.accept()
+
+
+class SectionPreviewDialog(QDialog):
+    """
+    段落划分预览弹窗。
+
+    在分析/续写前展示文本的段落划分（基于 # 一级标题或 AI 语义分段），
+    用户确认后可选择重新分段，满意后再进入正式处理。
+
+    Args:
+        parent: 父窗口
+        source_text: 文件模式的文本
+        folder_path: 文件夹模式的路径（与 source_text 二选一）
+        client: OpenAI 客户端（用于 AI 重新分段）
+        model: 模型名称
+        global_user_prompt: 用户偏好
+        mode: "analyze" 或 "continue"
+    """
+
+    def __init__(self, parent,
+                 source_text: str | None = None,
+                 folder_path: str | None = None,
+                 client=None, model: str = "",
+                 global_user_prompt: str = "",
+                 mode: str = "analyze"):
+        super().__init__(parent)
+        self._source_text = source_text
+        self._folder_path = folder_path
+        self._client = client
+        self._model = model
+        self._global_prompt = global_user_prompt
+        self._mode = mode
+
+        # 存储结果
+        self.result: dict | None = None
+
+        self._folder_files: list[dict] = []     # 文件夹模式下缓存每个文件的信息
+        self._current_file_idx: int = -1        # 当前选中文件的索引
+
+        self.setWindowTitle("📑 段落划分预览")
+        self.resize(750, 520)
+        self.setModal(True)
+        self._build_ui()
+
+        # 初始化数据
+        if source_text:
+            self._init_file_mode(source_text)
+        elif folder_path:
+            self._init_folder_mode(folder_path)
+
+    def _build_ui(self):
+        layout = QVBoxLayout(self)
+
+        # 状态标签
+        self._status_label = QLabel("准备中…")
+        self._status_label.setStyleSheet(
+            "color: #ccc; font-size: 13px; padding: 6px 10px; "
+            "background: #333; border-radius: 4px;"
+        )
+        self._status_label.setWordWrap(True)
+        layout.addWidget(self._status_label)
+
+        # 主体：左右分栏
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+
+        # 左侧：段落列表
+        left_frame = QFrame()
+        left_layout = QVBoxLayout(left_frame)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        self._section_list = QListWidget()
+        self._section_list.setStyleSheet("""
+            QListWidget { background: #2d2d2d; color: #e0e0e0;
+                          border: 1px solid #444; font-size: 13px; }
+            QListWidget::item:selected { background: #3d7abb; color: white; }
+        """)
+        self._section_list.currentRowChanged.connect(self._on_section_selected)
+        left_layout.addWidget(QLabel("段落列表"))
+        left_layout.addWidget(self._section_list)
+        splitter.addWidget(left_frame)
+
+        # 右侧：内容预览
+        right_frame = QFrame()
+        right_layout = QVBoxLayout(right_frame)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        self._preview_edit = QTextEdit()
+        self._preview_edit.setReadOnly(True)
+        self._preview_edit.setStyleSheet("""
+            QTextEdit { background: #2d2d2d; color: #e0e0e0;
+                        border: 1px solid #444; font-size: 13px; }
+        """)
+        right_layout.addWidget(QLabel("内容预览"))
+        right_layout.addWidget(self._preview_edit)
+        splitter.addWidget(right_frame)
+
+        splitter.setSizes([250, 500])
+        layout.addWidget(splitter, stretch=1)
+
+        # 底部按钮
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+
+        self._resegment_btn = QPushButton("🔄 AI 重新分段")
+        self._resegment_btn.setStyleSheet("""
+            QPushButton { background: #6b5a2d; color: white; border: none;
+                          border-radius: 6px; padding: 8px 16px; font-weight: bold; }
+            QPushButton:hover { background: #8b7a3d; }
+        """)
+        self._resegment_btn.clicked.connect(self._on_resegment)
+        btn_row.addWidget(self._resegment_btn)
+
+        confirm_text = "✅ 确认分析" if self._mode == "analyze" else "✅ 确认续写"
+        self._confirm_btn = QPushButton(confirm_text)
+        self._confirm_btn.setStyleSheet("""
+            QPushButton { background: #2d6b2d; color: white; border: none;
+                          border-radius: 6px; padding: 8px 16px; font-weight: bold; }
+            QPushButton:hover { background: #3d8b3d; }
+        """)
+        self._confirm_btn.clicked.connect(self._on_confirm_analysis)
+        btn_row.addWidget(self._confirm_btn)
+
+        cancel_btn = QPushButton("取消")
+        cancel_btn.clicked.connect(self.reject)
+        btn_row.addWidget(cancel_btn)
+
+        layout.addLayout(btn_row)
+
+    # ── 文件模式 ──
+
+    def _init_file_mode(self, text: str):
+        """初始化文件模式：检测或 AI 分段"""
+        from utils.summarize import detect_sections, segment_by_ai
+
+        sections = detect_sections(text)
+        if sections:
+            self._sections_data = sections
+            self._status_label.setText("✅ 文本已有正确的 # 段落划分")
+            self._status_label.setStyleSheet(
+                "color: #8f8; font-size: 13px; padding: 6px 10px; "
+                "background: #2d3d2d; border-radius: 4px;"
+            )
+        else:
+            self._status_label.setText("⏳ 未检测到段落划分，正在由 AI 自动分段…")
+            self._status_label.setStyleSheet(
+                "color: #ff8; font-size: 13px; padding: 6px 10px; "
+                "background: #3d3d2d; border-radius: 4px;"
+            )
+            from PyQt6.QtWidgets import QApplication
+            QApplication.processEvents()
+            try:
+                sections = segment_by_ai(self._client, text, self._model,
+                                         global_user_prompt=self._global_prompt)
+                self._sections_data = sections
+                self._status_label.setText("⚠️ 已由 AI 自动分段，请确认是否合理")
+                self._status_label.setStyleSheet(
+                    "color: #ff8; font-size: 13px; padding: 6px 10px; "
+                    "background: #3d3d2d; border-radius: 4px;"
+                )
+            except Exception as e:
+                self._sections_data = [("全文", text)]
+                self._status_label.setText(f"⚠️ AI 分段失败，将使用全文: {e}")
+                self._status_label.setStyleSheet(
+                    "color: #f88; font-size: 13px; padding: 6px 10px; "
+                    "background: #3d2d2d; border-radius: 4px;"
+                )
+
+        self._populate_sections()
+
+    def _populate_sections(self):
+        """用 self._sections_data 刷新列表"""
+        self._section_list.blockSignals(True)
+        self._section_list.clear()
+        for title, _ in self._sections_data:
+            self._section_list.addItem(f"# {title}")
+        self._section_list.blockSignals(False)
+        if self._sections_data:
+            self._section_list.setCurrentRow(0)
+
+    def _on_section_selected(self, row: int):
+        """段落选中 → 预览内容"""
+        if 0 <= row < len(self._sections_data):
+            _, content = self._sections_data[row]
+            self._preview_edit.setPlainText(content[:2000])
+
+    def _on_resegment(self):
+        """AI 重新分段"""
+        text = self._get_full_text()
+        if not text:
+            return
+
+        from utils.summarize import segment_by_ai
+        from PyQt6.QtWidgets import QApplication
+
+        self._status_label.setText("⏳ AI 正在重新分段…")
+        self._status_label.setStyleSheet(
+            "color: #ff8; font-size: 13px; padding: 6px 10px; "
+            "background: #3d3d2d; border-radius: 4px;"
+        )
+        self._resegment_btn.setEnabled(False)
+        QApplication.processEvents()
+
+        try:
+            sections = segment_by_ai(self._client, text, self._model,
+                                     global_user_prompt=self._global_prompt)
+            self._sections_data = sections
+            self._populate_sections()
+            self._status_label.setText(f"⚠️ AI 分段完成，共 {len(sections)} 个段落")
+        except Exception as e:
+            self._status_label.setText(f"❌ 重新分段失败: {e}")
+            self._status_label.setStyleSheet(
+                "color: #f88; font-size: 13px; padding: 6px 10px; "
+                "background: #3d2d2d; border-radius: 4px;"
+            )
+        finally:
+            self._resegment_btn.setEnabled(True)
+
+    def _get_full_text(self) -> str:
+        """获取当前正在处理的完整文本"""
+        if self._source_text is not None:
+            return self._source_text
+        if self._current_file_idx >= 0 and self._current_file_idx < len(self._folder_files):
+            return self._folder_files[self._current_file_idx]["full_content"]
+        return ""
+
+    # ── 文件夹模式 ──
+
+    def _init_folder_mode(self, folder_path: str):
+        """初始化文件夹模式：扫描文件，逐个检测分段"""
+        from utils.summarize import detect_sections, segment_by_ai
+        from PyQt6.QtWidgets import QApplication
+
+        ext_map = {".txt", ".md"}
+        raw_files = []
+        for fname in os.listdir(folder_path):
+            if os.path.splitext(fname)[1].lower() not in ext_map:
+                continue
+            content = ""
+            fpath = os.path.join(folder_path, fname)
+            for enc in ("utf-8", "gbk"):
+                try:
+                    with open(fpath, "r", encoding=enc) as f:
+                        content = f.read()
+                    break
+                except UnicodeDecodeError:
+                    continue
+            if not content:
+                continue
+            # 提取数字序号
+            stem = os.path.splitext(fname)[0]
+            nums = re.findall(r'\d+', stem)
+            chapter_num = int(nums[0]) if nums else 0
+            raw_files.append((chapter_num, fname, content))
+
+        raw_files.sort(key=lambda x: x[0])
+
+        self._folder_files = []
+        for chapter_num, fname, content in raw_files:
+            sections = detect_sections(content)
+            needs_ai = not sections
+            self._folder_files.append({
+                "filename": fname,
+                "chapter_num": chapter_num,
+                "full_content": content,
+                "sections": sections,
+                "needs_ai": needs_ai,
+                "checked": True,
+            })
+
+        # 对需要 AI 分段的文件自动处理
+        auto_count = sum(1 for f in self._folder_files if f["needs_ai"])
+        if auto_count > 0:
+            self._status_label.setText(
+                f"⏳ 正在由 AI 分段（{auto_count} 个文件需要处理）…"
+            )
+            QApplication.processEvents()
+            for f in self._folder_files:
+                if f["needs_ai"]:
+                    try:
+                        f["sections"] = segment_by_ai(
+                            self._client, f["full_content"], self._model,
+                            global_user_prompt=self._global_prompt,
+                        )
+                        f["needs_ai"] = False
+                    except Exception:
+                        f["sections"] = [("全文", f["full_content"])]
+
+        self._status_label.setText(
+            f"📂 共 {len(self._folder_files)} 个文件，勾选后确认分析"
+        )
+        self._status_label.setStyleSheet(
+            "color: #ccc; font-size: 13px; padding: 6px 10px; "
+            "background: #333; border-radius: 4px;"
+        )
+        self._populate_folder_list()
+
+    def _populate_folder_list(self):
+        """填充文件夹文件列表（带复选框）"""
+        self._section_list.blockSignals(True)
+        self._section_list.clear()
+        self._section_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+
+        for f in self._folder_files:
+            item = QListWidgetItem(f"{f['filename']} ({len(f['sections'])}段)")
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            item.setCheckState(Qt.CheckState.Checked if f["checked"] else Qt.CheckState.Unchecked)
+            item.setData(Qt.ItemDataRole.UserRole, self._folder_files.index(f))
+            self._section_list.addItem(item)
+
+        self._section_list.blockSignals(False)
+        self._section_list.currentRowChanged.connect(self._on_folder_file_selected)
+        self._section_list.itemChanged.connect(self._on_folder_item_changed)
+
+        # 清空预览
+        self._preview_edit.clear()
+
+    def _on_folder_item_changed(self, item):
+        """复选框状态改变 → 同步到数据"""
+        idx = item.data(Qt.ItemDataRole.UserRole)
+        if idx is not None and 0 <= idx < len(self._folder_files):
+            self._folder_files[idx]["checked"] = (item.checkState() == Qt.CheckState.Checked)
+
+    def _on_folder_file_selected(self, row: int):
+        """文件夹模式：选中文件 → 显示其段落"""
+        if row < 0 or row >= len(self._folder_files):
+            return
+        self._current_file_idx = row
+        f = self._folder_files[row]
+
+        # 更新预览为文件内容（非段落）
+        self._preview_edit.setPlainText(f["full_content"][:2000])
+
+    def _on_confirm_analysis(self):
+        """确认分析/续写 → 构建结果并关闭弹窗"""
+        if self._source_text is not None:
+            # 文件模式
+            self.result = {
+                "mode": "file",
+                "sections": self._sections_data,
+            }
+            self.accept()
+        elif self._folder_files:
+            # 文件夹模式：只保留勾选的文件
+            checked = [f for f in self._folder_files if f["checked"]]
+            if not checked:
+                QMessageBox.warning(self, "提示", "请至少勾选一个文件。")
+                return
+            self.result = {
+                "mode": "folder",
+                "files": checked,
+            }
+            self.accept()
+
+    def get_result(self) -> dict | None:
+        """获取确认后的结果"""
+        return self.result

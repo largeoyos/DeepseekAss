@@ -397,8 +397,8 @@ def extract_and_merge_world_bible(
     """
     bible = existing_bible or WorldBible()
 
-    # 截取前 6000 字分析
-    content_sample = chapter_content[:6000]
+    # 截取前 40000 字符分析
+    content_sample = chapter_content[:40000]
 
     # 如果有故事背景上下文，构建 prompt 前缀
     ctx_parts = []
