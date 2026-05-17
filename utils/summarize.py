@@ -145,7 +145,7 @@ BACKGROUND_PROMPT = """你是一位小说设定整理助手。以下是从一份
 确保 JSON 合法。"""
 
 
-def _call_api(client, messages, model, max_tokens=8192, temperature=0.1, global_user_prompt=""):
+def _call_api(client, messages, model, max_tokens=32768, temperature=0.1, global_user_prompt=""):
     """调用 API，带重试"""
     if global_user_prompt.strip() and messages and messages[-1].get("role") == "user":
         messages[-1] = {
