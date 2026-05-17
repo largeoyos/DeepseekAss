@@ -920,14 +920,14 @@ class DeepSeekChatGUI(QMainWindow):
             QPushButton {
                 background: #6b2a2a;
                 color: white;
-                border: none;
+                border: 1px solid rgba(255, 255, 255, 0.15);
                 border-radius: 6px;
                 padding: 7px 16px;
                 font-weight: bold;
             }
             QPushButton:hover {
                 background: #8b3a3a;
-                border: 1px solid rgba(255, 255, 255, 0.1);
+                border: 1px solid rgba(255, 255, 255, 0.3);
             }
             QPushButton:pressed {
                 background: #5b1a1a;
@@ -1067,7 +1067,7 @@ class DeepSeekChatGUI(QMainWindow):
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                     stop:0 #1a6b3c, stop:1 #2a8b5c);
                 color: white;
-                border: none;
+                border: 1px solid rgba(255, 255, 255, 0.15);
                 border-radius: 6px;
                 padding: 8px 16px;
                 font-weight: bold;
@@ -1076,7 +1076,7 @@ class DeepSeekChatGUI(QMainWindow):
             QPushButton:hover {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                     stop:0 #2a8b4c, stop:1 #3a9b6c);
-                border: 1px solid rgba(255, 255, 255, 0.1);
+                border: 1px solid rgba(255, 255, 255, 0.3);
             }
             QPushButton:pressed {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
@@ -1234,7 +1234,7 @@ class DeepSeekChatGUI(QMainWindow):
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                     stop:0 #7a4a9c, stop:1 #9a6abc);
                 color: white;
-                border: none;
+                border: 1px solid rgba(255, 255, 255, 0.15);
                 border-radius: 8px;
                 padding: 8px 16px;
                 font-weight: bold;
@@ -1244,7 +1244,7 @@ class DeepSeekChatGUI(QMainWindow):
             QPushButton:hover {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                     stop:0 #8a5aac, stop:1 #aa7acc);
-                border: 1px solid rgba(255, 255, 255, 0.1);
+                border: 1px solid rgba(255, 255, 255, 0.3);
             }
             QPushButton:pressed {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
@@ -1339,7 +1339,7 @@ class DeepSeekChatGUI(QMainWindow):
         analyze_cont_btn = QPushButton("🔍 分析源文档并导入设定")
         analyze_cont_btn.setMinimumHeight(32)
         analyze_cont_btn.setStyleSheet("""
-            QPushButton { background: #2d5a8b; color: white; border: none;
+            QPushButton { background: #2d5a8b; color: white; border: 1px solid rgba(255,255,255,0.15);
                           border-radius: 6px; padding: 6px 12px; font-weight: bold; }
             QPushButton:hover { background: #3d7abb; }
         """)
@@ -1349,7 +1349,7 @@ class DeepSeekChatGUI(QMainWindow):
         quick_cont_btn = QPushButton("⚡ 直接续写")
         quick_cont_btn.setMinimumHeight(32)
         quick_cont_btn.setStyleSheet("""
-            QPushButton { background: #b85a2c; color: white; border: none;
+            QPushButton { background: #b85a2c; color: white; border: 1px solid rgba(255,255,255,0.15);
                           border-radius: 6px; padding: 6px 12px; font-weight: bold; }
             QPushButton:hover { background: #d87a4c; }
         """)
@@ -1525,7 +1525,7 @@ class DeepSeekChatGUI(QMainWindow):
         plot_helper_row = QHBoxLayout()
         cont_suggest_btn = QPushButton("🎲 AI 建议发展方向")
         cont_suggest_btn.setStyleSheet("""
-            QPushButton { background: #2d6b2d; color: white; border: none;
+            QPushButton { background: #2d6b2d; color: white; border: 1px solid rgba(255,255,255,0.15);
                           border-radius: 6px; padding: 6px 12px; font-weight: bold; }
             QPushButton:hover { background: #3d8b3d; }
         """)
@@ -1534,7 +1534,7 @@ class DeepSeekChatGUI(QMainWindow):
 
         cont_specify_btn = QPushButton("📝 我指定剧情")
         cont_specify_btn.setStyleSheet("""
-            QPushButton { background: #6b4d2d; color: white; border: none;
+            QPushButton { background: #6b4d2d; color: white; border: 1px solid rgba(255,255,255,0.15);
                           border-radius: 6px; padding: 6px 12px; font-weight: bold; }
             QPushButton:hover { background: #8b6d3d; }
         """)
@@ -1550,7 +1550,7 @@ class DeepSeekChatGUI(QMainWindow):
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                     stop:0 #7a4a9c, stop:1 #9a6abc);
                 color: white;
-                border: none;
+                border: 1px solid rgba(255, 255, 255, 0.15);
                 border-radius: 8px;
                 padding: 8px 16px;
                 font-weight: bold;
@@ -1560,7 +1560,7 @@ class DeepSeekChatGUI(QMainWindow):
             QPushButton:hover {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                     stop:0 #8a5aac, stop:1 #aa7acc);
-                border: 1px solid rgba(255, 255, 255, 0.1);
+                border: 1px solid rgba(255, 255, 255, 0.3);
             }
             QPushButton:pressed {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
@@ -1636,7 +1636,7 @@ class DeepSeekChatGUI(QMainWindow):
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                     stop:0 #0e639c, stop:1 #4a9fd8);
                 color: white;
-                border: none;
+                border: 1px solid rgba(255, 255, 255, 0.2);
                 border-radius: 8px;
                 padding: 8px 20px;
                 font-size: 14px;
@@ -1646,7 +1646,7 @@ class DeepSeekChatGUI(QMainWindow):
             QPushButton:hover {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                     stop:0 #1177bb, stop:1 #5aafe8);
-                border: 1px solid rgba(255, 255, 255, 0.15);
+                border: 1px solid rgba(255, 255, 255, 0.35);
             }
             QPushButton:pressed {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
@@ -1668,7 +1668,7 @@ class DeepSeekChatGUI(QMainWindow):
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                     stop:0 #8b0000, stop:1 #cc3333);
                 color: white;
-                border: none;
+                border: 1px solid rgba(255, 255, 255, 0.2);
                 border-radius: 8px;
                 padding: 8px 20px;
                 font-size: 16px;
@@ -1677,7 +1677,7 @@ class DeepSeekChatGUI(QMainWindow):
             QPushButton:hover {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                     stop:0 #aa0000, stop:1 #ee4444);
-                border: 1px solid rgba(255, 255, 255, 0.15);
+                border: 1px solid rgba(255, 255, 255, 0.35);
             }
             QPushButton:pressed {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
@@ -1794,7 +1794,7 @@ class DeepSeekChatGUI(QMainWindow):
             QPushButton {
                 background: #0e639c;
                 color: white;
-                border: none;
+                border: 1px solid rgba(255, 255, 255, 0.15);
                 border-radius: 6px;
                 padding: 7px 16px;
                 font-weight: 500;
@@ -1803,7 +1803,7 @@ class DeepSeekChatGUI(QMainWindow):
             }
             QPushButton:hover {
                 background: #1177bb;
-                border: 1px solid rgba(255, 255, 255, 0.1);
+                border: 1px solid rgba(255, 255, 255, 0.3);
             }
             QPushButton:pressed {
                 background: #094771;
@@ -2574,24 +2574,11 @@ class DeepSeekChatGUI(QMainWindow):
             if not os.path.isdir(source_folder):
                 return ""
             ext_map = {".txt", ".md", ".html", ".htm"}
-            files = sorted(f for f in os.listdir(source_folder) if os.path.splitext(f)[1].lower() in ext_map)
+            files = [f for f in os.listdir(source_folder) if os.path.splitext(f)[1].lower() in ext_map]
             if not files:
                 return ""
-            parts = []
-            for fname in files:
-                fpath = os.path.join(source_folder, fname)
-                content = ""
-                for enc in ("utf-8", "gbk"):
-                    try:
-                        with open(fpath, "r", encoding=enc) as f:
-                            content = f.read()
-                        break
-                    except UnicodeDecodeError:
-                        continue
-                if not content:
-                    continue  # 跳过无法读取的文件
-                parts.append(f"===== {fname} =====\n{content}")
-            return "\n\n".join(parts)
+            # 文件夹模式只验证文件存在，完整内容由 SectionPreviewDialog 读取
+            return "[文件夹模式]"
         return ""
 
     def _on_save_novel_settings(self) -> None:
@@ -2842,27 +2829,54 @@ class DeepSeekChatGUI(QMainWindow):
                 )
                 self._stream_signals.token.emit(f"📋 剧情摘要已同步至记忆库。\n\n")
 
-                # 字数补充检查
+                # 字数补充检查 → 扩写整章
                 from utils.supplement import count_cn, supplement_content
                 actual_words = count_cn(content)
                 target_chars = target_words
                 if actual_words < target_chars * 0.8 and actual_words > 0:
-                    self._stream_signals.token.emit(f"\n📝 当前{actual_words}字，目标{target_chars}字，正在进行补充...\n")
+                    self._stream_signals.token.emit(f"\n📝 当前{actual_words}字，目标{target_chars}字，正在进行扩写...\n")
                     try:
-                        supplemented = supplement_content(
+                        # 收集全部上下文
+                        protagonist_bio = strategy.protagonist_bio if isinstance(strategy, NovelStrategy) else ""
+                        background_story = strategy.background_story if isinstance(strategy, NovelStrategy) else ""
+                        writing_demand = strategy.writing_demand if isinstance(strategy, NovelStrategy) else ""
+                        world_bible_text = ""
+                        try:
+                            bible = self._novel_manager.load_world_bible(title)
+                            if bible and (bible.characters or bible.locations or bible.rules or bible.active_plot_threads):
+                                from core.world_bible import format_world_bible_for_prompt
+                                world_bible_text = format_world_bible_for_prompt(bible)
+                        except Exception:
+                            pass
+                        history_summary = self._novel_manager.build_history_summary(title, exclude_chapter=chapter_num)
+
+                        expanded = supplement_content(
                             self._client.raw_client, content, target_chars, actual_words,
                             chapter_title, self._client.model, self._client.temperature,
-                            global_user_prompt=self._client.global_user_prompt
+                            global_user_prompt=self._client.global_user_prompt,
+                            protagonist_bio=protagonist_bio,
+                            background_story=background_story,
+                            writing_demand=writing_demand,
+                            world_bible_text=world_bible_text,
+                            plot_content=plot_content,
+                            history_summary=history_summary,
                         )
-                        if supplemented:
-                            content = content + "\n\n" + supplemented
+                        if expanded:
+                            content = expanded
+                            # 保存为新版本（不覆盖旧版本）
+                            new_version = self._novel_manager.get_next_version(title, chapter_num)
                             file_path, saved_version = self._novel_manager.save_chapter_version(
-                                title, chapter_num, chapter_title, content, version=saved_version
+                                title, chapter_num, chapter_title, content, version=new_version
                             )
+                            self._novel_manager.set_active_version(title, chapter_num, saved_version)
                             final_words = count_cn(content)
-                            self._stream_signals.token.emit(f"✅ 补充完成，总字数：{final_words}字 (v{saved_version})\n")
+                            self._stream_signals.token.emit(f"✅ 扩写完成，总字数：{final_words}字 (v{saved_version})\n")
+                            # 在区域展示扩写后的正文
+                            self._stream_signals.token.emit(f"\n{'─'*40}\n📝 扩写版本 v{saved_version}（共{final_words}字）：\n\n")
+                            self._stream_signals.token.emit(content)
+                            self._stream_signals.token.emit(f"\n{'─'*40}\n")
                     except Exception as supp_e:
-                        self._stream_signals.token.emit(f"⚠️ 补充过程出错: {supp_e}\n")
+                        self._stream_signals.token.emit(f"⚠️ 扩写出错: {supp_e}\n")
 
             if self._client._cancel_requested:
                 self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
@@ -3214,26 +3228,57 @@ class DeepSeekChatGUI(QMainWindow):
             )
             self._stream_signals.token.emit("📋 剧情摘要已同步至记忆库。\n")
 
-            # 字数补充检查
+            # 字数补充检查 → 扩写整章
             from utils.supplement import count_cn, supplement_content
             actual_words = count_cn(content)
             if actual_words < word_count * 0.8 and actual_words > 0:
-                self._stream_signals.token.emit(f"\n📝 当前{actual_words}字，目标{word_count}字，正在进行补充...\n")
+                self._stream_signals.token.emit(f"\n📝 当前{actual_words}字，目标{word_count}字，正在进行扩写...\n")
                 try:
-                    supplemented = supplement_content(
+                    # 收集全部上下文
+                    world_bible_text = ""
+                    try:
+                        bible = self._novel_manager.load_world_bible(book_title)
+                        if bible:
+                            from core.world_bible import format_world_bible_for_prompt
+                            world_bible_text = format_world_bible_for_prompt(bible)
+                    except Exception:
+                        pass
+                    try:
+                        meta = self._novel_manager.load_meta(book_title)
+                        p_bio = meta.protagonist_bio
+                        bg = meta.background_story
+                        w_demand = meta.writing_demand
+                    except Exception:
+                        p_bio = bg = w_demand = ""
+                    history_summary = self._novel_manager.build_history_summary(book_title, exclude_chapter=chapter_num)
+
+                    expanded = supplement_content(
                         self._client.raw_client, content, word_count, actual_words,
                         chapter_title, self._client.model, self._client.temperature,
-                        global_user_prompt=self._client.global_user_prompt
+                        global_user_prompt=self._client.global_user_prompt,
+                        protagonist_bio=p_bio,
+                        background_story=bg,
+                        writing_demand=w_demand,
+                        world_bible_text=world_bible_text,
+                        plot_content=plot,
+                        history_summary=history_summary,
                     )
-                    if supplemented:
-                        content = content + "\n\n" + supplemented
+                    if expanded:
+                        content = expanded
+                        # 保存为新版本（不覆盖旧版本）
+                        new_version = self._novel_manager.get_next_version(book_title, chapter_num)
                         file_path, saved_version = self._novel_manager.save_chapter_version(
-                            book_title, chapter_num, chapter_title, content, version=saved_version
+                            book_title, chapter_num, chapter_title, content, version=new_version
                         )
+                        self._novel_manager.set_active_version(book_title, chapter_num, saved_version)
                         final_words = count_cn(content)
-                        self._stream_signals.token.emit(f"✅ 补充完成，总字数：{final_words}字 (v{saved_version})\n")
+                        self._stream_signals.token.emit(f"✅ 扩写完成，总字数：{final_words}字 (v{saved_version})\n")
+                        # 在区域展示扩写后的正文
+                        self._stream_signals.token.emit(f"\n{'─'*40}\n📝 扩写版本 v{saved_version}（共{final_words}字）：\n\n")
+                        self._stream_signals.token.emit(content)
+                        self._stream_signals.token.emit(f"\n{'─'*40}\n")
                 except Exception as supp_e:
-                    self._stream_signals.token.emit(f"⚠️ 补充过程出错: {supp_e}\n")
+                    self._stream_signals.token.emit(f"⚠️ 扩写出错: {supp_e}\n")
 
             if self._client._cancel_requested:
                 self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
@@ -4044,6 +4089,8 @@ class DeepSeekChatGUI(QMainWindow):
         class ChapterManagerDialog(QDialog):
             _regenerate_done_signal = pyqtSignal(int, int, str)
             _regenerate_error_signal = pyqtSignal(str)
+            _rebuild_done_signal = pyqtSignal()
+            _rebuild_error_signal = pyqtSignal(str)
 
             def __init__(self, parent, novel_mgr, book_title, client):
                 super().__init__(parent)
@@ -4057,6 +4104,8 @@ class DeepSeekChatGUI(QMainWindow):
 
                 self._regenerate_done_signal.connect(self._on_regenerate_done)
                 self._regenerate_error_signal.connect(self._on_regenerate_error)
+                self._rebuild_done_signal.connect(self._on_rebuild_done)
+                self._rebuild_error_signal.connect(self._on_rebuild_error)
 
                 self._build_ui()
                 self._load_chapters()
@@ -4179,15 +4228,6 @@ class DeepSeekChatGUI(QMainWindow):
                     "（推荐：选「是」以确保后续章节连贯）",
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 )
-                if reply == QMessageBox.StandardButton.Yes and hasattr(self.parent(), "_client"):
-                    try:
-                        self._novel_mgr.rebuild_summary_from_active(
-                            self._client.raw_client, self._book_title,
-                            global_user_prompt=self._client.global_user_prompt
-                        )
-                        QMessageBox.information(self, "成功", "剧情摘要已重新生成。")
-                    except Exception as e:
-                        QMessageBox.warning(self, "摘要生成失败", str(e))
 
                 QMessageBox.information(
                     self, "成功",
@@ -4197,6 +4237,35 @@ class DeepSeekChatGUI(QMainWindow):
                 parent = self.parent()
                 if hasattr(parent, "_refresh_chapter_info_display"):
                     parent._refresh_chapter_info_display(self._book_title)
+
+                if reply == QMessageBox.StandardButton.Yes and hasattr(self.parent(), "_client"):
+                    self._close_btn.setText("⏳ 重建摘要中...")
+                    self._close_btn.setEnabled(False)
+                    threading.Thread(target=self._do_rebuild_summary, daemon=True).start()
+
+            def _do_rebuild_summary(self):
+                try:
+                    self._novel_mgr.rebuild_summary_from_active(
+                        self._client.raw_client, self._book_title,
+                        global_user_prompt=self._client.global_user_prompt
+                    )
+                    self._rebuild_done_signal.emit()
+                except Exception as e:
+                    self._rebuild_error_signal.emit(str(e))
+
+            def _on_rebuild_done(self):
+                QMessageBox.information(self, "成功", "剧情摘要已重新生成。")
+                self._close_btn.setText("关闭")
+                self._close_btn.setEnabled(True)
+                self._load_chapters()
+                parent = self.parent()
+                if hasattr(parent, "_refresh_chapter_info_display"):
+                    parent._refresh_chapter_info_display(self._book_title)
+
+            def _on_rebuild_error(self, error_str: str):
+                QMessageBox.warning(self, "摘要生成失败", error_str)
+                self._close_btn.setText("关闭")
+                self._close_btn.setEnabled(True)
 
             def _on_regenerate(self):
                 data = self._get_selected_data()

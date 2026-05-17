@@ -477,6 +477,7 @@ class SectionPreviewDialog(QDialog):
     """
 
     _resegment_finished = pyqtSignal(object, object)  # (sections, error)
+    _segmentation_progress = pyqtSignal(int, object)  # (file_index, sections)
 
     def __init__(self, parent,
                  source_text: str | None = None,
@@ -502,6 +503,7 @@ class SectionPreviewDialog(QDialog):
         self.resize(750, 520)
         self.setModal(True)
         self._resegment_finished.connect(self._on_resegment_done)
+        self._segmentation_progress.connect(self._on_file_segmented)
         self._build_ui()
 
         # 初始化数据
@@ -711,9 +713,8 @@ class SectionPreviewDialog(QDialog):
     # ── 文件夹模式 ──
 
     def _init_folder_mode(self, folder_path: str):
-        """初始化文件夹模式：扫描文件，逐个检测分段"""
-        from utils.summarize import detect_sections, segment_by_ai
-        from PyQt6.QtWidgets import QApplication
+        """初始化文件夹模式：扫描文件，后台 AI 分段（不阻塞 UI）"""
+        from utils.summarize import detect_sections
 
         ext_map = {".txt", ".md"}
         raw_files = []
@@ -752,32 +753,63 @@ class SectionPreviewDialog(QDialog):
                 "checked": True,
             })
 
-        # 对需要 AI 分段的文件自动处理
         auto_count = sum(1 for f in self._folder_files if f["needs_ai"])
         if auto_count > 0:
             self._status_label.setText(
-                f"⏳ 正在由 AI 分段（{auto_count} 个文件需要处理）…"
+                f"📂 共 {len(self._folder_files)} 个文件，{auto_count} 个正在后台 AI 分段…"
             )
-            QApplication.processEvents()
-            for f in self._folder_files:
-                if f["needs_ai"]:
-                    try:
-                        f["sections"] = segment_by_ai(
-                            self._client, f["full_content"], self._model,
-                            global_user_prompt=self._global_prompt,
-                        )
-                        f["needs_ai"] = False
-                    except Exception:
-                        f["sections"] = [("全文", f["full_content"])]
+            self._status_label.setStyleSheet(
+                "color: #ff8; font-size: 13px; padding: 6px 10px; "
+                "background: #3d3d2d; border-radius: 4px;"
+            )
+        else:
+            self._status_label.setText(
+                f"📂 共 {len(self._folder_files)} 个文件，勾选后确认分析"
+            )
+            self._status_label.setStyleSheet(
+                "color: #ccc; font-size: 13px; padding: 6px 10px; "
+                "background: #333; border-radius: 4px;"
+            )
 
-        self._status_label.setText(
-            f"📂 共 {len(self._folder_files)} 个文件，勾选后确认分析"
-        )
-        self._status_label.setStyleSheet(
-            "color: #ccc; font-size: 13px; padding: 6px 10px; "
-            "background: #333; border-radius: 4px;"
-        )
         self._populate_folder_list()
+
+        # 后台 AI 分段（不阻塞 UI）
+        if auto_count > 0:
+            threading.Thread(target=self._do_background_segmentation, daemon=True).start()
+
+    def _do_background_segmentation(self):
+        """后台线程：对需要 AI 分段的文件逐个处理"""
+        from utils.summarize import segment_by_ai
+        for idx, f in enumerate(self._folder_files):
+            if f["needs_ai"]:
+                try:
+                    sections = segment_by_ai(
+                        self._client, f["full_content"], self._model,
+                        global_user_prompt=self._global_prompt,
+                    )
+                    self._segmentation_progress.emit(idx, sections)
+                except Exception:
+                    self._segmentation_progress.emit(idx, [("全文", f["full_content"])])
+
+    def _on_file_segmented(self, idx: int, sections: list):
+        """主线程：AI 分段完成后更新列表显示"""
+        if 0 <= idx < len(self._folder_files):
+            self._folder_files[idx]["sections"] = sections
+            self._folder_files[idx]["needs_ai"] = False
+            item = self._section_list.item(idx)
+            if item:
+                f = self._folder_files[idx]
+                item.setText(f"{f['filename']} ({len(f['sections'])}段)")
+
+        pending = sum(1 for f in self._folder_files if f["needs_ai"])
+        if pending == 0:
+            self._status_label.setText(
+                f"✅ AI 分段完成，共 {len(self._folder_files)} 个文件，勾选后确认分析"
+            )
+            self._status_label.setStyleSheet(
+                "color: #8f8; font-size: 13px; padding: 6px 10px; "
+                "background: #2d3d2d; border-radius: 4px;"
+            )
 
     def _populate_folder_list(self):
         """填充文件夹文件列表（带复选框）"""
@@ -786,7 +818,8 @@ class SectionPreviewDialog(QDialog):
         self._section_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
 
         for f in self._folder_files:
-            item = QListWidgetItem(f"{f['filename']} ({len(f['sections'])}段)")
+            label = f"{f['filename']} (AI分段中…)" if f["needs_ai"] else f"{f['filename']} ({len(f['sections'])}段)"
+            item = QListWidgetItem(label)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(Qt.CheckState.Checked if f["checked"] else Qt.CheckState.Unchecked)
             item.setData(Qt.ItemDataRole.UserRole, self._folder_files.index(f))
@@ -836,6 +869,24 @@ class SectionPreviewDialog(QDialog):
             self.accept()
         elif self._folder_files:
             # 文件夹模式：只保留勾选的文件
+            pending = [f["filename"] for f in self._folder_files if f["checked"] and f["needs_ai"]]
+            if pending:
+                reply = QMessageBox.question(
+                    self, "AI 分段未完成",
+                    f"以下 {len(pending)} 个文件仍在 AI 分段中，将使用全文导入：\n"
+                    + "\n".join(pending[:5])
+                    + ("\n…" if len(pending) > 5 else "")
+                    + "\n\n是否继续？",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+                # 未完成分段的文件使用全文
+                for f in self._folder_files:
+                    if f["needs_ai"] and not f["sections"]:
+                        f["sections"] = [("全文", f["full_content"])]
+                        f["needs_ai"] = False
+
             checked = [f for f in self._folder_files if f["checked"]]
             if not checked:
                 QMessageBox.warning(self, "提示", "请至少勾选一个文件。")

@@ -216,10 +216,20 @@ class NovelManager:
         book_id: str | None = None
         if self._enc_key is not None:
             # 加密模式：使用 UUID 作为目录名
+            # 先检查缓存中是否已有该书，避免重复创建 UUID 目录
+            if self._book_cache is None:
+                self._rebuild_book_cache()
+            cached = self._book_cache.get(title)
+            if cached:
+                # 已有该书，复用现有目录，只更新 meta
+                book_dir = os.path.join(self._bookshelf_root, cached)
+                os.makedirs(book_dir, exist_ok=True)
+                meta = self.load_meta(title)
+                self._save_meta(title, meta)
+                return book_dir
+
             book_id = uuid.uuid4().hex[:12]
             book_dir = os.path.join(self._bookshelf_root, book_id)
-            if self._book_cache is None:
-                self._book_cache = {}
             self._book_cache[title] = book_id
         else:
             book_dir = self._book_dir(title)

@@ -250,6 +250,234 @@ def _merge_list_dedup(target: list, source: list) -> None:
             seen.add(item)
 
 
+def _detect_duplicate_characters(
+    bible: WorldBible, client, model: str = "deepseek-v4-flash",
+    global_user_prompt: str = "",
+) -> list[list[str]]:
+    """用 AI 检测世界书中重复的角色（不同名称指向同一人物）"""
+    if len(bible.characters) < 2:
+        return []
+
+    char_lines = []
+    for c in bible.characters:
+        aliases = "、".join(c.aliases) if c.aliases else "无"
+        traits_short = c.traits[:80] if c.traits else "无"
+        char_lines.append(f"- {c.name} (别名: {aliases}, 描述: {traits_short})")
+
+    prompt = f"""以下是一部小说的角色列表，请仔细阅读并判断哪些角色指向同一个人物（因不同章节提取时用了不同称呼）。
+
+角色列表：
+{chr(10).join(char_lines)}
+
+请将指向同一人物的角色名分组，输出JSON格式：
+{{"groups": [["角色A", "角色B"], ["角色C", "角色D", "角色E"]]}}
+
+规则：
+- 只有确定指向同一人物时才归为一组
+- 每个角色名只能出现在一个组中
+- 不属于任何组的角色不要列出
+- 别名不算独立角色，无需合并
+- 仅当角色名不同但实际相同才需合并"""
+    if global_user_prompt.strip():
+        prompt += f"\n\n用户偏好参考: {global_user_prompt}"
+
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=2000,
+            temperature=0.1,
+        )
+        raw = response.choices[0].message.content or "{}"
+        if "```json" in raw:
+            raw = raw.split("```json")[1].split("```")[0].strip()
+        elif "```" in raw:
+            raw = raw.split("```")[1].split("```")[0].strip()
+        data = json.loads(raw)
+        return data.get("groups", [])
+    except Exception:
+        return []
+
+
+def _merge_character_group(
+    characters: list[CharacterEntry], group_names: list[str]
+) -> tuple[CharacterEntry, list[int]] | None:
+    """通过拼接合并一组重复角色，返回(合并后的角色, 被合并角色的索引列表)"""
+    matched = [(i, c) for i, c in enumerate(characters) if c.name in group_names]
+    if not matched:
+        return None
+
+    def _completeness(c):
+        return len(c.traits) + len(c.key_details) * 50 + len(c.key_dialogues) * 30 + len(c.relationships) * 20
+
+    matched.sort(key=lambda x: _completeness(x[1]), reverse=True)
+    base_idx, base = matched[0]
+
+    for _, other in matched[1:]:
+        for alias in other.aliases:
+            if alias not in base.aliases:
+                base.aliases.append(alias)
+        if other.name not in base.aliases:
+            base.aliases.append(other.name)
+
+        if other.traits:
+            base_lines = set(base.traits.split("\n")) if base.traits else set()
+            new_lines = [l for l in other.traits.split("\n") if l.strip() and l not in base_lines]
+            if new_lines:
+                base.traits = base.traits + "\n" + "\n".join(new_lines) if base.traits else "\n".join(new_lines)
+
+        base.importance = _higher_importance(base.importance, other.importance)
+        if other.status != "alive":
+            base.status = other.status
+        if other.first_appearance > 0 and (base.first_appearance == 0 or other.first_appearance < base.first_appearance):
+            base.first_appearance = other.first_appearance
+
+        _merge_list_dedup(base.key_details, other.key_details)
+        _merge_list_dedup(base.key_dialogues, other.key_dialogues)
+
+        if other.motivation and other.motivation not in (base.motivation or ""):
+            base.motivation = f"{base.motivation}；{other.motivation}" if base.motivation else other.motivation
+        if other.arc and other.arc not in (base.arc or ""):
+            base.arc = f"{base.arc}；{other.arc}" if base.arc else other.arc
+
+        for rel in other.relationships:
+            existing = next((r for r in base.relationships if r.target == rel.target), None)
+            if existing:
+                if rel.description and rel.description not in existing.description:
+                    existing.description = f"{existing.description}；{rel.description}"
+            else:
+                base.relationships.append(rel)
+        if other.notes:
+            base.notes = f"{base.notes}\n{other.notes}".strip()
+
+    remove_indices = [idx for idx, _ in matched[1:]]
+    return base, remove_indices
+
+
+def dedup_world_bible_characters(
+    bible: WorldBible, client=None, model: str = "deepseek-v4-flash",
+    global_user_prompt: str = "",
+) -> WorldBible:
+    """检测并合并世界书中重复的角色（AI 检测 + 仅拼接，不压缩）"""
+    if len(bible.characters) < 2:
+        return bible
+    groups = _detect_duplicate_characters(bible, client, model, global_user_prompt)
+    if not groups or not any(len(g) > 1 for g in groups):
+        return bible
+
+    to_remove = set()
+    for group in groups:
+        if len(group) < 2:
+            continue
+        result = _merge_character_group(bible.characters, group)
+        if result:
+            _, remove_indices = result
+            to_remove.update(remove_indices)
+
+    bible.characters = [c for i, c in enumerate(bible.characters) if i not in to_remove]
+    return bible
+
+
+def _detect_duplicate_locations(
+    bible: WorldBible, client, model: str = "deepseek-v4-flash",
+    global_user_prompt: str = "",
+) -> list[list[str]]:
+    """用 AI 检测世界书中重复的地点（不同名称指向同一地点）"""
+    if len(bible.locations) < 2:
+        return []
+
+    loc_lines = []
+    for l in bible.locations:
+        desc_short = l.description[:80] if l.description else "无"
+        loc_lines.append(f"- {l.name} (描述: {desc_short})")
+
+    prompt = f"""以下是一部小说的地点列表，请仔细阅读并判断哪些地点指向同一个地方（因不同章节提取时用了不同称呼）。
+
+地点列表：
+{chr(10).join(loc_lines)}
+
+请将指向同一地点的地点名分组，输出JSON格式：
+{{"groups": [["地点A", "地点B"], ["地点C", "地点D", "地点E"]]}}
+
+规则：
+- 只有确定指向同一地点时才归为一组
+- 每个地点名只能出现在一个组中
+- 不属于任何组的地点不要列出
+- 仅当地点名不同但实际相同才需合并"""
+    if global_user_prompt.strip():
+        prompt += f"\n\n用户偏好参考: {global_user_prompt}"
+
+    try:
+        response = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "user", "content": prompt}],
+            max_tokens=2000,
+            temperature=0.1,
+        )
+        raw = response.choices[0].message.content or "{}"
+        if "```json" in raw:
+            raw = raw.split("```json")[1].split("```")[0].strip()
+        elif "```" in raw:
+            raw = raw.split("```")[1].split("```")[0].strip()
+        data = json.loads(raw)
+        return data.get("groups", [])
+    except Exception:
+        return []
+
+
+def _merge_location_group(
+    locations: list[LocationEntry], group_names: list[str]
+) -> tuple[LocationEntry, list[int]] | None:
+    """通过拼接合并一组重复地点，返回(合并后的地点, 被合并地点的索引列表)"""
+    matched = [(i, l) for i, l in enumerate(locations) if l.name in group_names]
+    if not matched:
+        return None
+
+    def _completeness(l):
+        return len(l.description) + len(l.key_details) * 50 + (20 if l.atmosphere else 0)
+
+    matched.sort(key=lambda x: _completeness(x[1]), reverse=True)
+    base_idx, base = matched[0]
+
+    for _, other in matched[1:]:
+        if other.description and other.description not in base.description:
+            base.description = f"{base.description}\n{other.description}" if base.description else other.description
+        if other.significance and other.significance not in base.significance:
+            base.significance = f"{base.significance}\n{other.significance}" if base.significance else other.significance
+        if other.first_appearance > 0 and (base.first_appearance == 0 or other.first_appearance < base.first_appearance):
+            base.first_appearance = other.first_appearance
+        _merge_list_dedup(base.key_details, other.key_details)
+        if other.atmosphere and other.atmosphere not in base.atmosphere:
+            base.atmosphere = f"{base.atmosphere}\n{other.atmosphere}" if base.atmosphere else other.atmosphere
+
+    remove_indices = [idx for idx, _ in matched[1:]]
+    return base, remove_indices
+
+
+def dedup_world_bible_locations(
+    bible: WorldBible, client=None, model: str = "deepseek-v4-flash",
+    global_user_prompt: str = "",
+) -> WorldBible:
+    """检测并合并世界书中重复的地点（AI 检测 + 仅拼接，不压缩）"""
+    if len(bible.locations) < 2:
+        return bible
+    groups = _detect_duplicate_locations(bible, client, model, global_user_prompt)
+    if not groups or not any(len(g) > 1 for g in groups):
+        return bible
+
+    to_remove = set()
+    for group in groups:
+        if len(group) < 2:
+            continue
+        result = _merge_location_group(bible.locations, group)
+        if result:
+            _, remove_indices = result
+            to_remove.update(remove_indices)
+
+    bible.locations = [l for i, l in enumerate(bible.locations) if i not in to_remove]
+    return bible
+
+
 EXTRACT_PROMPT = """你是一个小说信息深度提取专家。请严格根据以下章节内容，深度提取其中的角色、地点、世界观规则、事件和剧情线索。
 
 约束：
@@ -621,6 +849,16 @@ def extract_and_merge_world_bible(
                 "hint": hint[:50],
                 "relates_to": item.get("relates_to", "")[:20],
             })
+
+    # 合并完成后去重重复角色和地点（仅拼接，不压缩）
+    try:
+        bible = dedup_world_bible_characters(bible, client, model, global_user_prompt)
+    except Exception:
+        pass
+    try:
+        bible = dedup_world_bible_locations(bible, client, model, global_user_prompt)
+    except Exception:
+        pass
 
     bible.last_updated_chapter = chapter_num
     return bible
