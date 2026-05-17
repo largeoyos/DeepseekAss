@@ -54,6 +54,7 @@ from strategies import (
     NovelStrategy,
     ContinuationStrategy,
 )
+from utils.prompts import Prompts
 from utils.export import (
     export_chapter,
     export_book,
@@ -2704,9 +2705,9 @@ class DeepSeekChatGUI(QMainWindow):
             except Exception:
                 pass
             if bg_story:
-                user_parts.append(f"【核心设定】\n{bg_story}\n")
+                user_parts.append(f"【世界观/背景参考】\n{bg_story}\n")
             if protagonist_bio:
-                user_parts.append(f"【人物背景】\n{protagonist_bio}\n")
+                user_parts.append(f"【人物设定参考】\n{protagonist_bio}\n")
 
             # 续写要求 + 剧情走向
             user_parts.append(f"请续写以上内容，作为第 {chapter_num} 章「{chapter_title}」。\n")

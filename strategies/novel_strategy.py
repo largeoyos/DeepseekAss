@@ -117,30 +117,6 @@ class NovelStrategy(BaseStrategy):
     def recommended_max_tokens(self) -> int:
         return 32768  # 长篇小说单次输出上限（约20000～30000中文字）
 
-    # ========== 构建章节写作 User Prompt ==========
-
-    def build_chapter_prompt(
-        self, summary: str, chapter_num: int, chapter_title: str
-    ) -> str:
-        """
-        构建章节续写的 User Prompt，整合所有设定
-
-        Args:
-            summary: 前情提要
-            chapter_num: 本章编号
-            chapter_title: 本章标题
-
-        Returns:
-            完整的 user prompt 字符串
-        """
-        parts = [
-            f"【前情提要】：\n{summary}\n",
-            f"现在请开始撰写第 {chapter_num} 章：{chapter_title}。\n",
-        ]
-        if self._writing_demand.strip():
-            parts.append(f"【本章要求】：\n{self._writing_demand}\n")
-        return "\n".join(parts)
-
     def build_system_messages(self) -> list[dict]:
         """
         构建多层 System Message 列表（核心设定 + 人物背景）
