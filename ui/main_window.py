@@ -518,7 +518,6 @@ class DeepSeekChatGUI(QMainWindow):
         """构建左侧控制面板（含小说专属区域）"""
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
-        scroll.setMaximumWidth(360)
         scroll.setMinimumWidth(280)
 
         container = QWidget()
@@ -846,6 +845,11 @@ class DeepSeekChatGUI(QMainWindow):
         delete_book_btn.clicked.connect(self._on_delete_book)
         bookshelf_row.addWidget(delete_book_btn)
 
+        rename_book_btn = QPushButton("✏️ 重命名")
+        rename_book_btn.setMinimumWidth(70)
+        rename_book_btn.clicked.connect(self._on_rename_book)
+        bookshelf_row.addWidget(rename_book_btn)
+
         layout.addLayout(bookshelf_row)
 
         # ── 小说标题 ──
@@ -1111,6 +1115,12 @@ class DeepSeekChatGUI(QMainWindow):
         cont_delete_book_btn.setMinimumWidth(70)
         cont_delete_book_btn.clicked.connect(self._on_cont_delete_book)
         bookshelf_row.addWidget(cont_delete_book_btn)
+
+        cont_rename_book_btn = QPushButton("✏️ 重命名")
+        cont_rename_book_btn.setMinimumWidth(70)
+        cont_rename_book_btn.clicked.connect(self._on_cont_rename_book)
+        bookshelf_row.addWidget(cont_rename_book_btn)
+
         layout.addLayout(bookshelf_row)
 
         # 章节标题
@@ -1897,6 +1907,40 @@ class DeepSeekChatGUI(QMainWindow):
             self._novel_manager.delete_book(current)
             self._refresh_novel_bookshelf()
             self._on_book_selected(self._bookshelf_combo.currentText())
+
+    def _on_rename_book(self) -> None:
+        """重命名选中的小说"""
+        current = self._get_current_book_title()
+        if not current:
+            QMessageBox.warning(self, "提示", "请先选择一本小说。")
+            return
+        new_title, ok = QInputDialog.getText(
+            self, "重命名小说", "请输入新标题：", text=current
+        )
+        if ok and new_title.strip() and new_title.strip() != current:
+            if new_title.strip() in self._novel_manager.list_books():
+                QMessageBox.warning(self, "警告", f"小说「{new_title.strip()}」已存在。")
+                return
+            self._novel_manager.rename_book(current, new_title.strip())
+            self._refresh_novel_bookshelf()
+            self._bookshelf_combo.setCurrentText(new_title.strip())
+
+    def _on_cont_rename_book(self) -> None:
+        """续写面板：重命名小说"""
+        current = self._cont_bookshelf_combo.currentText()
+        if not current or current.startswith("（暂无小说"):
+            QMessageBox.warning(self, "提示", "请先选择一本小说。")
+            return
+        new_title, ok = QInputDialog.getText(
+            self, "重命名小说", "请输入新标题：", text=current
+        )
+        if ok and new_title.strip() and new_title.strip() != current:
+            if new_title.strip() in self._novel_manager.list_books():
+                QMessageBox.warning(self, "警告", f"小说「{new_title.strip()}」已存在。")
+                return
+            self._novel_manager.rename_book(current, new_title.strip())
+            self._refresh_novel_bookshelf()
+            self._cont_bookshelf_combo.setCurrentText(new_title.strip())
 
     def _get_current_book_title(self) -> str | None:
         """获取当前活动面板的书架选中项，若为占位符则返回 None"""

@@ -83,11 +83,16 @@ class NovelManager:
         book_dir = self._book_dir(title)
         os.makedirs(book_dir, exist_ok=True)
 
-        meta = NovelMeta(
-            title=title,
-            created_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
-            updated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
-        )
+        meta_path = self._meta_path(title)
+        if os.path.exists(meta_path):
+            # 已有 meta.json，不覆盖（防止丢失章节版本等已有数据）
+            meta = self.load_meta(title)
+        else:
+            meta = NovelMeta(
+                title=title,
+                created_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
+                updated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
+            )
         self._save_meta(title, meta)
         # 创建空摘要文件
         summary_path = self._summary_path(title)
@@ -103,6 +108,28 @@ class NovelManager:
             shutil.rmtree(book_dir)
             return True
         return False
+
+    def rename_book(self, old_title: str, new_title: str) -> bool:
+        """重命名小说，重命名目录并更新 meta.json 中的 title"""
+        old_dir = self._book_dir(old_title)
+        new_dir = self._book_dir(new_title)
+        if not os.path.isdir(old_dir):
+            return False
+        if os.path.isdir(new_dir):
+            return False
+        os.rename(old_dir, new_dir)
+        # 更新 meta.json 中的 title 字段
+        meta_path = os.path.join(new_dir, "meta.json")
+        if os.path.exists(meta_path):
+            try:
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                meta["title"] = new_title
+                with open(meta_path, "w", encoding="utf-8") as f:
+                    json.dump(meta, f, ensure_ascii=False, indent=2)
+            except Exception:
+                pass
+        return True
 
     def load_meta(self, title: str) -> NovelMeta:
         """加载小说元信息，若不存在则返回默认空 meta"""
