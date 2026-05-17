@@ -28,9 +28,40 @@ class ConversationMeta:
 class ConversationManager:
     """角色扮演对话历史管理器"""
 
-    def __init__(self, root_dir: str | None = None) -> None:
+    def __init__(self, root_dir: str | None = None,
+                 crypto=None, enc_key: bytes | None = None) -> None:
         self._root_dir = root_dir or CONVERSATIONS_DIR
+        self._crypto = crypto
+        self._enc_key = enc_key
         os.makedirs(self._root_dir, exist_ok=True)
+
+    # ========== 加密文件 I/O 辅助 ==========
+
+    def _encrypt_path(self, path: str) -> str:
+        if self._enc_key is None:
+            return path
+        return path + ".enc"
+
+    def _read_encrypted_json(self, path: str) -> dict | None:
+        enc_path = self._encrypt_path(path)
+        if not os.path.exists(enc_path):
+            return None
+        if self._enc_key is None:
+            with open(enc_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        return self._crypto.decrypt_json(self._enc_key, enc_path)
+
+    def _write_encrypted_json(self, path: str, data: dict) -> None:
+        enc_path = self._encrypt_path(path)
+        os.makedirs(os.path.dirname(enc_path), exist_ok=True)
+        if self._enc_key is None:
+            with open(enc_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        else:
+            self._crypto.encrypt_json(self._enc_key, enc_path, data)
+
+    def _encrypted_file_exists(self, path: str) -> bool:
+        return os.path.exists(self._encrypt_path(path))
 
     # ========== 列表 ==========
 
@@ -40,22 +71,25 @@ class ConversationManager:
         if not os.path.isdir(self._root_dir):
             return result
         for fname in sorted(os.listdir(self._root_dir), reverse=True):
-            if fname.endswith(".json"):
-                fpath = os.path.join(self._root_dir, fname)
-                try:
-                    with open(fpath, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                    result.append(ConversationMeta(
-                        conversation_id=data.get("conversation_id", ""),
-                        title=data.get("title", "未命名对话"),
-                        model=data.get("model", ""),
-                        strategy=data.get("strategy", ""),
-                        created_at=data.get("created_at", ""),
-                        updated_at=data.get("updated_at", ""),
-                        message_count=len(data.get("messages", [])),
-                    ))
-                except (json.JSONDecodeError, KeyError):
+            match_name = fname[:-4] if fname.endswith(".enc") else fname
+            if not match_name.endswith(".json"):
+                continue
+            fpath = os.path.join(self._root_dir, match_name)
+            try:
+                data = self._read_encrypted_json(fpath)
+                if data is None:
                     continue
+                result.append(ConversationMeta(
+                    conversation_id=data.get("conversation_id", ""),
+                    title=data.get("title", "未命名对话"),
+                    model=data.get("model", ""),
+                    strategy=data.get("strategy", ""),
+                    created_at=data.get("created_at", ""),
+                    updated_at=data.get("updated_at", ""),
+                    message_count=len(data.get("messages", [])),
+                ))
+            except (json.JSONDecodeError, KeyError, Exception):
+                continue
         return result
 
     # ========== 保存 ==========
@@ -96,10 +130,10 @@ class ConversationManager:
         created_at = now_str
         if existing_path:
             try:
-                with open(existing_path, "r", encoding="utf-8") as f:
-                    old_data = json.load(f)
-                created_at = old_data.get("created_at", now_str)
-            except (json.JSONDecodeError, KeyError):
+                old_data = self._read_encrypted_json(existing_path)
+                if old_data:
+                    created_at = old_data.get("created_at", now_str)
+            except Exception:
                 pass
 
         record = {
@@ -117,9 +151,8 @@ class ConversationManager:
 
         safe_id = conversation_id.replace("/", "-").replace("\\", "-").replace(":", "：")
         file_path = os.path.join(self._root_dir, f"{safe_id}.json")
-        with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(record, f, ensure_ascii=False, indent=2)
-        return file_path
+        self._write_encrypted_json(file_path, record)
+        return self._encrypt_path(file_path)
 
     # ========== 加载 ==========
 
@@ -133,8 +166,7 @@ class ConversationManager:
         file_path = self._find_file(conversation_id)
         if not file_path:
             return None
-        with open(file_path, "r", encoding="utf-8") as f:
-            return json.load(f)
+        return self._read_encrypted_json(file_path)
 
     def load_messages(self, conversation_id: str) -> list[dict] | None:
         """仅加载对话的消息列表"""
@@ -179,9 +211,12 @@ class ConversationManager:
     # ========== 内部 ==========
 
     def _find_file(self, conversation_id: str) -> str | None:
-        """根据 conversation_id 查找对应文件"""
+        """根据 conversation_id 查找对应文件（会检查 .enc 变体）"""
         safe_id = conversation_id.replace("/", "-").replace("\\", "-").replace(":", "：")
-        file_path = os.path.join(self._root_dir, f"{safe_id}.json")
-        if os.path.exists(file_path):
-            return file_path
+        base = os.path.join(self._root_dir, f"{safe_id}.json")
+        if os.path.exists(base):
+            return base
+        base_enc = base + ".enc"
+        if os.path.exists(base_enc):
+            return base  # 返回无 .enc 路径，read/write 会正确处理
         return None

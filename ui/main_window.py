@@ -350,16 +350,13 @@ class DeepSeekChatGUI(QMainWindow):
         self._stream_signals.error.connect(self._on_stream_error)
         self._stream_signals.analysis_done.connect(self._show_analysis_dialog)
         self._stream_signals.directions_ready.connect(self._show_direction_selector)
-        self._stream_signals.novel_imported.connect(self._on_novel_imported)
         self._stream_signals.novel_imported.connect(self._on_cont_novel_imported)
         self._stream_signals.refresh_chapter_info.connect(self._refresh_chapter_info_display)
 
-        # 小说管理器
-        self._novel_manager = NovelManager()
-        # 对话历史管理器
-        self._conversation_manager = ConversationManager()
-        self._current_conversation_id: str | None = None
-        self._current_conversation_title: str = ""
+        # 认证与加密
+        self._auth = None
+        self._enc_key: bytes | None = None
+        self._username: str = ""
 
         # 累积的文本（用于流式追加）
         self._assistant_text_buffer: list[str] = []
@@ -368,25 +365,97 @@ class DeepSeekChatGUI(QMainWindow):
         self._loading_conversation = False
         # 参数预设守卫：预设驱动滑块时阻止 handler 切回"自定义"
         self._preset_applying = False
+        # 模式切换守卫：记录上次有效模式，用于 streaming 时回退
+        self._last_mode: str = ""
 
-        # 获取并验证 API Key（失败可重试）
-        api_key = self._get_api_key_with_retry()
-        if not api_key:
+        # Step 1: 登录
+        self._login_and_init()
+
+    # ========== 登录 ==========
+
+    def _login_and_init(self) -> None:
+        """登录流程：认证 → 解密数据 → 初始化客户端"""
+        from ui.login_dialog import LoginDialog
+        dlg = LoginDialog(self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
             sys.exit(0)
 
+        self._username = dlg.username
+        self._enc_key = dlg.enc_key
+
+        from core.auth_manager import AuthManager
+        self._auth = AuthManager()
+
+        # 初始化管理器（用户独立路径 + 加密）
+        users_base = os.path.join(os.path.dirname(os.path.dirname(__file__)), "users")
+        user_dir = os.path.join(users_base, self._username)
+        os.makedirs(os.path.join(user_dir, "conversations"), exist_ok=True)
+        os.makedirs(os.path.join(user_dir, "bookshelf"), exist_ok=True)
+
+        self._novel_manager = NovelManager(
+            bookshelf_root=os.path.join(user_dir, "bookshelf"),
+            crypto=self._auth, enc_key=self._enc_key,
+        )
+        self._conversation_manager = ConversationManager(
+            root_dir=os.path.join(user_dir, "conversations"),
+            crypto=self._auth, enc_key=self._enc_key,
+        )
+        self._current_conversation_id: str | None = None
+        self._current_conversation_title: str = ""
+
+        # Step 2: 获取 API Key（加密存储或弹窗输入）
+        api_key, base_url = self._load_encrypted_config()
+        if not api_key:
+            api_key = self._get_api_key_with_retry()
+            if not api_key:
+                sys.exit(0)
+            # 首次输入 → 加密保存
+            self._save_encrypted_config(api_key, Config.BASE_URL)
+
+        if base_url:
+            Config.BASE_URL = base_url
         Config.API_KEY = api_key
 
+        # Step 3: 初始化客户端
         self._init_client()
-        # 加载用户全局提示词
         loaded_prompt = self._load_global_user_prompt()
         if loaded_prompt:
-            self._client.global_user_prompt = loaded_prompt
+            self._client.global_user_prompt = loaded_prompt  # type: ignore[union-attr]
 
+        # Step 4: 构建 UI
         self._init_ui()
-        # 默认预设方案：狂野
         self._preset_combo.setCurrentText("狂野")
         self._apply_dark_theme()
         self._refresh_novel_bookshelf()
+
+    # ========== 加密配置 ==========
+
+    def _encrypted_config_path(self) -> str:
+        """用户加密配置路径"""
+        users_base = os.path.join(os.path.dirname(os.path.dirname(__file__)), "users")
+        return os.path.join(users_base, self._username, "config.enc")
+
+    def _load_encrypted_config(self) -> tuple[str, str]:
+        """从加密存储加载 API Key 和 Base URL"""
+        if not self._enc_key:
+            return Config.API_KEY, Config.BASE_URL
+        data = self._auth.decrypt_json(self._enc_key, self._encrypted_config_path())
+        if data:
+            return data.get("api_key", ""), data.get("base_url", Config.BASE_URL)
+        return "", Config.BASE_URL
+
+    def _save_encrypted_config(self, api_key: str, base_url: str) -> None:
+        """加密保存 API Key 和 Base URL"""
+        if self._enc_key:
+            self._auth.encrypt_json(self._enc_key, self._encrypted_config_path(), {
+                "api_key": api_key,
+                "base_url": base_url,
+            })
+
+    def _user_prefs_path(self) -> str:
+        """用户加密偏好文件路径"""
+        users_base = os.path.join(os.path.dirname(os.path.dirname(__file__)), "users")
+        return os.path.join(users_base, self._username, "user_prefs.enc")
 
     # ========== API Key ==========
 
@@ -453,7 +522,12 @@ class DeepSeekChatGUI(QMainWindow):
         self._client = DeepSeekChatClient(strategy=strategy, model=strategy.recommended_model)
 
     def _load_global_user_prompt(self) -> str:
-        """从 user_prefs.json 加载全局提示词"""
+        """从加密存储加载全局提示词"""
+        if self._enc_key:
+            data = self._auth.decrypt_json(self._enc_key, self._user_prefs_path())
+            if data:
+                return data.get("global_user_prompt", "")
+        # 兜底：从明文文件加载（旧版本兼容）
         try:
             if os.path.exists(_USER_PREFS_FILE):
                 with open(_USER_PREFS_FILE, "r", encoding="utf-8") as f:
@@ -464,7 +538,13 @@ class DeepSeekChatGUI(QMainWindow):
         return ""
 
     def _save_global_user_prompt(self, prompt: str) -> None:
-        """保存全局提示词到 user_prefs.json"""
+        """加密保存全局提示词"""
+        if self._enc_key:
+            data = self._auth.decrypt_json(self._enc_key, self._user_prefs_path()) or {}
+            data["global_user_prompt"] = prompt
+            self._auth.encrypt_json(self._enc_key, self._user_prefs_path(), data)
+            return
+        # 兜底：明文保存
         try:
             data = {}
             if os.path.exists(_USER_PREFS_FILE):
@@ -512,6 +592,8 @@ class DeepSeekChatGUI(QMainWindow):
             if reply == QMessageBox.StandardButton.No:
                 event.ignore()
                 return
+            if self._client:
+                self._client.cancel()
         event.accept()
 
     def _build_left_panel(self) -> QWidget:
@@ -533,6 +615,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._mode_combo = QComboBox()
         self._mode_combo.addItems(list(STRATEGY_OPTIONS.keys()))
         self._mode_combo.currentTextChanged.connect(self._on_mode_changed)
+        self._last_mode = self._mode_combo.currentText() or list(STRATEGY_OPTIONS.keys())[0]
         mode_layout.addWidget(self._mode_combo)
         layout.addWidget(mode_group)
 
@@ -1003,16 +1086,12 @@ class DeepSeekChatGUI(QMainWindow):
         manage_chapters_btn.clicked.connect(self._on_manage_chapters)
         layout.addWidget(manage_chapters_btn)
 
-        # ── 世界书 + 分段摘要按钮 ──
+        # ── 世界书按钮 ──
         tool_row = QHBoxLayout()
         world_bible_btn = QPushButton("📖 世界书")
         world_bible_btn.setToolTip("查看/编辑已建立的世界观设定库")
         world_bible_btn.clicked.connect(self._on_world_bible)
         tool_row.addWidget(world_bible_btn)
-        split_summary_btn = QPushButton("📄 分段摘要")
-        split_summary_btn.setToolTip("对选定的文件进行分段摘要分析")
-        split_summary_btn.clicked.connect(self._on_split_summarize)
-        tool_row.addWidget(split_summary_btn)
         layout.addLayout(tool_row)
 
         # ── 导出按钮 ──
@@ -1397,6 +1476,37 @@ class DeepSeekChatGUI(QMainWindow):
         send_btn.clicked.connect(self._on_send)
         input_layout.addWidget(send_btn)
 
+        # ── 停止按钮 ──
+        self._stop_btn = QPushButton("⏹")
+        self._stop_btn.setMinimumHeight(64)
+        self._stop_btn.setMinimumWidth(80)
+        self._stop_btn.setVisible(False)
+        self._stop_btn.setStyleSheet("""
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #8b0000, stop:1 #cc3333);
+                color: white;
+                border: none;
+                border-radius: 8px;
+                padding: 8px 20px;
+                font-size: 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #aa0000, stop:1 #ee4444);
+                border: 1px solid rgba(255, 255, 255, 0.15);
+            }
+            QPushButton:pressed {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
+                    stop:0 #660000, stop:1 #991111);
+                padding-top: 10px;
+                padding-bottom: 6px;
+            }
+        """)
+        self._stop_btn.clicked.connect(self._on_stop)
+        input_layout.addWidget(self._stop_btn)
+
         layout.addWidget(input_frame)
 
         return widget
@@ -1656,12 +1766,25 @@ class DeepSeekChatGUI(QMainWindow):
 
     # ========== 信号处理 ==========
 
+    def _on_stop(self) -> None:
+        """停止按钮点击处理"""
+        self._stop_btn.setVisible(False)
+        if self._client:
+            self._client.cancel()
+
     def _on_mode_changed(self, text: str) -> None:
         """模式下拉框变化"""
+        if self._streaming:
+            self._mode_combo.blockSignals(True)
+            self._mode_combo.setCurrentText(self._last_mode)
+            self._mode_combo.blockSignals(False)
+            return
+
         strategy_cls = STRATEGY_OPTIONS.get(text)
         if strategy_cls is None:
             return
 
+        self._last_mode = text
         strategy = strategy_cls()
         self._client.switch_strategy(strategy)
         # 用户主动切换模式时清除当前对话ID，避免覆盖其他模式的保存
@@ -2126,6 +2249,10 @@ class DeepSeekChatGUI(QMainWindow):
         from PyQt6.QtWidgets import QInputDialog
         title, ok = QInputDialog.getText(self, "新建小说", "请输入小说标题：")
         if ok and title.strip():
+            existing = self._novel_manager.list_books()
+            if title.strip() in existing:
+                QMessageBox.warning(self, "警告", f"小说「{title.strip()}」已存在。")
+                return
             self._novel_manager.create_book(title.strip())
             self._refresh_novel_bookshelf()
             self._cont_bookshelf_combo.setCurrentText(title.strip())
@@ -2239,6 +2366,11 @@ class DeepSeekChatGUI(QMainWindow):
         plot = self._continue_plot.toPlainText().strip()
         chapter_num = self._novel_manager.get_next_chapter_num(book_title)
 
+        self._client.reset_cancel()
+        self._stop_btn.setVisible(True)
+        self._stop_btn.setEnabled(True)
+        self._stop_btn.setText("⏹")
+        self._mode_combo.setEnabled(False)
         self._streaming = True
         self._assistant_text_buffer = []
         self._append_user_message(f"📝 续写「{book_title}」→ 第{chapter_num}章「{chapter_title}」")
@@ -2351,6 +2483,11 @@ class DeepSeekChatGUI(QMainWindow):
             chapter_title = f"第{self._novel_manager.get_next_chapter_num(title)}章"
             self._chapter_title_edit.setText(chapter_title)
 
+        self._client.reset_cancel()
+        self._stop_btn.setVisible(True)
+        self._stop_btn.setEnabled(True)
+        self._stop_btn.setText("⏹")
+        self._mode_combo.setEnabled(False)
         self._streaming = True
         self._assistant_text_buffer = []
 
@@ -2460,11 +2597,16 @@ class DeepSeekChatGUI(QMainWindow):
                 messages=messages,
                 temperature=self._client.temperature,
                 top_p=self._client.top_p,
-                max_tokens=self._client.max_tokens,
+                max_tokens=max(target_words * 2, self._client.max_tokens),
                 frequency_penalty=self._client.frequency_penalty,
                 stream=False,
             )
             content = response.choices[0].message.content or ""
+
+            if self._client._cancel_requested:
+                self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
+                self._stream_signals.finished.emit()
+                return
 
             self._stream_signals.token.emit(content)
             self._stream_signals.token.emit("\n\n---\n")
@@ -2507,6 +2649,11 @@ class DeepSeekChatGUI(QMainWindow):
                 plot=plot_content,
             )
 
+            if self._client._cancel_requested:
+                self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
+                self._stream_signals.finished.emit()
+                return
+
             if new_chapter:
                 self._stream_signals.token.emit("\n🔍 正在提炼剧情记忆...\n")
                 summary = self._novel_manager.generate_summary(
@@ -2539,6 +2686,11 @@ class DeepSeekChatGUI(QMainWindow):
                             self._stream_signals.token.emit(f"✅ 补充完成，总字数：{final_words}字 (v{saved_version})\n")
                     except Exception as supp_e:
                         self._stream_signals.token.emit(f"⚠️ 补充过程出错: {supp_e}\n")
+
+            if self._client._cancel_requested:
+                self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
+                self._stream_signals.finished.emit()
+                return
 
             # 更新世界书
             self._stream_signals.token.emit("\n📖 正在更新世界书...\n")
@@ -2715,6 +2867,11 @@ class DeepSeekChatGUI(QMainWindow):
         if not chapter_title:
             chapter_title = f"续写 (第{chapter_num}章)"
 
+        self._client.reset_cancel()
+        self._stop_btn.setVisible(True)
+        self._stop_btn.setEnabled(True)
+        self._stop_btn.setText("⏹")
+        self._mode_combo.setEnabled(False)
         self._streaming = True
         self._assistant_text_buffer = []
 
@@ -2750,6 +2907,7 @@ class DeepSeekChatGUI(QMainWindow):
                 summary = self._novel_manager.load_smart_summary(
                     book_title, self._client.raw_client,
                     next_chapter_num=chapter_num,
+                    max_recent=10,
                     model=self._client.model,
                     global_user_prompt=self._client.global_user_prompt,
                 )
@@ -2816,11 +2974,16 @@ class DeepSeekChatGUI(QMainWindow):
                 messages=messages,
                 temperature=self._client.temperature,
                 top_p=self._client.top_p,
-                max_tokens=self._client.max_tokens,
+                max_tokens=max(word_count * 2, self._client.max_tokens),
                 frequency_penalty=self._client.frequency_penalty,
                 stream=False,
             )
             content = response.choices[0].message.content or ""
+
+            if self._client._cancel_requested:
+                self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
+                self._stream_signals.finished.emit()
+                return
 
             self._stream_signals.token.emit(content)
             self._stream_signals.token.emit("\n\n---\n")
@@ -2849,6 +3012,11 @@ class DeepSeekChatGUI(QMainWindow):
                 requirement=requirement,
                 plot=plot,
             )
+
+            if self._client._cancel_requested:
+                self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
+                self._stream_signals.finished.emit()
+                return
 
             # 提炼摘要
             self._stream_signals.token.emit("\n🔍 正在提炼剧情记忆...\n")
@@ -2881,6 +3049,11 @@ class DeepSeekChatGUI(QMainWindow):
                         self._stream_signals.token.emit(f"✅ 补充完成，总字数：{final_words}字 (v{saved_version})\n")
                 except Exception as supp_e:
                     self._stream_signals.token.emit(f"⚠️ 补充过程出错: {supp_e}\n")
+
+            if self._client._cancel_requested:
+                self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
+                self._stream_signals.finished.emit()
+                return
 
             # 更新世界书
             self._stream_signals.token.emit("📖 正在更新世界书...\n")
@@ -2934,6 +3107,11 @@ class DeepSeekChatGUI(QMainWindow):
         self._input_box.clear()
         self._append_user_message(user_input)
 
+        self._client.reset_cancel()
+        self._stop_btn.setVisible(True)
+        self._stop_btn.setEnabled(True)
+        self._stop_btn.setText("⏹")
+        self._mode_combo.setEnabled(False)
         self._streaming = True
         self._assistant_text_buffer = []
 
@@ -2964,17 +3142,37 @@ class DeepSeekChatGUI(QMainWindow):
             self._stream_count_label.setVisible(True)
 
     def _on_stream_finished(self) -> None:
-        """主线程：流式完成"""
+        """主线程：流式完成（可能因取消而结束）"""
+        was_cancelled = self._client._cancel_requested if self._client else False
         self._streaming = False
-        full_text = "".join(self._assistant_text_buffer)
-        self._render_assistant_message(full_text)
+        self._stop_btn.setVisible(False)
+        self._stop_btn.setEnabled(True)
+        self._mode_combo.setEnabled(True)
         self._stream_count_label.setVisible(False)
+
+        if was_cancelled:
+            self._assistant_text_buffer = []
+            self._append_user_message("⏹️ 已取消")
+            if self._client:
+                self._client.reset_cancel()
+        else:
+            full_text = "".join(self._assistant_text_buffer)
+            self._render_assistant_message(full_text)
 
     def _on_stream_error(self, error_msg: str) -> None:
         """主线程：流式出错"""
         self._streaming = False
+        self._stop_btn.setVisible(False)
+        self._stop_btn.setEnabled(True)
+        self._mode_combo.setEnabled(True)
         self._stream_count_label.setVisible(False)
-        QMessageBox.critical(self, "API 错误", f"调用失败：{error_msg}")
+        if self._client:
+            was_cancelled = self._client._cancel_requested
+            self._client.reset_cancel()
+        else:
+            was_cancelled = False
+        if not was_cancelled:
+            QMessageBox.critical(self, "API 错误", f"调用失败：{error_msg}")
 
     # ========== 渲染 ==========
 
@@ -3082,170 +3280,6 @@ class DeepSeekChatGUI(QMainWindow):
             self._novel_manager.save_world_bible(title, dlg.get_bible())
             QMessageBox.information(self, "提示", "世界书已保存。")
 
-    # ========== 📄 分段摘要（导入新小说） ==========
-
-    def _on_split_summarize(self) -> None:
-        """
-        从源文档创建新小说：AI语义分段 → 提取世界观 → 写入世界书/meta → 自动加载UI
-        仅用于新小说创建（已有章节会警告）。
-        """
-        from strategies.novel_strategy import NovelStrategy
-        mode_ok = isinstance(self._client.strategy, NovelStrategy) if hasattr(self, '_client') else False
-        if not mode_ok or not hasattr(self, '_client') or self._client is None:
-            QMessageBox.warning(self, "提示", "分段摘要导入仅支持小说模式。请先切换到小说模式。")
-            return
-
-        # 检查是否为新小说（无章节或用户确认覆盖）
-        title = self._novel_title_edit.text().strip()
-        if title:
-            next_ch = self._novel_manager.get_next_chapter_num(title)
-            if next_ch > 1:
-                reply = QMessageBox.question(
-                    self, "确认",
-                    f"「{title}」已有章节内容。\n"
-                    "分段摘要应用于从源文档创建新小说。\n"
-                    "继续将覆盖小说设定但保留章节内容。是否继续？",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                )
-                if reply != QMessageBox.StandardButton.Yes:
-                    return
-
-        client = self._client.raw_client
-        if client is None:
-            QMessageBox.warning(self, "错误", "客户端未初始化。")
-            return
-
-        # 选择源文档
-        file_path, _ = QFileDialog.getOpenFileName(
-            self, "选择源文档（设定/大纲/草稿）", "",
-            "文本文件 (*.txt *.md);;所有文件 (*.*)",
-        )
-        if not file_path:
-            return
-
-        # 自动推断小说标题
-        if not title:
-            title = os.path.splitext(os.path.basename(file_path))[0]
-            self._novel_title_edit.setText(title)
-
-        self._streaming = True
-        self._assistant_text_buffer = []
-        self._append_user_message(f"📄 从文档导入小说：{os.path.basename(file_path)}")
-
-        def _run():
-            try:
-                from utils.summarize import segment_by_ai, extract_world_bible_from_segments, generate_novel_settings_from_world_bible
-                from core.world_bible import WorldBible, CharacterEntry, LocationEntry, TimelineEntry, PlotThread
-
-                model = self._client.model
-
-                # Phase 1: 读取文件 + AI 语义分段
-                self._stream_signals.token.emit(
-                    f"\n\n⏳ 第一步：AI 语义分段…\n"
-                )
-                with open(file_path, "r", encoding="utf-8") as f:
-                    text = f.read()
-                _chars = len(text)
-                _words = len(text.replace('\n', '').replace('\r', '').replace(' ', '').replace('　', ''))
-                self._stream_signals.token.emit(f"  读到 {_words} 个字，{_chars} 个字符\n")
-
-                _global_prompt = self._client.global_user_prompt
-                segments = segment_by_ai(client, text, model, global_user_prompt=_global_prompt)
-                self._stream_signals.token.emit(
-                    f"  ✅ AI 识别出 {len(segments)} 个逻辑段落\n\n"
-                )
-                for seg_title, seg_content in segments:
-                    preview = seg_content[:80].replace("\n", " ")
-                    self._stream_signals.token.emit(
-                        f"  📌 **{seg_title}** — {preview}…\n"
-                    )
-
-                # Phase 2: 逐段提取世界观
-                self._stream_signals.token.emit(f"\n⏳ 第二步：逐段提取世界观信息…\n")
-
-                def _progress(cur, total):
-                    if cur == 1 or cur % max(1, total // 5) == 0 or cur == total:
-                        self._stream_signals.token.emit(f"  提取进度: {cur}/{total}\n")
-
-                world_data = extract_world_bible_from_segments(
-                    client, segments, model, progress_callback=_progress,
-                    global_user_prompt=_global_prompt,
-                )
-
-                # 汇报提取结果
-                wb_count = len(world_data.get("key_worldbuilding", []))
-                fs_count = len(world_data.get("global_foreshadowing", []))
-                self._stream_signals.token.emit(
-                    f"\n  📊 提取结果:\n"
-                    f"    👥 角色 {len(world_data.get('characters', []))} 个\n"
-                    f"    🏙️ 地点 {len(world_data.get('locations', []))} 个\n"
-                    f"    📜 规则 {len(world_data.get('rules', []))} 条\n"
-                    f"    ⏱️ 事件 {len(world_data.get('timeline', []))} 个\n"
-                    f"    🔗 剧情线 {len(world_data.get('plot_threads', []))} 条\n"
-                    + (f"    📖 关键设定 {wb_count} 条 | 🔮 伏笔 {fs_count} 条\n" if wb_count or fs_count else "")
-                )
-
-                # Phase 3: 创建小说目录 + 保存世界书
-                self._stream_signals.token.emit(f"\n⏳ 第三步：创建小说「{title}」并保存数据…\n")
-                self._novel_manager.create_book(title)
-
-                bible = WorldBible(
-                    characters=[CharacterEntry(**c) for c in world_data.get("characters", [])],
-                    locations=[LocationEntry(**l) for l in world_data.get("locations", [])],
-                    rules=list(world_data.get("rules", [])),
-                    timeline=[TimelineEntry(**t) for t in world_data.get("timeline", [])],
-                    active_plot_threads=[PlotThread(**p) for p in world_data.get("plot_threads", [])],
-                    last_updated_chapter=0,
-                    key_worldbuilding_passages=list(world_data.get("key_worldbuilding", [])),
-                    global_foreshadowing=list(world_data.get("global_foreshadowing", [])),
-                    global_key_dialogues=list(world_data.get("global_key_dialogues", [])),
-                )
-                self._novel_manager.save_world_bible(title, bible)
-                self._stream_signals.token.emit(f"  ✅ 世界书已保存\n")
-
-                # Phase 4: 生成小说设定（背景/主角/写作要求）
-                self._stream_signals.token.emit(f"⏳ 第四步：生成小说设定…\n")
-                settings = generate_novel_settings_from_world_bible(client, world_data, model, global_user_prompt=_global_prompt)
-
-                self._novel_manager.save_meta(
-                    title,
-                    protagonist_bio=settings.get("protagonist_bio", ""),
-                    background_story=settings.get("background_story", ""),
-                    writing_demand=settings.get("writing_demand", ""),
-                )
-                self._stream_signals.token.emit(
-                    f"  ✅ 设定已保存至 meta.json\n"
-                )
-
-                # Phase 5: 触发主线程加载 UI
-                self._stream_signals.token.emit(
-                    f"\n{'='*50}\n"
-                    f"✅ 全部完成！「{title}」创建成功\n"
-                    f"  • {len(segments)} 个语义段落已分段\n"
-                    f"  • 世界书已建立（{len(world_data.get('characters', []))}角色 + "
-                    f"{len(world_data.get('locations', []))}地点 + "
-                    f"{len(world_data.get('rules', []))}规则）\n"
-                    f"  • 小说设定已生成并加载\n"
-                    f"  • 现在可以直接生成章节了！\n"
-                    f"{'='*50}\n"
-                )
-                self._stream_signals.novel_imported.emit(title)
-                self._stream_signals.finished.emit()
-
-            except Exception as e:
-                import traceback
-                self._stream_signals.token.emit(f"\n❌ 错误: {e}\n")
-                self._stream_signals.token.emit(f"\n```\n{traceback.format_exc()}\n```\n")
-                self._stream_signals.error.emit(f"分段摘要失败: {e}")
-
-        threading.Thread(target=_run, daemon=True).start()
-
-    def _on_novel_imported(self, title: str) -> None:
-        """主线程：导入完成后刷新书架并加载设定到 UI"""
-        self._refresh_novel_bookshelf()
-        self._bookshelf_combo.setCurrentText(title)
-        self._on_book_selected(title)
-
     def _check_book_empty(self, title: str) -> bool:
         """检查目标书是否完全空（无章节、无设定、无世界书），非空时弹警告并返回 False"""
         chapters = self._novel_manager.list_chapters(title)
@@ -3333,6 +3367,11 @@ class DeepSeekChatGUI(QMainWindow):
         # 根据弹窗结果决定处理路径
         if result["mode"] == "folder" and result.get("files"):
             # 文件夹模式：批量导入（使用确认后的文件列表）
+            self._client.reset_cancel()
+            self._stop_btn.setVisible(True)
+            self._stop_btn.setEnabled(True)
+            self._stop_btn.setText("⏹")
+            self._mode_combo.setEnabled(False)
             self._streaming = True
             self._assistant_text_buffer = []
             self._append_user_message(f"📂 批量导入章节 → {title}")
@@ -3353,6 +3392,11 @@ class DeepSeekChatGUI(QMainWindow):
             return
 
         model = self._client.model
+        self._client.reset_cancel()
+        self._stop_btn.setVisible(True)
+        self._stop_btn.setEnabled(True)
+        self._stop_btn.setText("⏹")
+        self._mode_combo.setEnabled(False)
         self._streaming = True
         self._assistant_text_buffer = []
         self._append_user_message(f"🔍 分析源文档并导入小说：{title}")
@@ -3402,6 +3446,11 @@ class DeepSeekChatGUI(QMainWindow):
                     global_key_dialogues=list(world_data.get("global_key_dialogues", [])),
                 )
                 self._novel_manager.save_world_bible(title, bible)
+
+                if self._client._cancel_requested:
+                    si.token.emit("\n⏹️ 已取消\n")
+                    si.finished.emit()
+                    return
 
                 si.token.emit(f"⏳ 第三步：生成小说设定…\n")
                 settings = generate_novel_settings_from_world_bible(client, world_data, self._client.model, global_user_prompt=_global_prompt)
@@ -3532,6 +3581,10 @@ class DeepSeekChatGUI(QMainWindow):
             world_bible = WorldBible()
 
             for idx, (chapter_num, fname, content) in enumerate(chapter_files, 1):
+                if self._client._cancel_requested:
+                    si.token.emit(f"\n⏹️ 批量导入已取消（已处理 {idx-1}/{total} 章）\n")
+                    break
+
                 chapter_title = os.path.splitext(fname)[0]
                 si.token.emit(f"  📖 [{idx}/{total}] 第{chapter_num}章「{chapter_title}」…\n")
 
@@ -3575,6 +3628,11 @@ class DeepSeekChatGUI(QMainWindow):
 
                 si.token.emit(f"    ✅ 世界书已更新 | 摘要已保存\n")
 
+            if self._client._cancel_requested:
+                si.token.emit(f"\n⏹️ 已取消（已处理 {total} 章中的部分章节）\n")
+                self._stream_signals.novel_imported.emit(title)
+                return
+
             # 所有章节处理完成 → 从世界书生成小说设定
             si.token.emit(f"\n⏳ 正在从世界书生成小说设定……\n")
             from dataclasses import asdict
@@ -3612,12 +3670,17 @@ class DeepSeekChatGUI(QMainWindow):
             self._stream_signals.token.emit(f"\n❌ 批量导入失败: {e}\n")
             self._stream_signals.token.emit(f"\n```\n{traceback.format_exc()}\n```\n")
             self._stream_signals.error.emit(f"批量导入失败: {e}")
-        finally:
-            self._streaming = False
+        else:
+            self._stream_signals.finished.emit()
 
     def _show_analysis_dialog(self, world_data_str: str, settings_str: str, title: str) -> None:
         """在主线程显示分析结果对话框"""
         self._streaming = False
+        self._stop_btn.setVisible(False)
+        self._stop_btn.setEnabled(True)
+        self._mode_combo.setEnabled(True)
+        if self._client:
+            self._client.reset_cancel()
         world_data = getattr(self, '_cont_analysis_world_data', {})
         settings = getattr(self, '_cont_analysis_settings', {})
 
@@ -3635,12 +3698,20 @@ class DeepSeekChatGUI(QMainWindow):
         if client is None:
             return
 
+        self._client.reset_cancel()
+        self._stop_btn.setVisible(True)
+        self._stop_btn.setEnabled(True)
+        self._stop_btn.setText("⏹")
+        self._mode_combo.setEnabled(False)
         self._streaming = True
         self._assistant_text_buffer = []
         self._append_user_message("🎲 AI 建议发展方向")
 
         def _run():
             try:
+                if self._client._cancel_requested:
+                    self._stream_signals.finished.emit()
+                    return
                 self._stream_signals.token.emit("\n\n🎲 AI 正在分析发展方向...\n\n")
                 directions = suggest_directions(client, setting, plot_outline,
                                                 self._client.model, world_data,
@@ -3655,6 +3726,11 @@ class DeepSeekChatGUI(QMainWindow):
     def _show_direction_selector(self, directions: list, setting: str, plot_outline: str, word_count: int):
         """在主线程显示方向选择对话框"""
         self._streaming = False
+        self._stop_btn.setVisible(False)
+        self._stop_btn.setEnabled(True)
+        self._mode_combo.setEnabled(True)
+        if self._client:
+            self._client.reset_cancel()
         dlg = DirectionSelectionDialog(self, directions)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.selected_direction:
             self._do_continuation_with_context(setting, word_count, plot=dlg.selected_direction)
@@ -3691,6 +3767,11 @@ class DeepSeekChatGUI(QMainWindow):
             plot = self._continue_plot.toPlainText().strip()
         word_count = word_count or self._continue_word_count.value()
 
+        self._client.reset_cancel()
+        self._stop_btn.setVisible(True)
+        self._stop_btn.setEnabled(True)
+        self._stop_btn.setText("⏹")
+        self._mode_combo.setEnabled(False)
         self._streaming = True
         self._assistant_text_buffer = []
         self._append_user_message(f"📝 续写第{chapter_num}章：{chapter_title}")

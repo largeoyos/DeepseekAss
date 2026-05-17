@@ -46,6 +46,10 @@ class DeepSeekChatClient:
         self._messages: list[dict] = []
         self._global_user_prompt: str = ""
 
+        # 取消机制
+        self._cancel_requested = False
+        self._current_stream = None
+
         # 初始化系统提示词
         self._reset_conversation()
 
@@ -150,6 +154,19 @@ class DeepSeekChatClient:
             print(f"[警告] 未知模型 '{model}'，将尝试使用，但可能出错。")
         self._model = model
 
+    # ========== 取消机制 ==========
+
+    def cancel(self) -> None:
+        """请求取消当前操作。关闭 HTTP 流并设置取消标志。"""
+        self._cancel_requested = True
+        if self._current_stream is not None:
+            self._current_stream.close()
+            self._current_stream = None
+
+    def reset_cancel(self) -> None:
+        """每次新任务开始前重置取消标志。"""
+        self._cancel_requested = False
+
     # ========== 运行时参数设置 ==========
 
     def set_temperature(self, temperature: float) -> None:
@@ -209,6 +226,10 @@ class DeepSeekChatClient:
             response = self._client.chat.completions.create(
                 **self._build_api_kwargs(stream=False),
             )
+            if self._cancel_requested:
+                self._messages.pop()
+                return "[用户取消了操作]"
+
             assistant_content = response.choices[0].message.content
             if assistant_content is None:
                 assistant_content = "[模型返回了空回复]"
@@ -234,9 +255,12 @@ class DeepSeekChatClient:
             stream = self._client.chat.completions.create(
                 **self._build_api_kwargs(stream=True),
             )
+            self._current_stream = stream
 
             full_reply: list[str] = []
             for chunk in stream:
+                if self._cancel_requested:
+                    break
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta
@@ -244,12 +268,17 @@ class DeepSeekChatClient:
                     full_reply.append(delta.content)
                     yield delta.content
 
-            # 流式结束后将完整回复写入对话历史
-            self._messages.append({"role": "assistant", "content": "".join(full_reply)})
+            if self._cancel_requested:
+                self._messages.pop()  # 取消时不保留部分回复
+            else:
+                # 流式结束后将完整回复写入对话历史
+                self._messages.append({"role": "assistant", "content": "".join(full_reply)})
 
         except Exception as e:
             self._messages.pop()
             raise RuntimeError(f"API 流式调用失败: {e}") from e
+        finally:
+            self._current_stream = None
 
     # ========== 消息导入/导出 ==========
 

@@ -19,6 +19,11 @@ from datetime import datetime
 BOOKSHELF_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "bookshelf")
 
 
+def _maybe_encrypt_path(path: str) -> str:
+    """如果是加密文件，添加 .enc 后缀"""
+    return path + ".enc"
+
+
 @dataclass
 class ChapterVersionInfo:
     """章节单个版本的信息"""
@@ -63,9 +68,64 @@ class NovelMeta:
 class NovelManager:
     """小说管理器：书架+章节+摘要+版本管理"""
 
-    def __init__(self, bookshelf_root: str | None = None):
+    def __init__(self, bookshelf_root: str | None = None,
+                 crypto=None, enc_key: bytes | None = None):
         self._bookshelf_root = bookshelf_root or BOOKSHELF_DIR
+        self._crypto = crypto
+        self._enc_key = enc_key
         os.makedirs(self._bookshelf_root, exist_ok=True)
+
+    # ========== 加密文件 I/O 辅助 ==========
+
+    def _encrypt_path(self, path: str) -> str:
+        """根据是否启用加密返回实际路径"""
+        if self._enc_key is None:
+            return path
+        return path + ".enc"
+
+    def _read_encrypted_text(self, path: str) -> str | None:
+        """读取并解密文本文件"""
+        enc_path = self._encrypt_path(path)
+        if not os.path.exists(enc_path):
+            return None
+        if self._enc_key is None:
+            with open(enc_path, "r", encoding="utf-8") as f:
+                return f.read()
+        return self._crypto.decrypt_text(self._enc_key, enc_path)
+
+    def _write_encrypted_text(self, path: str, text: str) -> None:
+        """加密文本写入文件"""
+        enc_path = self._encrypt_path(path)
+        os.makedirs(os.path.dirname(enc_path), exist_ok=True)
+        if self._enc_key is None:
+            with open(enc_path, "w", encoding="utf-8") as f:
+                f.write(text)
+        else:
+            self._crypto.encrypt_text(self._enc_key, enc_path, text)
+
+    def _read_encrypted_json(self, path: str) -> dict | None:
+        """读取并解密 JSON 文件"""
+        enc_path = self._encrypt_path(path)
+        if not os.path.exists(enc_path):
+            return None
+        if self._enc_key is None:
+            with open(enc_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        return self._crypto.decrypt_json(self._enc_key, enc_path)
+
+    def _write_encrypted_json(self, path: str, data: dict) -> None:
+        """加密 JSON 写入文件"""
+        enc_path = self._encrypt_path(path)
+        os.makedirs(os.path.dirname(enc_path), exist_ok=True)
+        if self._enc_key is None:
+            with open(enc_path, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+        else:
+            self._crypto.encrypt_json(self._enc_key, enc_path, data)
+
+    def _encrypted_file_exists(self, path: str) -> bool:
+        """检查加密文件是否存在"""
+        return os.path.exists(self._encrypt_path(path))
 
     # ========== 书架操作 ==========
 
@@ -84,8 +144,8 @@ class NovelManager:
         os.makedirs(book_dir, exist_ok=True)
 
         meta_path = self._meta_path(title)
-        if os.path.exists(meta_path):
-            # 已有 meta.json，不覆盖（防止丢失章节版本等已有数据）
+        if self._encrypted_file_exists(meta_path):
+            # 已有 meta，不覆盖（防止丢失章节版本等已有数据）
             meta = self.load_meta(title)
         else:
             meta = NovelMeta(
@@ -96,9 +156,8 @@ class NovelManager:
         self._save_meta(title, meta)
         # 创建空摘要文件
         summary_path = self._summary_path(title)
-        if not os.path.exists(summary_path):
-            with open(summary_path, "w", encoding="utf-8") as f:
-                f.write("故事刚刚开始。\n")
+        if not self._encrypted_file_exists(summary_path):
+            self._write_encrypted_text(summary_path, "故事刚刚开始。\n")
         return book_dir
 
     def delete_book(self, title: str) -> bool:
@@ -120,13 +179,22 @@ class NovelManager:
         os.rename(old_dir, new_dir)
         # 更新 meta.json 中的 title 字段
         meta_path = os.path.join(new_dir, "meta.json")
+        if self._crypto is not None:
+            meta_path = meta_path + ".enc"
         if os.path.exists(meta_path):
             try:
-                with open(meta_path, "r", encoding="utf-8") as f:
-                    meta = json.load(f)
-                meta["title"] = new_title
-                with open(meta_path, "w", encoding="utf-8") as f:
-                    json.dump(meta, f, ensure_ascii=False, indent=2)
+                if self._enc_key is not None:
+                    meta = self._crypto.decrypt_json(self._enc_key, meta_path)
+                else:
+                    with open(meta_path, "r", encoding="utf-8") as f:
+                        meta = json.load(f)
+                if meta is not None:
+                    meta["title"] = new_title
+                    if self._enc_key is not None:
+                        self._crypto.encrypt_json(self._enc_key, meta_path, meta)
+                    else:
+                        with open(meta_path, "w", encoding="utf-8") as f:
+                            json.dump(meta, f, ensure_ascii=False, indent=2)
             except Exception:
                 pass
         return True
@@ -134,14 +202,17 @@ class NovelManager:
     def load_meta(self, title: str) -> NovelMeta:
         """加载小说元信息，若不存在则返回默认空 meta"""
         meta_path = self._meta_path(title)
-        if os.path.exists(meta_path):
-            with open(meta_path, "r", encoding="utf-8") as f:
-                data = json.load(f)
-            # 过滤只保留 NovelMeta 定义的字段，兼容未来 JSON schema 变化
+        if not self._encrypted_file_exists(meta_path):
+            return NovelMeta(title=title)
+        try:
+            data = self._read_encrypted_json(meta_path)
+            if data is None:
+                return NovelMeta(title=title)
             valid_fields = NovelMeta.__dataclass_fields__
             filtered = {k: v for k, v in data.items() if k in valid_fields}
             return NovelMeta(**filtered)
-        return NovelMeta(title=title)
+        except Exception:
+            return NovelMeta(title=title)
 
     def save_meta(self, title: str, **kwargs) -> NovelMeta:
         """更新小说元信息（部分字段）并保存"""
@@ -155,8 +226,7 @@ class NovelManager:
 
     def _save_meta(self, title: str, meta: NovelMeta) -> None:
         meta_path = self._meta_path(title)
-        with open(meta_path, "w", encoding="utf-8") as f:
-            json.dump(asdict(meta), f, ensure_ascii=False, indent=2)
+        self._write_encrypted_json(meta_path, asdict(meta))
 
     # ========== 章节版本管理 ==========
 
@@ -201,9 +271,10 @@ class NovelManager:
         safe_title = chapter_title.replace("/", "-").replace("\\", "-").replace(":", "：")
         file_name = f"第{chapter_num}章_{safe_title}_v{version}.txt"
         file_path = os.path.join(book_dir, file_name)
+        # 记录实际写入路径（可能带 .enc）
+        written_path = self._encrypt_path(file_path)
 
-        with open(file_path, "w", encoding="utf-8") as f:
-            f.write(content)
+        self._write_encrypted_text(file_path, content)
 
         # 更新元信息中的版本记录
         meta = self.load_meta(title)
@@ -233,8 +304,7 @@ class NovelManager:
             meta.chapter_titles.append(chapter_title)
 
         self._save_meta(title, meta)
-        return file_path, version
-
+        return written_path, version
     def set_active_version(self, title: str, chapter_num: int, version: int) -> None:
         """设置某章节的活跃版本（用于计入剧情摘要）"""
         meta = self.load_meta(title)
@@ -270,9 +340,10 @@ class NovelManager:
         prefix = f"第{chapter_num}章"
         suffix = f"_v{version}.txt"
         for fname in os.listdir(book_dir):
-            if fname.startswith(prefix) and fname.endswith(suffix):
-                with open(os.path.join(book_dir, fname), "r", encoding="utf-8") as f:
-                    return f.read()
+            # 跳过 .enc 后缀进行文件名匹配
+            match_name = fname[:-4] if fname.endswith(".enc") else fname
+            if match_name.startswith(prefix) and match_name.endswith(suffix):
+                return self._read_encrypted_text(os.path.join(book_dir, match_name))
         return None
 
     def read_active_chapter(self, title: str, chapter_num: int) -> str | None:
@@ -281,6 +352,14 @@ class NovelManager:
         if active_v is None:
             return None
         return self.read_chapter_version(title, chapter_num, active_v)
+
+    def _find_file_in_dir(self, directory: str, prefix: str, suffix: str) -> str | None:
+        """在目录中查找匹配前缀和后缀的文件（会检查 .enc 变体）"""
+        for fname in os.listdir(directory):
+            match_name = fname[:-4] if fname.endswith(".enc") else fname
+            if match_name.startswith(prefix) and match_name.endswith(suffix):
+                return os.path.join(directory, fname)
+        return None
 
     def delete_chapter_version(
         self, title: str, chapter_num: int, version: int
@@ -293,15 +372,10 @@ class NovelManager:
         # 删除文件
         prefix = f"第{chapter_num}章"
         suffix = f"_v{version}.txt"
-        deleted = False
-        for fname in os.listdir(book_dir):
-            if fname.startswith(prefix) and fname.endswith(suffix):
-                os.remove(os.path.join(book_dir, fname))
-                deleted = True
-                break
-
-        if not deleted:
+        found = self._find_file_in_dir(book_dir, prefix, suffix)
+        if not found:
             return False
+        os.remove(found)
 
         # 更新元信息
         meta = self.load_meta(title)
@@ -338,7 +412,8 @@ class NovelManager:
         prefix = f"第{chapter_num}章"
         deleted = False
         for fname in list(os.listdir(book_dir)):
-            if fname.startswith(prefix) and fname.endswith(".txt"):
+            match_name = fname[:-4] if fname.endswith(".enc") else fname
+            if match_name.startswith(prefix) and match_name.endswith(".txt"):
                 os.remove(os.path.join(book_dir, fname))
                 deleted = True
 
@@ -380,9 +455,9 @@ class NovelManager:
     def load_summary(self, title: str) -> str:
         """加载小说的全部前情提要"""
         summary_path = self._summary_path(title)
-        if os.path.exists(summary_path):
-            with open(summary_path, "r", encoding="utf-8") as f:
-                return f.read().strip()
+        text = self._read_encrypted_text(summary_path)
+        if text is not None:
+            return text.strip()
         return "故事刚刚开始。"
 
     def append_summary(
@@ -394,8 +469,11 @@ class NovelManager:
     ) -> None:
         """追加一章的摘要到摘要文件（仅在生成新活跃版本时调用）"""
         summary_path = self._summary_path(title)
-        with open(summary_path, "a", encoding="utf-8") as f:
-            f.write(f"\n第{chapter_num}章「{chapter_title}」摘要：{summary_text}\n")
+        current = self.load_summary(title)
+        if current == "故事刚刚开始。":
+            current = "故事刚刚开始。\n"
+        current += f"\n第{chapter_num}章「{chapter_title}」摘要：{summary_text}\n"
+        self._write_encrypted_text(summary_path, current)
 
     def rebuild_summary_from_active(self, client, title: str, model: str = "deepseek-v4-flash",
                                      global_user_prompt: str = "") -> None:
@@ -406,9 +484,7 @@ class NovelManager:
         chapters = self.list_chapters(title)
         if not chapters:
             # 没有章节，重置摘要
-            summary_path = self._summary_path(title)
-            with open(summary_path, "w", encoding="utf-8") as f:
-                f.write("故事刚刚开始。\n")
+            self._write_encrypted_text(self._summary_path(title), "故事刚刚开始。\n")
             return
 
         full_summary_parts = ["# 完整前情提要（基于活跃章节自动生成）\n"]
@@ -443,8 +519,7 @@ class NovelManager:
             )
 
         summary_path = self._summary_path(title)
-        with open(summary_path, "w", encoding="utf-8") as f:
-            f.writelines(full_summary_parts)
+        self._write_encrypted_text(summary_path, "".join(full_summary_parts))
 
         # 重建后清空压缩缓存，下次 load_smart_summary 会重新计算
         meta = self.load_meta(title)
@@ -691,9 +766,9 @@ class NovelManager:
 
         filename = f"ch{chapter_num:04d}_v{version:03d}.json"
         file_path = os.path.join(history_dir, filename)
-        with open(file_path, "w", encoding="utf-8") as f:
-            json.dump(record, f, ensure_ascii=False, indent=2)
-        return file_path
+        self._write_encrypted_json(file_path, record)
+        written_path = self._encrypt_path(file_path)
+        return written_path
 
     def load_generation_record(self, title: str, chapter_num: int, version: int) -> dict | None:
         """加载指定章节和版本的生成记录"""
@@ -701,9 +776,8 @@ class NovelManager:
         filename = f"ch{chapter_num:04d}_v{version:03d}.json"
         fpath = os.path.join(history_dir, filename)
         try:
-            with open(fpath, "r", encoding="utf-8") as f:
-                return json.load(f)
-        except (FileNotFoundError, json.JSONDecodeError):
+            return self._read_encrypted_json(fpath)
+        except Exception:
             return None
 
     def load_generation_history(self, title: str) -> list[dict]:
@@ -714,13 +788,15 @@ class NovelManager:
 
         records = []
         for fname in sorted(os.listdir(history_dir)):
-            if not fname.endswith(".json"):
+            match_name = fname[:-4] if fname.endswith(".enc") else fname
+            if not match_name.endswith(".json"):
                 continue
-            fpath = os.path.join(history_dir, fname)
+            fpath = os.path.join(history_dir, match_name)
             try:
-                with open(fpath, "r", encoding="utf-8") as f:
-                    records.append(json.load(f))
-            except (json.JSONDecodeError, KeyError):
+                data = self._read_encrypted_json(fpath)
+                if data is not None:
+                    records.append(data)
+            except Exception:
                 continue
         return records
 
@@ -784,13 +860,12 @@ class NovelManager:
         """加载小说的世界书，返回 WorldBible 对象，不存在则返回空 WorldBible"""
         from core.world_bible import WorldBible, dict_to_world_bible
         wb_path = self._world_bible_path(title)
-        if os.path.exists(wb_path):
-            try:
-                with open(wb_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
+        try:
+            data = self._read_encrypted_json(wb_path)
+            if data is not None:
                 return dict_to_world_bible(data)
-            except Exception:
-                return WorldBible()
+        except Exception:
+            return WorldBible()
         return WorldBible()
 
     def save_world_bible(self, title: str, bible) -> None:
@@ -799,5 +874,4 @@ class NovelManager:
         wb_path = self._world_bible_path(title)
         os.makedirs(os.path.dirname(wb_path), exist_ok=True)
         data = world_bible_to_dict(bible)
-        with open(wb_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
+        self._write_encrypted_json(wb_path, data)

@@ -638,9 +638,7 @@ class SectionPreviewDialog(QDialog):
             self._section_list.setCurrentRow(0)
 
     def _on_section_selected(self, row: int):
-        """段落选中 → 预览内容（文件模式专用；文件夹模式由 _on_folder_file_selected 处理）"""
-        if self._source_text is None:
-            return  # 文件夹模式下此处理器不应触发，但 _build_ui 连接了信号
+        """段落选中 → 预览内容（文件模式 + 文件夹模式重新分段后共用）"""
         if 0 <= row < len(self._sections_data):
             _, content = self._sections_data[row]
             self._preview_edit.setPlainText(content[:2000])
@@ -684,9 +682,23 @@ class SectionPreviewDialog(QDialog):
             )
             return
 
+        # 同时更新 _sections_data（供预览）和文件夹模式下当前文件的段落
         self._sections_data = sections
+        if self._folder_files and 0 <= self._current_file_idx < len(self._folder_files):
+            self._folder_files[self._current_file_idx]["sections"] = sections
+            self._folder_files[self._current_file_idx]["needs_ai"] = False
+            # 文件夹模式下暂时断开文件夹信号，避免覆盖段落预览
+            try:
+                self._section_list.currentRowChanged.disconnect(self._on_folder_file_selected)
+            except TypeError:
+                pass
+            self._status_label.setText(
+                f"⚠️「{self._folder_files[self._current_file_idx]['filename']}」"
+                f"AI 分段完成，共 {len(sections)} 个段落"
+            )
+        else:
+            self._status_label.setText(f"⚠️ AI 分段完成，共 {len(sections)} 个段落")
         self._populate_sections()
-        self._status_label.setText(f"⚠️ AI 分段完成，共 {len(sections)} 个段落")
 
     def _get_full_text(self) -> str:
         """获取当前正在处理的完整文本"""
@@ -781,7 +793,17 @@ class SectionPreviewDialog(QDialog):
             self._section_list.addItem(item)
 
         self._section_list.blockSignals(False)
+
+        # 先断开旧连接，避免信号重复绑定
+        try:
+            self._section_list.currentRowChanged.disconnect()
+        except TypeError:
+            pass  # 没有旧连接
         self._section_list.currentRowChanged.connect(self._on_folder_file_selected)
+        try:
+            self._section_list.itemChanged.disconnect()
+        except TypeError:
+            pass
         self._section_list.itemChanged.connect(self._on_folder_item_changed)
 
         # 清空预览
