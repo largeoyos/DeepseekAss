@@ -432,37 +432,76 @@ def extract_world_bible_from_segments(
         # 合并角色
         for ch in data.get("characters", []):
             name = ch.get("name", "").strip()
-            if not name or name in seen_names["characters"]:
+            if not name:
                 continue
-            seen_names["characters"].add(name)
-            merged["characters"].append({
-                "name": name,
-                "aliases": ch.get("aliases", []),
-                "traits": ch.get("traits", "")[:500],
-                "relationships": ch.get("relationships", []),
-                "status": ch.get("status", "alive"),
-                "importance": ch.get("importance", "normal"),
-                "first_appearance": chapter_marker,
-                "key_details": [_verify_verbatim(kd, content) for kd in ch.get("key_details", [])],
-                "key_dialogues": [_verify_verbatim(kd, content) for kd in ch.get("key_dialogues", [])],
-                "motivation": ch.get("motivation", "")[:200],
-                "arc": ch.get("arc", "")[:200],
-            })
+            if name in seen_names["characters"]:
+                # 更新已有角色（后续段落补充新信息）
+                for existing in merged["characters"]:
+                    if existing["name"] == name:
+                        if ch.get("traits"):
+                            existing["traits"] = ch["traits"][:500]
+                        if ch.get("status") in ("alive", "dead", "missing", "transformed"):
+                            existing["status"] = ch["status"]
+                        for alias in ch.get("aliases", []):
+                            if alias and alias not in existing["aliases"]:
+                                existing["aliases"].append(alias)
+                        new_imp = ch.get("importance", "normal")
+                        imp_rank = {"major": 3, "normal": 2, "minor": 1}
+                        if imp_rank.get(new_imp, 0) > imp_rank.get(existing.get("importance", "normal"), 0):
+                            existing["importance"] = new_imp
+                        _merge_list_dedup(existing["key_details"], [_verify_verbatim(kd, content) for kd in ch.get("key_details", [])])
+                        _merge_list_dedup(existing["key_dialogues"], [_verify_verbatim(kd, content) for kd in ch.get("key_dialogues", [])])
+                        if ch.get("motivation"):
+                            existing["motivation"] = ch["motivation"][:200]
+                        if ch.get("arc"):
+                            existing["arc"] = ch["arc"][:200]
+                        for r in ch.get("relationships", []):
+                            if not any(r.get("target") == rel.get("target") for rel in existing["relationships"]):
+                                existing["relationships"].append(r)
+                        break
+            else:
+                seen_names["characters"].add(name)
+                merged["characters"].append({
+                    "name": name,
+                    "aliases": ch.get("aliases", []),
+                    "traits": ch.get("traits", "")[:500],
+                    "relationships": ch.get("relationships", []),
+                    "status": ch.get("status", "alive"),
+                    "importance": ch.get("importance", "normal"),
+                    "first_appearance": chapter_marker,
+                    "key_details": [_verify_verbatim(kd, content) for kd in ch.get("key_details", [])],
+                    "key_dialogues": [_verify_verbatim(kd, content) for kd in ch.get("key_dialogues", [])],
+                    "motivation": ch.get("motivation", "")[:200],
+                    "arc": ch.get("arc", "")[:200],
+                })
 
         # 合并地点
         for loc in data.get("locations", []):
             name = loc.get("name", "").strip()
-            if not name or name in seen_names["locations"]:
+            if not name:
                 continue
-            seen_names["locations"].add(name)
-            merged["locations"].append({
-                "name": name,
-                "description": loc.get("description", "")[:300],
-                "significance": loc.get("significance", "")[:200],
-                "first_appearance": chapter_marker,
-                "key_details": [_verify_verbatim(kd, content) for kd in loc.get("key_details", [])],
-                "atmosphere": loc.get("atmosphere", "")[:200],
-            })
+            if name in seen_names["locations"]:
+                # 更新已有地点
+                for existing in merged["locations"]:
+                    if existing["name"] == name:
+                        if loc.get("description"):
+                            existing["description"] = loc["description"][:300]
+                        if loc.get("significance"):
+                            existing["significance"] = loc["significance"][:200]
+                        _merge_list_dedup(existing["key_details"], [_verify_verbatim(kd, content) for kd in loc.get("key_details", [])])
+                        if loc.get("atmosphere"):
+                            existing["atmosphere"] = loc["atmosphere"][:200]
+                        break
+            else:
+                seen_names["locations"].add(name)
+                merged["locations"].append({
+                    "name": name,
+                    "description": loc.get("description", "")[:300],
+                    "significance": loc.get("significance", "")[:200],
+                    "first_appearance": chapter_marker,
+                    "key_details": [_verify_verbatim(kd, content) for kd in loc.get("key_details", [])],
+                    "atmosphere": loc.get("atmosphere", "")[:200],
+                })
 
         # 合并规则
         for rule in data.get("rules", []):
@@ -486,18 +525,37 @@ def extract_world_bible_from_segments(
         # 合并剧情线
         for pt in data.get("plot_threads", []):
             name = pt.get("name", "").strip()
-            if not name or name in seen_names["plot_threads"]:
+            if not name:
                 continue
-            seen_names["plot_threads"].add(name)
-            merged["plot_threads"].append({
-                "name": name,
-                "status": pt.get("status", "active"),
-                "importance": pt.get("importance", "normal"),
-                "involved_characters": pt.get("involved_characters", []),
-                "description": pt.get("description", "")[:300],
-                "key_details": [_verify_verbatim(kd, content) for kd in pt.get("key_details", [])],
-                "foreshadowing_related": [fr[:50] for fr in pt.get("foreshadowing_related", [])],
-            })
+            if name in seen_names["plot_threads"]:
+                # 更新已有剧情线
+                for existing in merged["plot_threads"]:
+                    if existing["name"] == name:
+                        if pt.get("status") in ("active", "resolved", "dormant"):
+                            existing["status"] = pt["status"]
+                        if pt.get("description"):
+                            existing["description"] = pt["description"][:300]
+                        for char in pt.get("involved_characters", []):
+                            if char and char not in existing["involved_characters"]:
+                                existing["involved_characters"].append(char)
+                        new_imp = pt.get("importance", "normal")
+                        imp_rank = {"major": 3, "normal": 2, "minor": 1}
+                        if imp_rank.get(new_imp, 0) > imp_rank.get(existing.get("importance", "normal"), 0):
+                            existing["importance"] = new_imp
+                        _merge_list_dedup(existing["key_details"], [_verify_verbatim(kd, content) for kd in pt.get("key_details", [])])
+                        _merge_list_dedup(existing["foreshadowing_related"], [fr[:50] for fr in pt.get("foreshadowing_related", [])])
+                        break
+            else:
+                seen_names["plot_threads"].add(name)
+                merged["plot_threads"].append({
+                    "name": name,
+                    "status": pt.get("status", "active"),
+                    "importance": pt.get("importance", "normal"),
+                    "involved_characters": pt.get("involved_characters", []),
+                    "description": pt.get("description", "")[:300],
+                    "key_details": [_verify_verbatim(kd, content) for kd in pt.get("key_details", [])],
+                    "foreshadowing_related": [fr[:50] for fr in pt.get("foreshadowing_related", [])],
+                })
 
         # 合并顶层字段
         for item in data.get("key_worldbuilding", []):
@@ -521,7 +579,7 @@ def extract_world_bible_from_segments(
                     "relates_to": item.get("relates_to", "")[:20],
                 })
 
-            chapter_marker += 1
+        chapter_marker += 1
 
     # === 跨段落合成（仅段数 >= 3 时触发） ===
     if len(all_segment_data) >= 3:

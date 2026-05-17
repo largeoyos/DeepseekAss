@@ -2724,7 +2724,12 @@ class DeepSeekChatGUI(QMainWindow):
             )
 
             user_prompt = "\n".join(user_parts)
-            messages = [{"role": "user", "content": user_prompt}]
+            messages = [{"role": "system", "content": Prompts.NOVEL_CHAPTER_WRITING}]
+            if bg_story:
+                messages.append({"role": "system", "content": f"【核心设定】\n{bg_story}"})
+            if protagonist_bio:
+                messages.append({"role": "system", "content": f"【人物背景】\n{protagonist_bio}"})
+            messages.append({"role": "user", "content": user_prompt})
 
             self._stream_signals.token.emit(
                 f"\n\n📝 正在续写第 {chapter_num} 章「{chapter_title}」...\n\n"
@@ -3445,12 +3450,13 @@ class DeepSeekChatGUI(QMainWindow):
 
             # 所有章节处理完成 → 从世界书生成小说设定
             si.token.emit(f"\n⏳ 正在从世界书生成小说设定……\n")
+            from dataclasses import asdict
             world_data_for_settings = {
-                "characters": world_bible.characters,
-                "locations": world_bible.locations,
-                "rules": world_bible.rules,
-                "plot_threads": world_bible.active_plot_threads,
-                "timeline": world_bible.timeline,
+                "characters": [asdict(c) for c in world_bible.characters],
+                "locations": [asdict(l) for l in world_bible.locations],
+                "rules": list(world_bible.rules),
+                "plot_threads": [asdict(p) for p in world_bible.active_plot_threads],
+                "timeline": [asdict(t) for t in world_bible.timeline],
             }
             settings = generate_novel_settings_from_world_bible(
                 client, world_data_for_settings, model,
