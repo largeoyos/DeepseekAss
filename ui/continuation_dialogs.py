@@ -591,8 +591,8 @@ class SectionPreviewDialog(QDialog):
     # ── 文件模式 ──
 
     def _init_file_mode(self, text: str):
-        """初始化文件模式：检测或 AI 分段"""
-        from utils.summarize import detect_sections, segment_by_ai
+        """初始化文件模式：检测或后台 AI 分段（永不阻塞主线程）"""
+        from utils.summarize import detect_sections
 
         sections = detect_sections(text)
         if sections:
@@ -602,32 +602,17 @@ class SectionPreviewDialog(QDialog):
                 "color: #8f8; font-size: 13px; padding: 6px 10px; "
                 "background: #2d3d2d; border-radius: 4px;"
             )
+            self._populate_sections()
         else:
+            # 先显示全文，再在后台线程调用 AI 分段（不阻塞 UI）
+            self._sections_data = [("全文", text)]
             self._status_label.setText("⏳ 未检测到段落划分，正在由 AI 自动分段…")
             self._status_label.setStyleSheet(
                 "color: #ff8; font-size: 13px; padding: 6px 10px; "
                 "background: #3d3d2d; border-radius: 4px;"
             )
-            from PyQt6.QtWidgets import QApplication
-            QApplication.processEvents()
-            try:
-                sections = segment_by_ai(self._client, text, self._model,
-                                         global_user_prompt=self._global_prompt)
-                self._sections_data = sections
-                self._status_label.setText("⚠️ 已由 AI 自动分段，请确认是否合理")
-                self._status_label.setStyleSheet(
-                    "color: #ff8; font-size: 13px; padding: 6px 10px; "
-                    "background: #3d3d2d; border-radius: 4px;"
-                )
-            except Exception as e:
-                self._sections_data = [("全文", text)]
-                self._status_label.setText(f"⚠️ AI 分段失败，将使用全文: {e}")
-                self._status_label.setStyleSheet(
-                    "color: #f88; font-size: 13px; padding: 6px 10px; "
-                    "background: #3d2d2d; border-radius: 4px;"
-                )
-
-        self._populate_sections()
+            self._populate_sections()
+            self._start_initial_segmentation()
 
     def _populate_sections(self):
         """用 self._sections_data 刷新列表"""
@@ -644,6 +629,26 @@ class SectionPreviewDialog(QDialog):
         if 0 <= row < len(self._sections_data):
             _, content = self._sections_data[row]
             self._preview_edit.setPlainText(content[:2000])
+
+    def _start_initial_segmentation(self):
+        """后台线程：首次 AI 自动分段（不阻塞 UI，不阻止确认）"""
+        text = self._get_full_text()
+        if not text or not self._client:
+            return
+
+        from utils.summarize import segment_by_ai
+
+        self._resegment_btn.setEnabled(False)
+
+        def _run():
+            try:
+                sections = segment_by_ai(self._client, text, self._model,
+                                         global_user_prompt=self._global_prompt)
+                self._resegment_finished.emit(sections, None)
+            except Exception as e:
+                self._resegment_finished.emit(None, str(e))
+
+        threading.Thread(target=_run, daemon=True).start()
 
     def _on_resegment(self):
         """AI 重新分段（后台线程，不阻塞 UI）"""

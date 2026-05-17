@@ -3558,6 +3558,21 @@ class DeepSeekChatGUI(QMainWindow):
         if self._streaming:
             return
 
+        try:
+            self._do_analyze_continuation()
+        except Exception as e:
+            import traceback
+            self._streaming = False
+            self._stop_btn.setVisible(False)
+            self._stop_btn.setEnabled(True)
+            self._mode_combo.setEnabled(True)
+            self._append_user_message(f"❌ 分析异常: {e}")
+            QMessageBox.critical(self, "分析异常", f"分析过程出现意外错误:\n{e}\n\n详细信息见聊天记录。")
+            self._stream_signals.token.emit(f"\n❌ 分析异常: {e}\n")
+            self._stream_signals.token.emit(f"\n```\n{traceback.format_exc()}\n```\n")
+
+    def _do_analyze_continuation(self) -> None:
+        """_on_analyze_continuation 的实际逻辑，外层有 try/except 保护"""
         source_text = self._read_continuation_source()
         if not source_text:
             QMessageBox.warning(self, "提示", "请先选择续写源文档或文件夹。")
