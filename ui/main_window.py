@@ -702,6 +702,49 @@ class DeepSeekChatGUI(QMainWindow):
         except Exception:
             return False
 
+    def _on_change_api_key(self) -> None:
+        """弹出对话框修改 API Key，验证后加密保存并更新客户端"""
+        key, ok = QInputDialog.getText(
+            self,
+            "修改 API Key",
+            "请输入新的 DeepSeek API Key：\n"
+            "（可在 https://platform.deepseek.com 获取）\n\n"
+            f"当前 Key: {Config.API_KEY[:12]}...{Config.API_KEY[-4:] if len(Config.API_KEY) > 16 else ''}",
+            text=Config.API_KEY,
+        )
+        if not ok or not key.strip():
+            return
+
+        key = key.strip()
+        if key == Config.API_KEY:
+            QMessageBox.information(self, "提示", "API Key 未变更。")
+            return
+
+        # 验证新 Key
+        if not self._verify_api_key(key):
+            QMessageBox.critical(
+                self, "验证失败",
+                "新的 API Key 验证失败，请检查后重试。\n"
+                "常见问题：\n"
+                "  - Key 已过期或未生效\n"
+                "  - 网络连接异常\n"
+                "  - Base URL 配置错误"
+            )
+            return
+
+        # 加密保存
+        old_key = Config.API_KEY
+        Config.API_KEY = key
+        self._save_encrypted_config(key, Config.BASE_URL)
+
+        # 更新客户端
+        self._client.raw_client.api_key = key
+
+        QMessageBox.information(
+            self, "修改成功",
+            "API Key 已更新并加密保存，下次启动自动加载。"
+        )
+
     # ========== 初始化 ==========
 
     def _init_client(self) -> None:
@@ -935,6 +978,27 @@ class DeepSeekChatGUI(QMainWindow):
         """)
         clear_btn.clicked.connect(self._on_clear)
         btn_layout.addWidget(clear_btn)
+
+        api_key_btn = QPushButton("🔑 修改 API Key")
+        api_key_btn.setStyleSheet("""
+            QPushButton {
+                background: #2a4a6b;
+                color: white;
+                border: 1px solid rgba(255, 255, 255, 0.15);
+                border-radius: 6px;
+                padding: 7px 16px;
+                font-weight: bold;
+            }
+            QPushButton:hover {
+                background: #3a6a8b;
+                border: 1px solid rgba(255, 255, 255, 0.3);
+            }
+            QPushButton:pressed {
+                background: #1a3a5b;
+            }
+        """)
+        api_key_btn.clicked.connect(self._on_change_api_key)
+        btn_layout.addWidget(api_key_btn)
 
         layout.addWidget(self._btn_group)
 
