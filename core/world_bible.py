@@ -7,6 +7,7 @@
 import difflib
 import json
 import os
+import re
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
@@ -322,6 +323,48 @@ EXTRACT_PROMPT = """你是一个小说信息深度提取专家。请严格根据
 """
 
 
+def _repair_json(text: str) -> str:
+    """修复 LLM 返回的常见 JSON 格式错误（中文标点、括号用错等）"""
+    # 中文引号/标点 → ASCII
+    text = text.replace('“', '"').replace('”', '"')
+    text = text.replace('，', ',').replace('：', ':')
+    text = text.replace('；', ';').replace('（', '(').replace('）', ')')
+
+    # 修复用圆括号代替花括号包裹对象: ("key" → {"key"
+    text = re.sub(r'\(\s*("(?:\\.|[^"\\])*"\s*:)', r'{\1', text)
+    # 修复对象闭合: 在 ,]} 前的 ) → }
+    text = re.sub(r'\)\s*(?=[,\}\]])', r'}', text)
+
+    return text
+
+
+def _repair_truncated_json(text: str) -> str:
+    """尝试修复被截断的 JSON：补齐末尾未闭合的数组/对象/字符串"""
+    # 找到最后一个完整闭合的 } 或 ]
+    stack = []
+    last_good_end = -1
+    for i, ch in enumerate(text):
+        if ch in '{[':
+            stack.append(ch)
+        elif ch == '}':
+            if stack and stack[-1] == '{':
+                stack.pop()
+                if not stack:
+                    last_good_end = i
+            else:
+                return text  # 括号不匹配，无法修复
+        elif ch == ']':
+            if stack and stack[-1] == '[':
+                stack.pop()
+                if not stack:
+                    last_good_end = i
+            else:
+                return text
+    if last_good_end > 0:
+        return text[:last_good_end + 1]
+    return text
+
+
 def extract_and_merge_world_bible(
     client,
     chapter_content: str,
@@ -375,30 +418,47 @@ def extract_and_merge_world_bible(
     if global_user_prompt.strip():
         user_content += f"\n\n用户偏好参考: {global_user_prompt}"
 
-    try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": user_content}],
-            max_tokens=4096,
-            temperature=0.1,
-        )
-        raw = response.choices[0].message.content or ""
-    except Exception as e:
-        raise RuntimeError(f"世界书提取 API 调用失败: {e}")
+    # 首次尝试，设较高的 max_tokens 避免截断
+    max_extract_tokens = 16384
+    last_error = None
 
-    # 解析 JSON
-    json_str = raw.strip()
-    if "```json" in json_str:
-        json_str = json_str.split("```json")[1].split("```")[0].strip()
-    elif "```" in json_str:
-        json_str = json_str.split("```")[1].split("```")[0].strip()
+    for attempt in range(2):
+        try:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": user_content}],
+                max_tokens=max_extract_tokens,
+                temperature=0.1,
+            )
+            raw = response.choices[0].message.content or ""
+        except Exception as e:
+            raise RuntimeError(f"世界书提取 API 调用失败: {e}")
 
-    try:
-        data = json.loads(json_str)
-    except json.JSONDecodeError:
-        raise RuntimeError(
-            f"世界书提取返回的 JSON 解析失败。原始响应 (前500字):\n{raw[:500]}"
-        )
+        # 解析 JSON
+        json_str = raw.strip()
+        if "```json" in json_str:
+            json_str = json_str.split("```json")[1].split("```")[0].strip()
+        elif "```" in json_str:
+            json_str = json_str.split("```")[1].split("```")[0].strip()
+
+        # 尝试修复并解析
+        for repair_step in [json_str, _repair_json(json_str), _repair_json(_repair_truncated_json(json_str))]:
+            try:
+                data = json.loads(repair_step)
+                break  # 解析成功
+            except json.JSONDecodeError:
+                continue
+        else:
+            # 全部修复尝试均失败
+            if attempt == 0:
+                # 首次失败 → 增大 max_tokens 重试
+                max_extract_tokens = 32768
+                user_content += "\n\n注意：请确保输出完整、合法的 JSON，不要被截断。"
+                continue
+            raise RuntimeError(
+                f"世界书提取返回的 JSON 解析失败。原始响应 (前500字):\n{raw[:500]}"
+            )
+        break  # 成功解析后跳出重试循环
 
     # === 合并角色 ===
     existing_names = {c.name for c in bible.characters}
