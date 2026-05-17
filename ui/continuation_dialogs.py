@@ -5,6 +5,7 @@
 
 import os
 import re
+import threading
 
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QTabWidget,
@@ -13,7 +14,7 @@ from PyQt6.QtWidgets import (
     QListWidget, QSplitter, QFrame, QAbstractItemView,
     QListWidgetItem,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, pyqtSignal
 
 SUGGESTION_PROMPT = """你是一位资深小说编辑。请根据以下完整世界观设定、待回收伏笔和剧情进展，为下一章提供 3-5 个发展方向建议。
 
@@ -475,6 +476,8 @@ class SectionPreviewDialog(QDialog):
         mode: "analyze" 或 "continue"
     """
 
+    _resegment_finished = pyqtSignal(object, object)  # (sections, error)
+
     def __init__(self, parent,
                  source_text: str | None = None,
                  folder_path: str | None = None,
@@ -498,6 +501,7 @@ class SectionPreviewDialog(QDialog):
         self.setWindowTitle("📑 段落划分预览")
         self.resize(750, 520)
         self.setModal(True)
+        self._resegment_finished.connect(self._on_resegment_done)
         self._build_ui()
 
         # 初始化数据
@@ -642,13 +646,12 @@ class SectionPreviewDialog(QDialog):
             self._preview_edit.setPlainText(content[:2000])
 
     def _on_resegment(self):
-        """AI 重新分段"""
+        """AI 重新分段（后台线程，不阻塞 UI）"""
         text = self._get_full_text()
         if not text:
             return
 
         from utils.summarize import segment_by_ai
-        from PyQt6.QtWidgets import QApplication
 
         self._status_label.setText("⏳ AI 正在重新分段…")
         self._status_label.setStyleSheet(
@@ -656,22 +659,34 @@ class SectionPreviewDialog(QDialog):
             "background: #3d3d2d; border-radius: 4px;"
         )
         self._resegment_btn.setEnabled(False)
-        QApplication.processEvents()
+        self._confirm_btn.setEnabled(False)
 
-        try:
-            sections = segment_by_ai(self._client, text, self._model,
-                                     global_user_prompt=self._global_prompt)
-            self._sections_data = sections
-            self._populate_sections()
-            self._status_label.setText(f"⚠️ AI 分段完成，共 {len(sections)} 个段落")
-        except Exception as e:
-            self._status_label.setText(f"❌ 重新分段失败: {e}")
+        def _run():
+            try:
+                sections = segment_by_ai(self._client, text, self._model,
+                                         global_user_prompt=self._global_prompt)
+                self._resegment_finished.emit(sections, None)
+            except Exception as e:
+                self._resegment_finished.emit(None, str(e))
+
+        threading.Thread(target=_run, daemon=True).start()
+
+    def _on_resegment_done(self, sections, error):
+        """主线程：处理重新分段结果"""
+        self._resegment_btn.setEnabled(True)
+        self._confirm_btn.setEnabled(True)
+
+        if error:
+            self._status_label.setText(f"❌ 重新分段失败: {error}")
             self._status_label.setStyleSheet(
                 "color: #f88; font-size: 13px; padding: 6px 10px; "
                 "background: #3d2d2d; border-radius: 4px;"
             )
-        finally:
-            self._resegment_btn.setEnabled(True)
+            return
+
+        self._sections_data = sections
+        self._populate_sections()
+        self._status_label.setText(f"⚠️ AI 分段完成，共 {len(sections)} 个段落")
 
     def _get_full_text(self) -> str:
         """获取当前正在处理的完整文本"""
