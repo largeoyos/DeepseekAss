@@ -62,19 +62,22 @@ class LoginDialog(QDialog):
         self._confirm_input.setVisible(False)
         layout.addWidget(self._confirm_input)
 
-        # 按钮
+        # 登录按钮
         btn_layout = QHBoxLayout()
         self._login_btn = QPushButton("登 录")
+        btn_layout.addWidget(self._login_btn)
+        layout.addLayout(btn_layout)
+
+        # 注册按钮（独立一行，仅在注册模式显示）
         self._register_btn = QPushButton("注 册")
+        self._register_btn.setVisible(False)
+        layout.addWidget(self._register_btn)
+
         self._switch_btn = QPushButton("没有账号？去注册")
         self._switch_btn.setStyleSheet(
             "QPushButton { color: #569cd6; border: none; }"
             "QPushButton:hover { color: #7fb8e8; }"
         )
-
-        btn_layout.addWidget(self._login_btn)
-        btn_layout.addWidget(self._register_btn)
-        layout.addLayout(btn_layout)
         layout.addWidget(self._switch_btn)
 
         # 信号
@@ -93,14 +96,14 @@ class LoginDialog(QDialog):
         if self._register_mode:
             self.setWindowTitle("DeepSeekAss - 注册")
             self._login_btn.setVisible(False)
-            self._register_btn.setText("注 册")
+            self._register_btn.setVisible(True)
             self._switch_btn.setText("已有账号？去登录")
             self._confirm_label.setVisible(True)
             self._confirm_input.setVisible(True)
         else:
             self.setWindowTitle("DeepSeekAss - 登录")
             self._login_btn.setVisible(True)
-            self._register_btn.setText("注 册")
+            self._register_btn.setVisible(False)
             self._switch_btn.setText("没有账号？去注册")
             self._confirm_label.setVisible(False)
             self._confirm_input.setVisible(False)

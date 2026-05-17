@@ -195,8 +195,12 @@ class ConversationManager:
         """删除指定对话"""
         file_path = self._find_file(conversation_id)
         if file_path:
-            os.remove(file_path)
-            return True
+            try:
+                actual_path = self._encrypt_path(file_path)
+                os.remove(actual_path)
+                return True
+            except OSError:
+                return False
         return False
 
     # ========== 生成 ID ==========
@@ -218,5 +222,5 @@ class ConversationManager:
             return base
         base_enc = base + ".enc"
         if os.path.exists(base_enc):
-            return base  # 返回无 .enc 路径，read/write 会正确处理
+            return base  # 返回无 .enc 路径，read/write/delete 会通过 _encrypt_path 处理
         return None

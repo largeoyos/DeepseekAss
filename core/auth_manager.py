@@ -8,6 +8,8 @@
 import base64
 import json
 import os
+import shutil
+import uuid
 from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
@@ -85,9 +87,11 @@ class AuthManager:
         enc_key = base64.urlsafe_b64encode(full_key[32:])
 
         users = AuthManager._load_users()
+        dir_id = uuid.uuid4().hex[:12]
         users[username] = {
             "salt": base64.b16encode(salt).decode(),
             "auth_hash": auth_hash,
+            "dir_id": dir_id,
         }
         AuthManager._save_users(users)
 
@@ -125,12 +129,34 @@ class AuthManager:
             return False, None
 
         enc_key = base64.urlsafe_b64encode(full_key[32:])
+
+        # 旧用户迁移：分配 dir_id，将用户数据移到 UUID 目录
+        if "dir_id" not in record:
+            dir_id = uuid.uuid4().hex[:12]
+            old_dir = os.path.join(USERS_DIR, AuthManager._safe_name(username))
+            new_dir = os.path.join(USERS_DIR, dir_id)
+            if os.path.isdir(old_dir) and old_dir != new_dir:
+                os.makedirs(os.path.dirname(new_dir), exist_ok=True)
+                shutil.move(old_dir, new_dir)
+            record["dir_id"] = dir_id
+            AuthManager._save_users(users)
+
         return True, enc_key
 
     @staticmethod
     def get_user_dir(username: str) -> str:
-        """获取用户数据目录路径"""
-        return os.path.join(USERS_DIR, username)
+        """获取用户数据目录路径（使用 dir_id，而非用户名原文）"""
+        users = AuthManager._load_users()
+        record = users.get(username)
+        if record and "dir_id" in record:
+            return os.path.join(USERS_DIR, record["dir_id"])
+        # 兜底：旧格式用户或无 dir_id
+        return os.path.join(USERS_DIR, AuthManager._safe_name(username))
+
+    @staticmethod
+    def _safe_name(name: str) -> str:
+        """安全的文件/目录名"""
+        return name.replace("/", "-").replace("\\", "-").replace(":", "：")
 
     @staticmethod
     def _derive_full_key(password: str, salt: bytes) -> bytes:

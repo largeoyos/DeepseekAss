@@ -7,7 +7,7 @@ Slider values are pre-scaled integers matching the GUI controls:
 PRESETS = {
     "保守": {"temp": 30, "top_p": 50, "fp": 30, "max_tokens": 32768},
     "中庸": {"temp": 70, "top_p": 90, "fp": 0, "max_tokens": 32768},
-    "狂野": {"temp": 150, "top_p": 100, "fp": -30, "max_tokens": 32768},
+    "狂野": {"temp": 90, "top_p": 100, "fp": 10, "max_tokens": 32768},
 }
 
 CUSTOM_LABEL = "自定义"

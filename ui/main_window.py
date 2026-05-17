@@ -387,8 +387,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._auth = AuthManager()
 
         # 初始化管理器（用户独立路径 + 加密）
-        users_base = os.path.join(os.path.dirname(os.path.dirname(__file__)), "users")
-        user_dir = os.path.join(users_base, self._username)
+        user_dir = self._auth.get_user_dir(self._username)
         os.makedirs(os.path.join(user_dir, "conversations"), exist_ok=True)
         os.makedirs(os.path.join(user_dir, "bookshelf"), exist_ok=True)
 
@@ -422,6 +421,9 @@ class DeepSeekChatGUI(QMainWindow):
         if loaded_prompt:
             self._client.global_user_prompt = loaded_prompt  # type: ignore[union-attr]
 
+        # Step 3.5: 检测旧目录数据并提示迁移
+        self._try_migrate_old_data()
+
         # Step 4: 构建 UI
         self._init_ui()
         self._preset_combo.setCurrentText("狂野")
@@ -432,8 +434,7 @@ class DeepSeekChatGUI(QMainWindow):
 
     def _encrypted_config_path(self) -> str:
         """用户加密配置路径"""
-        users_base = os.path.join(os.path.dirname(os.path.dirname(__file__)), "users")
-        return os.path.join(users_base, self._username, "config.enc")
+        return os.path.join(self._auth.get_user_dir(self._username), "config.enc")
 
     def _load_encrypted_config(self) -> tuple[str, str]:
         """从加密存储加载 API Key 和 Base URL"""
@@ -454,8 +455,195 @@ class DeepSeekChatGUI(QMainWindow):
 
     def _user_prefs_path(self) -> str:
         """用户加密偏好文件路径"""
-        users_base = os.path.join(os.path.dirname(os.path.dirname(__file__)), "users")
-        return os.path.join(users_base, self._username, "user_prefs.enc")
+        return os.path.join(self._auth.get_user_dir(self._username), "user_prefs.enc")
+
+    # ========== 旧数据迁移 ==========
+
+    def _try_migrate_old_data(self) -> None:
+        """检测旧目录有无明文数据，提示用户加密导入"""
+        from core.novel_manager import BOOKSHELF_DIR, NovelManager
+        from core.conversation_manager import CONVERSATIONS_DIR, ConversationManager
+
+        old_bookshelf = BOOKSHELF_DIR
+        old_conversations = CONVERSATIONS_DIR
+
+        has_books = (
+            os.path.isdir(old_bookshelf)
+            and any(
+                os.path.isdir(os.path.join(old_bookshelf, d))
+                for d in os.listdir(old_bookshelf)
+            )
+        )
+        has_convs = (
+            os.path.isdir(old_conversations)
+            and any(f.endswith(".json") for f in os.listdir(old_conversations))
+        )
+        if not has_books and not has_convs:
+            return
+
+        # 不重复导入（仅当用户数据已完整包含旧数据时跳过）
+        user_bookshelf = os.path.join(self._auth.get_user_dir(self._username), "bookshelf")
+        user_convs = os.path.join(self._auth.get_user_dir(self._username), "conversations")
+
+        old_book_set = {
+            d for d in os.listdir(old_bookshelf)
+            if os.path.isdir(os.path.join(old_bookshelf, d))
+        }
+        user_book_set = {
+            d for d in os.listdir(user_bookshelf)
+            if os.path.isdir(os.path.join(user_bookshelf, d))
+        } if os.path.isdir(user_bookshelf) else set()
+        old_conv_count = len(
+            [f for f in os.listdir(old_conversations) if f.endswith(".json")]
+        ) if os.path.isdir(old_conversations) else 0
+        user_conv_count = len(
+            [f for f in os.listdir(user_convs) if f.endswith((".json", ".json.enc"))]
+        ) if os.path.isdir(user_convs) else 0
+
+        # 旧数据全部已迁移 → 跳过
+        if old_book_set.issubset(user_book_set) and old_conv_count == user_conv_count:
+            return
+
+        # 仅迁移缺失的部分
+        missing_books = old_book_set - user_book_set
+        missing_convs = old_conv_count > user_conv_count
+
+        # 弹窗确认
+        parts = []
+        if missing_books:
+            parts.append(f"📚 {len(missing_books)} 部小说")
+        if missing_convs:
+            parts.append(f"💬 {old_conv_count} 个对话")
+
+        reply = QMessageBox.question(
+            self, "发现旧数据",
+            f"检测到旧目录中存在明文数据：\n{'、'.join(parts)}\n\n"
+            f"是否将这些数据加密导入到用户「{self._username}」的目录？\n"
+            "（旧数据不会被删除，仅复制加密到新位置）",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.Yes,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        # ---- 准备未加密管理器读取旧数据 ----
+        old_nm = NovelManager(bookshelf_root=old_bookshelf)
+        old_cm = ConversationManager(root_dir=old_conversations)
+        migrated_books = 0
+        migrated_convs = 0
+
+        # ---- 迁移对话 ----
+        if missing_convs:
+            for meta in old_cm.list_conversations():
+                try:
+                    data = old_cm.load_conversation(meta.conversation_id)
+                    if not data:
+                        continue
+                    self._conversation_manager.save_conversation(
+                        conversation_id=data.get("conversation_id", meta.conversation_id),
+                        title=data.get("title", ""),
+                        model=data.get("model", ""),
+                        messages=data.get("messages", []),
+                        character_description=data.get("character_description", ""),
+                        story_background=data.get("story_background", ""),
+                        strategy=data.get("strategy", ""),
+                        reply_mode=data.get("reply_mode", ""),
+                    )
+                    migrated_convs += 1
+                except Exception as e:
+                    print(f"[迁移] 对话迁移失败: {e}")
+
+        # ---- 迁移书架 ----
+        if missing_books:
+            for book_title in sorted(missing_books):
+                try:
+                    self._novel_manager.create_book(book_title)
+                    old_meta = old_nm.load_meta(book_title)
+
+                    # 迁移元信息
+                    self._novel_manager.save_meta(
+                        book_title,
+                        author=old_meta.author,
+                        protagonist_bio=old_meta.protagonist_bio,
+                        background_story=old_meta.background_story,
+                        writing_demand=old_meta.writing_demand,
+                        created_at=old_meta.created_at,
+                        updated_at=old_meta.updated_at,
+                        total_chapters=old_meta.total_chapters,
+                        chapter_titles=old_meta.chapter_titles,
+                        chapter_versions=old_meta.chapter_versions,
+                        compressed_early_summary=old_meta.compressed_early_summary,
+                    )
+
+                    # 迁移章节内容
+                    chapters = old_nm.list_chapters(book_title)
+                    for ch in chapters:
+                        for v_info in ch.get("versions", []):
+                            try:
+                                content = old_nm.read_chapter_version(
+                                    book_title, ch["num"], v_info["v"]
+                                )
+                                if content:
+                                    self._novel_manager.save_chapter_version(
+                                        book_title, ch["num"], v_info["title"],
+                                        content, version=v_info["v"],
+                                    )
+                            except Exception as e:
+                                print(f"[迁移] 章节 {book_title} ch{ch['num']} v{v_info['v']} 失败: {e}")
+
+                        # 恢复活跃版本
+                        active_v = ch.get("active_version")
+                        if active_v:
+                            self._novel_manager.set_active_version(
+                                book_title, ch["num"], active_v
+                            )
+
+                    # 迁移摘要
+                    summary = old_nm.load_summary(book_title)
+                    if summary and summary != "故事刚刚开始。":
+                        self._novel_manager._write_encrypted_text(
+                            self._novel_manager._summary_path(book_title), summary
+                        )
+
+                    # 迁移世界书
+                    try:
+                        wb = old_nm.load_world_bible(book_title)
+                        if wb is not None:
+                            self._novel_manager.save_world_bible(book_title, wb)
+                    except Exception:
+                        pass
+
+                    # 迁移生成历史
+                    for rec in old_nm.load_generation_history(book_title):
+                        try:
+                            self._novel_manager.save_generation_record(
+                                title=book_title,
+                                chapter_num=rec.get("chapter_num", 0),
+                                chapter_title=rec.get("chapter_title", ""),
+                                version=rec.get("version", 1),
+                                prompt=rec.get("prompt", ""),
+                                model=rec.get("model", ""),
+                                temperature=rec.get("temperature", 0.7),
+                                top_p=rec.get("top_p", 1.0),
+                                max_tokens=rec.get("max_tokens", 4096),
+                                frequency_penalty=rec.get("frequency_penalty", 0.0),
+                                content_preview=rec.get("content_preview", ""),
+                                requirement=rec.get("requirement", ""),
+                                plot=rec.get("plot", ""),
+                            )
+                        except Exception as e:
+                            print(f"[迁移] 历史记录迁移失败: {e}")
+
+                    migrated_books += 1
+                except Exception as e:
+                    print(f"[迁移] 小说「{book_title}」迁移失败: {e}")
+
+        QMessageBox.information(
+            self, "导入完成",
+            f"数据迁移完成！\n"
+            f"已导入 {migrated_books} 部小说、{migrated_convs} 个对话到用户「{self._username}」。\n\n"
+            "旧目录中的明文数据未被删除，如需移除请手动删除。"
+        )
 
     # ========== API Key ==========
 
@@ -977,7 +1165,6 @@ class DeepSeekChatGUI(QMainWindow):
         self._protagonist_edit.setPlaceholderText("描述主角背景、性格、外貌...")
         self._protagonist_edit.setMaximumHeight(80)
         self._protagonist_edit.setMinimumHeight(60)
-        self._protagonist_edit.textChanged.connect(self._on_protagonist_changed)
         layout.addWidget(self._protagonist_edit)
 
         # ── 世界观/背景 ──
@@ -987,7 +1174,6 @@ class DeepSeekChatGUI(QMainWindow):
         self._background_edit.setPlaceholderText("描述世界观、时代背景、核心设定...")
         self._background_edit.setMaximumHeight(80)
         self._background_edit.setMinimumHeight(60)
-        self._background_edit.textChanged.connect(self._on_background_changed)
         layout.addWidget(self._background_edit)
 
         # ── 写作要求 ──
@@ -997,7 +1183,6 @@ class DeepSeekChatGUI(QMainWindow):
         self._demand_edit.setPlaceholderText("本章具体写作要求（风格、节奏、必须包含的元素...）")
         self._demand_edit.setMaximumHeight(60)
         self._demand_edit.setMinimumHeight(48)
-        self._demand_edit.textChanged.connect(self._on_demand_changed)
         layout.addWidget(self._demand_edit)
 
         # ── 用户全局提示词 ──
@@ -1237,7 +1422,6 @@ class DeepSeekChatGUI(QMainWindow):
         self._cont_protagonist_edit.setPlaceholderText("描述主角背景、性格、外貌...")
         self._cont_protagonist_edit.setMaximumHeight(80)
         self._cont_protagonist_edit.setMinimumHeight(60)
-        self._cont_protagonist_edit.textChanged.connect(self._on_cont_protagonist_changed)
         layout.addWidget(self._cont_protagonist_edit)
 
         bg_label = QLabel("🌍 世界观 / 背景故事")
@@ -1246,7 +1430,6 @@ class DeepSeekChatGUI(QMainWindow):
         self._cont_background_edit.setPlaceholderText("描述世界观、时代背景、核心设定...")
         self._cont_background_edit.setMaximumHeight(80)
         self._cont_background_edit.setMinimumHeight(60)
-        self._cont_background_edit.textChanged.connect(self._on_cont_background_changed)
         layout.addWidget(self._cont_background_edit)
 
         demand_label = QLabel("✍️ 写作要求")
@@ -1255,7 +1438,6 @@ class DeepSeekChatGUI(QMainWindow):
         self._cont_demand_edit.setPlaceholderText("本章具体写作要求（风格、节奏、必须包含的元素...）")
         self._cont_demand_edit.setMaximumHeight(60)
         self._cont_demand_edit.setMinimumHeight(48)
-        self._cont_demand_edit.textChanged.connect(self._on_cont_demand_changed)
         layout.addWidget(self._cont_demand_edit)
 
         # ── 用户全局提示词 ──
@@ -1784,6 +1966,29 @@ class DeepSeekChatGUI(QMainWindow):
         if strategy_cls is None:
             return
 
+        # 检查是否有未保存的对话内容
+        if not self._loading_conversation:
+            messages = self._client.export_messages()
+            has_content = any(m.get("role") in ("user", "assistant") for m in messages)
+            if has_content:
+                msg_box = QMessageBox(self)
+                msg_box.setWindowTitle("切换模式")
+                msg_box.setText("当前对话未保存，切换模式将丢失对话内容。")
+                msg_box.setInformativeText("是否先保存再切换？")
+                btn_save = msg_box.addButton("保存并切换", QMessageBox.ButtonRole.AcceptRole)
+                btn_discard = msg_box.addButton("不保存，直接切换", QMessageBox.ButtonRole.DestructiveRole)
+                btn_cancel = msg_box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+                msg_box.setDefaultButton(btn_save)
+                msg_box.exec()
+                clicked = msg_box.clickedButton()
+                if clicked == btn_cancel or clicked is None:
+                    self._mode_combo.blockSignals(True)
+                    self._mode_combo.setCurrentText(self._last_mode)
+                    self._mode_combo.blockSignals(False)
+                    return
+                if clicked == btn_save:
+                    self._on_save_conversation()
+
         self._last_mode = text
         strategy = strategy_cls()
         self._client.switch_strategy(strategy)
@@ -1898,6 +2103,8 @@ class DeepSeekChatGUI(QMainWindow):
     def _on_clear(self) -> None:
         self._client.clear_context()
         self._display.setHtml(INITIAL_HTML)
+        self._current_conversation_id = None
+        self._current_conversation_title = ""
 
     def _update_status(self) -> None:
         self._status_label.setText(
@@ -2016,9 +2223,9 @@ class DeepSeekChatGUI(QMainWindow):
             self._bookshelf_combo.setCurrentText(title.strip())
 
     def _on_delete_book(self) -> None:
-        """删除选中的小说"""
-        current = self._get_current_book_title()
-        if not current:
+        """删除选中的小说（小说面板）"""
+        current = self._bookshelf_combo.currentText()
+        if not current or current.startswith("（暂无小说"):
             return
         reply = QMessageBox.question(
             self,
@@ -2027,7 +2234,10 @@ class DeepSeekChatGUI(QMainWindow):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
-            self._novel_manager.delete_book(current)
+            ok = self._novel_manager.delete_book(current)
+            if not ok:
+                QMessageBox.warning(self, "删除失败", f"无法删除小说「{current}」，请检查文件权限。")
+                return
             self._refresh_novel_bookshelf()
             self._on_book_selected(self._bookshelf_combo.currentText())
 
@@ -2112,35 +2322,6 @@ class DeepSeekChatGUI(QMainWindow):
     def _on_chapter_title_changed(self, text: str) -> None:
         if isinstance(self._client.strategy, NovelStrategy):
             self._client.strategy.chapter_title = text.strip()
-
-    def _auto_save_novel_settings(self) -> None:
-        """自动保存当前小说的设定到 meta.json"""
-        title = self._novel_title_edit.text().strip()
-        if not title or title.startswith("（暂无小说"):
-            return
-        # 确保小说目录存在
-        self._novel_manager.create_book(title)
-        self._novel_manager.save_meta(
-            title,
-            protagonist_bio=self._protagonist_edit.toPlainText().strip(),
-            background_story=self._background_edit.toPlainText().strip(),
-            writing_demand=self._demand_edit.toPlainText().strip(),
-        )
-
-    def _on_protagonist_changed(self) -> None:
-        if isinstance(self._client.strategy, NovelStrategy):
-            self._client.strategy.protagonist_bio = self._protagonist_edit.toPlainText().strip()
-            self._auto_save_novel_settings()
-
-    def _on_background_changed(self) -> None:
-        if isinstance(self._client.strategy, NovelStrategy):
-            self._client.strategy.background_story = self._background_edit.toPlainText().strip()
-            self._auto_save_novel_settings()
-
-    def _on_demand_changed(self) -> None:
-        if isinstance(self._client.strategy, NovelStrategy):
-            self._client.strategy.writing_demand = self._demand_edit.toPlainText().strip()
-            self._auto_save_novel_settings()
 
     def _on_chapter_mode_toggled(self, checked: bool) -> None:
         if isinstance(self._client.strategy, NovelStrategy):
@@ -2268,33 +2449,12 @@ class DeepSeekChatGUI(QMainWindow):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
-            self._novel_manager.delete_book(title)
+            ok = self._novel_manager.delete_book(title)
+            if not ok:
+                QMessageBox.warning(self, "删除失败", f"无法删除小说「{title}」，请检查文件权限。")
+                return
             self._refresh_novel_bookshelf()
             self._on_cont_book_selected(self._cont_bookshelf_combo.currentText())
-
-    def _on_cont_protagonist_changed(self) -> None:
-        """续写面板：主角设定变更 → 自动保存"""
-        title = self._get_current_book_title()
-        if title:
-            self._novel_manager.save_meta(
-                title, protagonist_bio=self._cont_protagonist_edit.toPlainText().strip()
-            )
-
-    def _on_cont_background_changed(self) -> None:
-        """续写面板：背景变更 → 自动保存"""
-        title = self._get_current_book_title()
-        if title:
-            self._novel_manager.save_meta(
-                title, background_story=self._cont_background_edit.toPlainText().strip()
-            )
-
-    def _on_cont_demand_changed(self) -> None:
-        """续写面板：写作要求变更 → 自动保存"""
-        title = self._get_current_book_title()
-        if title:
-            self._novel_manager.save_meta(
-                title, writing_demand=self._cont_demand_edit.toPlainText().strip()
-            )
 
     def _on_cont_chapter_mode_toggled(self, checked: bool) -> None:
         """续写面板：章节模式切换"""
@@ -2374,6 +2534,14 @@ class DeepSeekChatGUI(QMainWindow):
         self._streaming = True
         self._assistant_text_buffer = []
         self._append_user_message(f"📝 续写「{book_title}」→ 第{chapter_num}章「{chapter_title}」")
+
+        # 保存当前设定到 meta.json
+        self._novel_manager.save_meta(
+            book_title,
+            protagonist_bio=self._cont_protagonist_edit.toPlainText().strip(),
+            background_story=self._cont_background_edit.toPlainText().strip(),
+            writing_demand=self._cont_demand_edit.toPlainText().strip(),
+        )
 
         threading.Thread(
             target=self._run_continuation,
@@ -2498,6 +2666,15 @@ class DeepSeekChatGUI(QMainWindow):
             self._client.strategy.protagonist_bio = self._protagonist_edit.toPlainText().strip()
             self._client.strategy.background_story = self._background_edit.toPlainText().strip()
             self._client.strategy.writing_demand = self._demand_edit.toPlainText().strip()
+
+        # 保存当前设定到 meta.json
+        self._novel_manager.create_book(title)
+        self._novel_manager.save_meta(
+            title,
+            protagonist_bio=self._protagonist_edit.toPlainText().strip(),
+            background_story=self._background_edit.toPlainText().strip(),
+            writing_demand=self._demand_edit.toPlainText().strip(),
+        )
 
         self._append_user_message(f"📖 生成第{self._novel_manager.get_next_chapter_num(title)}章：{chapter_title}")
 
@@ -2877,6 +3054,14 @@ class DeepSeekChatGUI(QMainWindow):
 
         notice = f"续写「{os.path.basename(source_file) if source_file else os.path.basename(source_folder)}」→ 第{chapter_num}章"
         self._append_user_message(notice)
+
+        # 保存当前设定到 meta.json
+        self._novel_manager.save_meta(
+            book_title,
+            protagonist_bio=self._cont_protagonist_edit.toPlainText().strip(),
+            background_story=self._cont_background_edit.toPlainText().strip(),
+            writing_demand=self._cont_demand_edit.toPlainText().strip(),
+        )
 
         threading.Thread(
             target=self._run_continuation,
@@ -4364,8 +4549,24 @@ class DeepSeekChatGUI(QMainWindow):
 
         title = title.strip()
         if self._current_conversation_id:
-            # 更新已有对话
-            conversation_id = self._current_conversation_id
+            # 已有对话：让用户选择更新还是另存为新
+            old_title = self._current_conversation_title or "未命名"
+            msg_box = QMessageBox(self)
+            msg_box.setWindowTitle("保存对话")
+            msg_box.setText(f"当前已绑定对话「{old_title}」")
+            msg_box.setInformativeText("更新已有对话，还是另存为新对话？")
+            btn_update = msg_box.addButton("更新已有", QMessageBox.ButtonRole.AcceptRole)
+            btn_new = msg_box.addButton("另存为新", QMessageBox.ButtonRole.ActionRole)
+            btn_cancel = msg_box.addButton("取消", QMessageBox.ButtonRole.RejectRole)
+            msg_box.setDefaultButton(btn_update)
+            msg_box.exec()
+            clicked = msg_box.clickedButton()
+            if clicked == btn_cancel or clicked is None:
+                return
+            if clicked == btn_new:
+                conversation_id = self._conversation_manager.generate_id(title)
+            else:
+                conversation_id = self._current_conversation_id
         else:
             # 新建对话
             conversation_id = self._conversation_manager.generate_id(title)
@@ -4502,7 +4703,15 @@ class DeepSeekChatGUI(QMainWindow):
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         if reply == QMessageBox.StandardButton.Yes:
-            self._conversation_manager.delete_conversation(conversation_id)
+            try:
+                ok = self._conversation_manager.delete_conversation(conversation_id)
+                if not ok:
+                    QMessageBox.warning(self, "删除失败", f"找不到对话文件，可能已被删除。")
+                    self._refresh_history_list()
+                    return
+            except Exception as e:
+                QMessageBox.critical(self, "删除失败", f"删除对话时出错：{e}")
+                return
             if self._current_conversation_id == conversation_id:
                 self._current_conversation_id = None
                 self._current_conversation_title = ""

@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import re
+import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
 
@@ -56,6 +57,8 @@ class NovelMeta:
     chapter_versions: dict[str, dict] = field(default_factory=dict)
     # 早期章节压缩缓存：{ "compressed_early": "..." }
     compressed_early_summary: str = ""
+    # 加密模式下的小说唯一标识（UUID 目录名）
+    book_id: str = ""
 
     def __post_init__(self):
         """加载时归一化：确保字符串字段不是 list（兼容 LLM 返回 JSON 数组的情况）"""
@@ -73,6 +76,8 @@ class NovelManager:
         self._bookshelf_root = bookshelf_root or BOOKSHELF_DIR
         self._crypto = crypto
         self._enc_key = enc_key
+        # 书名 → UUID 目录名缓存（仅加密模式使用）
+        self._book_cache: dict[str, str] | None = None
         os.makedirs(self._bookshelf_root, exist_ok=True)
 
     # ========== 加密文件 I/O 辅助 ==========
@@ -127,29 +132,107 @@ class NovelManager:
         """检查加密文件是否存在"""
         return os.path.exists(self._encrypt_path(path))
 
+    # ========== 加密模式下的书名 → 目录映射 ==========
+
+    def _rebuild_book_cache(self) -> None:
+        """扫描书架目录，重建 书名→UUID 缓存（仅加密模式）"""
+        self._book_cache = {}
+        if not os.path.isdir(self._bookshelf_root):
+            return
+        for d in os.listdir(self._bookshelf_root):
+            dir_path = os.path.join(self._bookshelf_root, d)
+            if not os.path.isdir(dir_path):
+                continue
+            # 读取 meta 获取真实书名
+            meta_path = os.path.join(dir_path, "meta.json")
+            try:
+                meta = self._read_encrypted_json(meta_path)
+                if meta and "title" in meta:
+                    self._book_cache[meta["title"]] = d
+            except Exception:
+                continue
+
+    def _invalidate_book_cache(self) -> None:
+        """清除缓存，下次读取时重建"""
+        self._book_cache = None
+
+    def _book_dir(self, title: str) -> str:
+        """
+        返回小说目录路径
+
+        非加密模式：使用安全化的书名作为目录名
+        加密模式：使用 UUID（新建时生成）或旧式书名（迁移数据）
+        """
+        if self._enc_key is None:
+            safe = title.replace("/", "-").replace("\\", "-").replace(":", "：")
+            return os.path.join(self._bookshelf_root, safe)
+
+        # 加密模式：从缓存查找 UUID
+        if self._book_cache is None:
+            self._rebuild_book_cache()
+        cached = self._book_cache.get(title)
+        if cached:
+            return os.path.join(self._bookshelf_root, cached)
+
+        # 新书（尚未有 UUID）或不命中 → 用旧式书名路径作为兜底
+        safe = title.replace("/", "-").replace("\\", "-").replace(":", "：")
+        return os.path.join(self._bookshelf_root, safe)
+
     # ========== 书架操作 ==========
 
     def list_books(self) -> list[str]:
-        """列出书架上所有小说（目录名）"""
+        """列出书架上所有小说"""
         if not os.path.isdir(self._bookshelf_root):
             return []
-        return sorted(
-            d for d in os.listdir(self._bookshelf_root)
-            if os.path.isdir(os.path.join(self._bookshelf_root, d))
-        )
+        if self._enc_key is None:
+            # 非加密模式：直接用目录名
+            return sorted(
+                d for d in os.listdir(self._bookshelf_root)
+                if os.path.isdir(os.path.join(self._bookshelf_root, d))
+            )
+        # 加密模式：通过缓存获取真实书名
+        if self._book_cache is None:
+            self._rebuild_book_cache()
+        titles = [t for t in (self._book_cache or {}) if self._book_cache.get(t)]
+        # 补充缓存中不存在的目录（旧式书名目录）
+        cached_dirs = set(self._book_cache.values())
+        for d in os.listdir(self._bookshelf_root):
+            if d in cached_dirs:
+                continue
+            if os.path.isdir(os.path.join(self._bookshelf_root, d)):
+                # 尝试从 meta 读取（可能旧用户未在缓存中）
+                meta_path = os.path.join(self._bookshelf_root, d, "meta.json")
+                try:
+                    meta = self._read_encrypted_json(meta_path)
+                    if meta and "title" in meta:
+                        titles.append(meta["title"])
+                        self._book_cache[meta["title"]] = d
+                except Exception:
+                    titles.append(d)  # 读不到时用目录名
+        return sorted(titles)
 
     def create_book(self, title: str) -> str:
         """创建新小说目录，返回该书的目录路径"""
-        book_dir = self._book_dir(title)
+        book_id: str | None = None
+        if self._enc_key is not None:
+            # 加密模式：使用 UUID 作为目录名
+            book_id = uuid.uuid4().hex[:12]
+            book_dir = os.path.join(self._bookshelf_root, book_id)
+            if self._book_cache is None:
+                self._book_cache = {}
+            self._book_cache[title] = book_id
+        else:
+            book_dir = self._book_dir(title)
         os.makedirs(book_dir, exist_ok=True)
 
         meta_path = self._meta_path(title)
         if self._encrypted_file_exists(meta_path):
-            # 已有 meta，不覆盖（防止丢失章节版本等已有数据）
+            # 已有 meta，不覆盖
             meta = self.load_meta(title)
         else:
             meta = NovelMeta(
                 title=title,
+                book_id=book_id or "",
                 created_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
                 updated_at=datetime.now().strftime("%Y-%m-%d %H:%M"),
             )
@@ -163,38 +246,47 @@ class NovelManager:
     def delete_book(self, title: str) -> bool:
         """删除小说及其所有章节，不可恢复"""
         book_dir = self._book_dir(title)
-        if os.path.isdir(book_dir):
+        if not os.path.isdir(book_dir):
+            return False
+        try:
             shutil.rmtree(book_dir)
-            return True
-        return False
+        except OSError as e:
+            print(f"[错误] 删除小说目录失败: {e}")
+            return False
+        # 验证目录确实已删除
+        if os.path.isdir(book_dir):
+            return False
+        self._invalidate_book_cache()
+        return True
 
     def rename_book(self, old_title: str, new_title: str) -> bool:
-        """重命名小说，重命名目录并更新 meta.json 中的 title"""
+        """重命名小说，更新 meta.json 中的 title（加密模式下不重命名目录）"""
         old_dir = self._book_dir(old_title)
-        new_dir = self._book_dir(new_title)
         if not os.path.isdir(old_dir):
             return False
-        if os.path.isdir(new_dir):
-            return False
-        os.rename(old_dir, new_dir)
-        # 更新 meta.json 中的 title 字段
-        meta_path = os.path.join(new_dir, "meta.json")
-        if self._crypto is not None:
-            meta_path = meta_path + ".enc"
-        if os.path.exists(meta_path):
+
+        if self._enc_key is None:
+            # 非加密模式：重命名目录
+            new_dir = self._book_dir(new_title)
+            if os.path.isdir(new_dir):
+                return False
+            os.rename(old_dir, new_dir)
+            meta_path = os.path.join(new_dir, "meta.json")
+        else:
+            # 加密模式：目录名是 UUID，不变，只更新 meta
+            meta_path = os.path.join(old_dir, "meta.json")
+            if self._book_cache is not None:
+                self._book_cache[new_title] = self._book_cache.pop(old_title, "")
+            else:
+                self._invalidate_book_cache()
+
+        enc_meta_path = meta_path + ".enc" if self._enc_key else meta_path
+        if os.path.exists(enc_meta_path):
             try:
-                if self._enc_key is not None:
-                    meta = self._crypto.decrypt_json(self._enc_key, meta_path)
-                else:
-                    with open(meta_path, "r", encoding="utf-8") as f:
-                        meta = json.load(f)
+                meta = self._read_encrypted_json(meta_path)
                 if meta is not None:
                     meta["title"] = new_title
-                    if self._enc_key is not None:
-                        self._crypto.encrypt_json(self._enc_key, meta_path, meta)
-                    else:
-                        with open(meta_path, "w", encoding="utf-8") as f:
-                            json.dump(meta, f, ensure_ascii=False, indent=2)
+                    self._write_encrypted_json(meta_path, meta)
             except Exception:
                 pass
         return True
@@ -842,10 +934,6 @@ class NovelManager:
         return "\n".join(lines)
 
     # ========== 内部辅助 ==========
-
-    def _book_dir(self, title: str) -> str:
-        safe = title.replace("/", "-").replace("\\", "-").replace(":", "：")
-        return os.path.join(self._bookshelf_root, safe)
 
     def _meta_path(self, title: str) -> str:
         return os.path.join(self._book_dir(title), "meta.json")
