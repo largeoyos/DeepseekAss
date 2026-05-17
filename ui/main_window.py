@@ -2479,19 +2479,19 @@ class DeepSeekChatGUI(QMainWindow):
                     except Exception as supp_e:
                         self._stream_signals.token.emit(f"⚠️ 补充过程出错: {supp_e}\n")
 
-                # 更新世界书
-                self._stream_signals.token.emit("📖 正在更新世界书...\n")
-                try:
-                    from core.world_bible import extract_and_merge_world_bible
-                    bible = self._novel_manager.load_world_bible(title)
-                    updated_bible = extract_and_merge_world_bible(
-                        self._client.raw_client, content, chapter_num, bible, self._client.model,
-                        global_user_prompt=self._client.global_user_prompt
-                    )
-                    self._novel_manager.save_world_bible(title, updated_bible)
-                    self._stream_signals.token.emit("✅ 世界书已更新。\n")
-                except Exception as wb_e:
-                    self._stream_signals.token.emit(f"⚠️ 世界书更新跳过: {wb_e}\n")
+            # 更新世界书
+            self._stream_signals.token.emit("\n📖 正在更新世界书...\n")
+            try:
+                from core.world_bible import extract_and_merge_world_bible
+                bible = self._novel_manager.load_world_bible(title)
+                updated_bible = extract_and_merge_world_bible(
+                    self._client.raw_client, content, chapter_num, bible, self._client.model,
+                    global_user_prompt=self._client.global_user_prompt
+                )
+                self._novel_manager.save_world_bible(title, updated_bible)
+                self._stream_signals.token.emit("✅ 世界书已更新。\n")
+            except Exception as wb_e:
+                self._stream_signals.token.emit(f"⚠️ 世界书更新跳过: {wb_e}\n")
 
             self._refresh_chapter_info_display(title)
             next_ch = self._novel_manager.get_next_chapter_num(title)
@@ -3723,6 +3723,19 @@ class DeepSeekChatGUI(QMainWindow):
                         self._book_title, chapter_num, chapter_title, content,
                         version=new_version,
                     )
+
+                    # 更新世界书
+                    try:
+                        from core.world_bible import extract_and_merge_world_bible
+                        bible = self._novel_mgr.load_world_bible(self._book_title)
+                        updated_bible = extract_and_merge_world_bible(
+                            self._client.raw_client, content, chapter_num, bible,
+                            self._client.model,
+                            global_user_prompt=self._client.global_user_prompt,
+                        )
+                        self._novel_mgr.save_world_bible(self._book_title, updated_bible)
+                    except Exception:
+                        pass
 
                     self._regenerate_done_signal.emit(chapter_num, saved_version, file_path)
 

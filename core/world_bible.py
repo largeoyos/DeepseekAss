@@ -361,8 +361,8 @@ def extract_and_merge_world_bible(
             temperature=0.1,
         )
         raw = response.choices[0].message.content or ""
-    except Exception:
-        return bible
+    except Exception as e:
+        raise RuntimeError(f"世界书提取 API 调用失败: {e}")
 
     # 解析 JSON
     json_str = raw.strip()
@@ -374,7 +374,9 @@ def extract_and_merge_world_bible(
     try:
         data = json.loads(json_str)
     except json.JSONDecodeError:
-        return bible
+        raise RuntimeError(
+            f"世界书提取返回的 JSON 解析失败。原始响应 (前500字):\n{raw[:500]}"
+        )
 
     # === 合并角色 ===
     existing_names = {c.name for c in bible.characters}
