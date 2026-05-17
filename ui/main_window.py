@@ -2743,7 +2743,11 @@ class DeepSeekChatGUI(QMainWindow):
             main_sys = (
                 "你是一位文笔细腻、想象力丰富的长篇小说作家。直接输出小说正文，"
                 "绝对不要添加任何解释、前言、章节概括或作者的话。"
-                f"本章字数不少于{target_words}字，要求情节饱满、细节丰富、场景描写生动。"
+                f"本章字数不少于{target_words}字，务必通过以下方式充实内容："
+                "① 扩展场景的环境细节（光线、声音、气味、氛围）；"
+                "② 增加角色之间的对话交互和微表情、肢体语言描写；"
+                "③ 深入刻画角色的内心活动和情绪变化；"
+                "④ 充实动作场面和过程细节，避免一笔带过。"
                 "开头用悬念或场景快速切入，结尾适当留悬念。"
                 "严格按照用户提供的【核心设定】和【人物背景】保持一致性。"
             )
@@ -3153,7 +3157,8 @@ class DeepSeekChatGUI(QMainWindow):
                 user_parts.append(f"【用户偏好提示】: \n{global_prompt}\n")
 
             user_parts.append(
-                f"请直接输出续写正文，不要加任何解释或前言。字数不少于{word_count}字。"
+                f"请直接输出续写正文，不要加任何解释或前言。"
+                f"字数不少于{word_count}字，请通过扩展场景细节、增加对话交互、深入刻画内心活动来充实内容。"
             )
 
             user_prompt = "\n".join(user_parts)
@@ -4313,8 +4318,11 @@ class DeepSeekChatGUI(QMainWindow):
                         req = record.get("requirement", "") or ""
                         plot = record.get("plot", "") or ""
 
+                    from utils.prompts import Prompts
+                    target_words = parent._chapter_word_count.value()
+
                     messages = [
-                        {"role": "system", "content": "你是一位文笔细腻、想象力丰富的小说家。直接输出重写后的小说正文，不要加任何解释、前言或后记。保持与原章节一致的风格和质量水准，严格按照用户提供的【核心设定】和【人物背景】。"},
+                        {"role": "system", "content": Prompts.NOVEL_CHAPTER_WRITING},
                     ]
                     if bg:
                         messages.append({"role": "system", "content": f"【核心设定】：\n{bg}"})
@@ -4358,7 +4366,7 @@ class DeepSeekChatGUI(QMainWindow):
                         )
                     if global_prompt.strip():
                         user_parts.append(f"【用户偏好提示】: \n{global_prompt}\n")
-                    user_parts.append(f"请直接输出第 {chapter_num} 章正文：")
+                    user_parts.append(f"请直接输出第 {chapter_num} 章正文。字数不少于{target_words}字，通过丰富环境细节、增加对话交互和内心描写来充实内容。")
                     messages.append({"role": "user", "content": "\n".join(user_parts)})
 
                     response = self._client.raw_client.chat.completions.create(
