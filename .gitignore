@@ -36,3 +36,4 @@ TODOLIST.md
 build.bat
 build.spec
 build.ps1
+.env.example
