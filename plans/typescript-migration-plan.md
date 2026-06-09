@@ -363,6 +363,27 @@ DB: deepseek-assistant
 
 使用 `idb-keyval` 库（~1KB）封装 IndexedDB 操作，比直接使用 IndexedDB API 简洁得多。
 
+### 多标签页冲突处理
+
+浏览器多标签页同时操作 IndexedDB 可能产生数据覆盖。使用以下机制保证一致性：
+
+1. **BroadcastChannel API 跨标签协调**：同源下所有标签页通过 `BroadcastChannel('db-sync')` 广播写操作。其他标签页收到通知后重新拉取受影响的 key，保持 UI 同步。
+
+2. **乐观锁 (版本戳)**：每个数据对象附加 `_version: number`，每次写入前检查版本号：
+   ```typescript
+   async function writeWithLock<T>(key: IDBValidKey, data: T, currentVersion: number): Promise<boolean> {
+     const existing = await db.get<T & { _version: number }>(key);
+     if (existing && existing._version !== currentVersion) return false; // 冲突
+     data._version = (currentVersion || 0) + 1;
+     await db.set(key, data);
+     return true;
+   }
+   ```
+
+3. **Stale 数据检测**：Zustand store 中注册 `visibilitychange` 事件，标签页从后台切换回前台时重新拉取关键数据（书架列表、当前章节），对比版本戳。
+
+4. **冲突 UI**：写入冲突时不静默覆盖，弹 soft-modal 提示用户选择："保留当前 / 使用其他标签页的版本 / 手动合并"。
+
 ---
 
 ## 4. 加密与本地认证方案
