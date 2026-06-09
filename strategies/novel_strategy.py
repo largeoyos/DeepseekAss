@@ -7,6 +7,7 @@
 """
 from .base_strategy import BaseStrategy
 from utils.prompts import Prompts
+from utils.genre_styles import get_genre_by_key, get_tone_by_key
 from config import Config
 
 
@@ -23,6 +24,9 @@ class NovelStrategy(BaseStrategy):
         self._writing_demand: str = ""
         # 是否使用小说章节模式（而非自由对话）
         self._chapter_mode: bool = False
+        # 题材与风格基调
+        self._genre: str = ""
+        self._style_tone: str = ""
 
     # ========== 小说参数 getter/setter ==========
 
@@ -74,6 +78,36 @@ class NovelStrategy(BaseStrategy):
     def chapter_mode(self, value: bool) -> None:
         self._chapter_mode = value
 
+    # ========== 题材与风格基调 ==========
+
+    @property
+    def genre(self) -> str:
+        return self._genre
+
+    @genre.setter
+    def genre(self, value: str) -> None:
+        self._genre = value
+
+    @property
+    def style_tone(self) -> str:
+        return self._style_tone
+
+    @style_tone.setter
+    def style_tone(self, value: str) -> None:
+        self._style_tone = value
+
+    @property
+    def genre_style_text(self) -> str:
+        """组装【风格设定】文本，供注入 prompt"""
+        parts = []
+        cfg = get_genre_by_key(self._genre)
+        if cfg and cfg.style_instruction:
+            parts.append(f"题材方向（{cfg.display_name}）：{cfg.style_instruction}")
+        tone = get_tone_by_key(self._style_tone)
+        if tone and tone.style_instruction:
+            parts.append(f"写作基调（{tone.display_name}）：{tone.style_instruction}")
+        return "\n".join(parts)
+
     # ========== 策略接口 ==========
 
     def get_name(self) -> str:
@@ -119,7 +153,7 @@ class NovelStrategy(BaseStrategy):
 
     def build_system_messages(self) -> list[dict]:
         """
-        构建多层 System Message 列表（核心设定 + 人物背景）
+        构建多层 System Message 列表（核心设定 + 人物背景 + 风格设定）
 
         Returns:
             包含多个 system role dict 的列表
@@ -134,5 +168,11 @@ class NovelStrategy(BaseStrategy):
             messages.append({
                 "role": "system",
                 "content": f"【人物背景】：\n{self._protagonist_bio}",
+            })
+        style_text = self.genre_style_text
+        if style_text:
+            messages.append({
+                "role": "system",
+                "content": f"【风格设定】\n{style_text}",
             })
         return messages

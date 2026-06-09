@@ -1,0 +1,126 @@
+"""
+题材与风格基调配置模块
+双维度风格选择：题材（决定内容边界）+ 风格基调（决定文笔气质）
+"""
+
+from dataclasses import dataclass
+from typing import Optional
+
+
+@dataclass
+class GenreConfig:
+    """题材配置"""
+    key: str
+    display_name: str
+    style_instruction: str
+    temperature: float | None = None
+    frequency_penalty: float | None = None
+
+
+@dataclass
+class ToneConfig:
+    """风格基调配置"""
+    key: str
+    display_name: str
+    style_instruction: str
+
+
+# ========== 题材定义 ==========
+
+GENRES: list[GenreConfig] = [
+    GenreConfig("xianhuan", "玄幻/仙侠",
+                "世界观宏大，修炼体系完整，力量等级分明。注重意境描写、功法对决、境界突破的刻画。",
+                temperature=0.85, frequency_penalty=0.4),
+    GenreConfig("qihuan", "奇幻",
+                "西式奇幻或异世界背景，魔法、种族、神话体系自洽。注重场景氛围和冒险感。",
+                temperature=0.85, frequency_penalty=0.4),
+    GenreConfig("sci_fi", "科幻",
+                "逻辑严谨，科技设定自洽，避免魔法式解释。注重未来感、技术细节和科学推理。",
+                temperature=0.75, frequency_penalty=0.5),
+    GenreConfig("history", "历史/架空",
+                "尊重时代背景，语言符合历史语境，避免现代语病。注重历史厚重感和考据细节。",
+                temperature=0.70, frequency_penalty=0.6),
+    GenreConfig("urban", "都市/现代",
+                "贴近现实生活，对话自然，社会逻辑合理。注重人物关系和日常氛围。",
+                temperature=0.80, frequency_penalty=0.5),
+    GenreConfig("suspense", "悬疑/惊悚",
+                "节奏紧凑，伏笔回收严密，逻辑链完整。注重悬念营造和反转设计。",
+                temperature=0.70, frequency_penalty=0.3),
+    GenreConfig("wuxia", "武侠",
+                "招式描写细腻，侠义精神贯穿，江湖规矩自洽。注重打斗场面和门派恩怨。",
+                temperature=0.80, frequency_penalty=0.4),
+    GenreConfig("romance", "言情",
+                "情感细腻，心理描写丰富，CP互动自然。注重情绪张力和暧昧氛围。",
+                temperature=0.90, frequency_penalty=0.3),
+    GenreConfig("mo_app", "末世/生存",
+                "生存压力贯穿始终，资源管理真实，人性抉择深刻。注重紧张感和环境描写。",
+                temperature=0.80, frequency_penalty=0.4),
+    GenreConfig("horror", "恐怖",
+                "氛围营造优先，心理压迫感强，留白恰当。注重暗示而非直白描写。",
+                temperature=0.75, frequency_penalty=0.2),
+    GenreConfig("light_novel", "轻小说",
+                "轻松诙谐，对话占比高，吐槽自然。注重角色反差萌和阅读节奏感。",
+                temperature=0.90, frequency_penalty=0.3),
+    GenreConfig("erotic", "色情",
+                "情感铺垫到位，暧昧氛围渲染充分，感官描写细腻。注重情感渐进和氛围。",
+                temperature=0.90, frequency_penalty=0.2),
+    GenreConfig("none", "无特定风格",
+                "",
+                temperature=None, frequency_penalty=None),
+]
+
+# ========== 风格基调定义 ==========
+
+STYLE_TONES: list[ToneConfig] = [
+    ToneConfig("default", "默认", ""),
+    ToneConfig("light", "轻快",
+               "行文节奏明快，对话俏皮，避免沉重描写。适当加入幽默元素。"),
+    ToneConfig("serious", "严肃",
+               "行文庄重克制，避免轻浮表达。注重逻辑和现实感。"),
+    ToneConfig("literary", "文青/文艺",
+               "文字优美，善用比喻和意象，注重氛围渲染和留白。避免直白叙述。"),
+    ToneConfig("dark", "暗黑",
+               "基调压抑，人性阴暗面刻画深刻，不回避残酷描写。注重心理压迫。"),
+    ToneConfig("passionate", "热血",
+               "情绪激昂，节奏紧凑，打斗/对决场面富有张力。注重爆发力和感染力。"),
+    ToneConfig("erotic", "色情",
+               "情感铺垫到位，暧昧氛围渲染充分，感官描写细腻。注重氛围渐进。"),
+]
+
+# ========== 查询函数 ==========
+
+_genre_by_display: dict[str, GenreConfig] = {g.display_name: g for g in GENRES}
+_genre_by_key: dict[str, GenreConfig] = {g.key: g for g in GENRES}
+_tone_by_display: dict[str, ToneConfig] = {t.display_name: t for t in STYLE_TONES}
+_tone_by_key: dict[str, ToneConfig] = {t.key: t for t in STYLE_TONES}
+
+GENRE_DISPLAY_NAMES: list[str] = [g.display_name for g in GENRES]
+TONE_DISPLAY_NAMES: list[str] = [t.display_name for t in STYLE_TONES]
+
+
+def get_genre_by_display(name: str) -> GenreConfig | None:
+    return _genre_by_display.get(name)
+
+
+def get_genre_by_key(key: str) -> GenreConfig | None:
+    return _genre_by_key.get(key)
+
+
+def get_tone_by_display(name: str) -> ToneConfig | None:
+    return _tone_by_display.get(name)
+
+
+def get_tone_by_key(key: str) -> ToneConfig | None:
+    return _tone_by_key.get(key)
+
+
+def get_genre_display(key: str) -> str:
+    """根据 key 返回显示名，未找到返回空字符串"""
+    cfg = get_genre_by_key(key)
+    return cfg.display_name if cfg else ""
+
+
+def get_tone_display(key: str) -> str:
+    """根据 key 返回显示名，未找到返回空字符串"""
+    cfg = get_tone_by_key(key)
+    return cfg.display_name if cfg else ""

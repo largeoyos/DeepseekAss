@@ -49,6 +49,8 @@ class NovelMeta:
     protagonist_bio: str = ""
     background_story: str = ""
     writing_demand: str = ""
+    genre: str = ""        # 题材 key（对应 utils.genre_styles.GENRES）
+    style_tone: str = ""   # 风格基调 key（对应 utils.genre_styles.STYLE_TONES）
     created_at: str = ""
     updated_at: str = ""
     total_chapters: int = 0

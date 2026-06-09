@@ -12,6 +12,7 @@ import os
 import re
 import sys
 import threading
+import time
 
 from PyQt6.QtCore import Qt, pyqtSignal, QObject
 from PyQt6.QtWidgets import (
@@ -68,6 +69,12 @@ from ui.continuation_dialogs import (
     analyze_source_text, suggest_directions,
     ContinuationAnalysisDialog, DirectionSelectionDialog,
     SectionPreviewDialog,
+)
+from utils.genre_styles import (
+    GENRE_DISPLAY_NAMES, TONE_DISPLAY_NAMES,
+    get_genre_by_display, get_genre_by_key,
+    get_tone_by_display, get_tone_by_key,
+    get_genre_display, get_tone_display,
 )
 
 
@@ -361,6 +368,9 @@ class DeepSeekChatGUI(QMainWindow):
         # 累积的文本（用于流式追加）
         self._assistant_text_buffer: list[str] = []
         self._streaming = False
+        self._streaming_start_time = 0.0
+        # 章节渲染完成标志（防止 JS 异步渲染前触发下一章）
+        self._chapter_finalized = True
         # 正在加载对话（阻止模式切换时覆盖显示）
         self._loading_conversation = False
         # 参数预设守卫：预设驱动滑块时阻止 handler 切回"自定义"
@@ -1222,6 +1232,32 @@ class DeepSeekChatGUI(QMainWindow):
         self._chapter_mode_check.toggled.connect(self._on_chapter_mode_toggled)
         layout.addWidget(self._chapter_mode_check)
 
+        # ── 题材与风格基调 ──
+        style_group = QGroupBox("🎨 题材与风格")
+        style_layout = QVBoxLayout(style_group)
+        style_layout.setContentsMargins(4, 4, 4, 4)
+        style_layout.setSpacing(4)
+
+        genre_row = QHBoxLayout()
+        genre_row.setContentsMargins(0, 0, 0, 0)
+        genre_row.addWidget(QLabel("题材"))
+        self._novel_genre_combo = QComboBox()
+        self._novel_genre_combo.addItems(GENRE_DISPLAY_NAMES)
+        self._novel_genre_combo.currentTextChanged.connect(self._on_novel_genre_changed)
+        genre_row.addWidget(self._novel_genre_combo, stretch=1)
+        style_layout.addLayout(genre_row)
+
+        tone_row = QHBoxLayout()
+        tone_row.setContentsMargins(0, 0, 0, 0)
+        tone_row.addWidget(QLabel("风格"))
+        self._novel_tone_combo = QComboBox()
+        self._novel_tone_combo.addItems(TONE_DISPLAY_NAMES)
+        self._novel_tone_combo.currentTextChanged.connect(self._on_novel_tone_changed)
+        tone_row.addWidget(self._novel_tone_combo, stretch=1)
+        style_layout.addLayout(tone_row)
+
+        layout.addWidget(style_group)
+
         # ── 主角设定 ──
         protag_label = QLabel("👤 主角设定")
         layout.addWidget(protag_label)
@@ -1290,10 +1326,15 @@ class DeepSeekChatGUI(QMainWindow):
         word_row.addWidget(self._chapter_word_count, stretch=1)
         layout.addLayout(word_row)
 
+        self._chapter_auto_supplement = QCheckBox("字数不足时自动扩写")
+        self._chapter_auto_supplement.setChecked(True)
+        self._chapter_auto_supplement.setStyleSheet("color: #aaa; font-size: 12px;")
+        layout.addWidget(self._chapter_auto_supplement)
+
         # ── 生成章节按钮 ──
-        generate_btn = QPushButton("🚀 生成下一章")
-        generate_btn.setMinimumHeight(40)
-        generate_btn.setStyleSheet("""
+        self._generate_btn = QPushButton("🚀 生成下一章")
+        self._generate_btn.setMinimumHeight(40)
+        self._generate_btn.setStyleSheet("""
             QPushButton {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                     stop:0 #7a4a9c, stop:1 #9a6abc);
@@ -1314,9 +1355,14 @@ class DeepSeekChatGUI(QMainWindow):
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                     stop:0 #6a3a8c, stop:1 #8a5aac);
             }
+            QPushButton:disabled {
+                background: #444;
+                color: #888;
+                border: 1px solid #555;
+            }
         """)
-        generate_btn.clicked.connect(self._on_generate_chapter)
-        layout.addWidget(generate_btn)
+        self._generate_btn.clicked.connect(self._on_generate_chapter)
+        layout.addWidget(self._generate_btn)
 
         # ── 保存/加载设定按钮 ──
         save_settings_row = QHBoxLayout()
@@ -1473,6 +1519,32 @@ class DeepSeekChatGUI(QMainWindow):
         self._cont_chapter_mode_check.toggled.connect(self._on_cont_chapter_mode_toggled)
         layout.addWidget(self._cont_chapter_mode_check)
 
+        # ── 题材与风格基调 ──
+        cont_style_group = QGroupBox("🎨 题材与风格")
+        cont_style_layout = QVBoxLayout(cont_style_group)
+        cont_style_layout.setContentsMargins(4, 4, 4, 4)
+        cont_style_layout.setSpacing(4)
+
+        cont_genre_row = QHBoxLayout()
+        cont_genre_row.setContentsMargins(0, 0, 0, 0)
+        cont_genre_row.addWidget(QLabel("题材"))
+        self._cont_genre_combo = QComboBox()
+        self._cont_genre_combo.addItems(GENRE_DISPLAY_NAMES)
+        self._cont_genre_combo.currentTextChanged.connect(self._on_cont_genre_changed)
+        cont_genre_row.addWidget(self._cont_genre_combo, stretch=1)
+        cont_style_layout.addLayout(cont_genre_row)
+
+        cont_tone_row = QHBoxLayout()
+        cont_tone_row.setContentsMargins(0, 0, 0, 0)
+        cont_tone_row.addWidget(QLabel("风格"))
+        self._cont_tone_combo = QComboBox()
+        self._cont_tone_combo.addItems(TONE_DISPLAY_NAMES)
+        self._cont_tone_combo.currentTextChanged.connect(self._on_cont_tone_changed)
+        cont_tone_row.addWidget(self._cont_tone_combo, stretch=1)
+        cont_style_layout.addLayout(cont_tone_row)
+
+        layout.addWidget(cont_style_group)
+
         # ================================================================
         # ③ 小说设定（新增，复用小说模式设计）
         # ================================================================
@@ -1574,6 +1646,11 @@ class DeepSeekChatGUI(QMainWindow):
         word_row.addWidget(self._continue_word_count, stretch=1)
         layout.addLayout(word_row)
 
+        self._continue_auto_supplement = QCheckBox("字数不足时自动扩写")
+        self._continue_auto_supplement.setChecked(True)
+        self._continue_auto_supplement.setStyleSheet("color: #aaa; font-size: 12px;")
+        layout.addWidget(self._continue_auto_supplement)
+
         # 续写剧情（可选）
         plot_label = QLabel("续写剧情（可选）")
         layout.addWidget(plot_label)
@@ -1607,9 +1684,9 @@ class DeepSeekChatGUI(QMainWindow):
         layout.addLayout(plot_helper_row)
 
         # ── 生成下一章按钮 ──
-        cont_generate_btn = QPushButton("🚀 生成下一章")
-        cont_generate_btn.setMinimumHeight(40)
-        cont_generate_btn.setStyleSheet("""
+        self._cont_generate_btn = QPushButton("🚀 生成下一章")
+        self._cont_generate_btn.setMinimumHeight(40)
+        self._cont_generate_btn.setStyleSheet("""
             QPushButton {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                     stop:0 #7a4a9c, stop:1 #9a6abc);
@@ -1630,9 +1707,14 @@ class DeepSeekChatGUI(QMainWindow):
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:1,
                     stop:0 #6a3a8c, stop:1 #8a5aac);
             }
+            QPushButton:disabled {
+                background: #444;
+                color: #888;
+                border: 1px solid #555;
+            }
         """)
-        cont_generate_btn.clicked.connect(self._on_cont_generate_chapter)
-        layout.addWidget(cont_generate_btn)
+        self._cont_generate_btn.clicked.connect(self._on_cont_generate_chapter)
+        layout.addWidget(self._cont_generate_btn)
 
         # ── 导出 ──
         export_label = QLabel("导出")
@@ -2372,12 +2454,26 @@ class DeepSeekChatGUI(QMainWindow):
             f"已有 {len(chapters)} 章，下一章编号: 第{next_ch}章"
         )
 
+        # 同步题材/风格到下拉框
+        genre_display = get_genre_display(meta.genre)
+        tone_display = get_tone_display(meta.style_tone)
+        self._novel_genre_combo.blockSignals(True)
+        self._novel_genre_combo.setCurrentText(genre_display or "无特定风格")
+        self._novel_genre_combo.blockSignals(False)
+        self._novel_tone_combo.blockSignals(True)
+        self._novel_tone_combo.setCurrentText(tone_display or "默认")
+        self._novel_tone_combo.blockSignals(False)
+        # 同步到续写面板
+        self._sync_genre_tone_to_cont()
+
         # 同步到策略
         if isinstance(self._client.strategy, NovelStrategy):
             self._client.strategy.novel_title = title
             self._client.strategy.protagonist_bio = meta.protagonist_bio
             self._client.strategy.background_story = meta.background_story
             self._client.strategy.writing_demand = meta.writing_demand
+            self._client.strategy.genre = meta.genre
+            self._client.strategy.style_tone = meta.style_tone
 
     def _on_novel_title_changed(self, text: str) -> None:
         if isinstance(self._client.strategy, NovelStrategy):
@@ -2399,6 +2495,101 @@ class DeepSeekChatGUI(QMainWindow):
                 self._append_user_message(
                     "💬 **自由对话模式** — 可随意交流写作问题"
                 )
+
+    # ========== 题材与风格基调 Handler ==========
+
+    def _apply_genre_params(self, display_name: str) -> None:
+        """根据题材显示名设置推荐参数（temperature / frequency_penalty）"""
+        cfg = get_genre_by_display(display_name)
+        if cfg is None:
+            return
+        changed = False
+        if cfg.temperature is not None:
+            self._client.set_temperature(cfg.temperature)
+            int_val = int(cfg.temperature * 100)
+            self._temp_slider.setValue(int_val)
+            self._temp_value.setText(f"{cfg.temperature:.2f}")
+            changed = True
+        if cfg.frequency_penalty is not None:
+            self._client.set_frequency_penalty(cfg.frequency_penalty)
+            int_val = int(cfg.frequency_penalty * 100)
+            self._fp_slider.setValue(int_val)
+            self._fp_value.setText(f"{cfg.frequency_penalty:.2f}")
+            changed = True
+        if changed:
+            self._preset_combo.setCurrentText(CUSTOM_LABEL)
+
+    def _sync_genre_tone_to_cont(self) -> None:
+        """将小说面板的题材/风格同步到续写面板（blockSignals 防递归）"""
+        self._cont_genre_combo.blockSignals(True)
+        self._cont_genre_combo.setCurrentText(self._novel_genre_combo.currentText())
+        self._cont_genre_combo.blockSignals(False)
+        self._cont_tone_combo.blockSignals(True)
+        self._cont_tone_combo.setCurrentText(self._novel_tone_combo.currentText())
+        self._cont_tone_combo.blockSignals(False)
+
+    def _sync_genre_tone_to_novel(self) -> None:
+        """将续写面板的题材/风格同步到小说面板（blockSignals 防递归）"""
+        self._novel_genre_combo.blockSignals(True)
+        self._novel_genre_combo.setCurrentText(self._cont_genre_combo.currentText())
+        self._novel_genre_combo.blockSignals(False)
+        self._novel_tone_combo.blockSignals(True)
+        self._novel_tone_combo.setCurrentText(self._cont_tone_combo.currentText())
+        self._novel_tone_combo.blockSignals(False)
+
+    def _on_novel_genre_changed(self, display_name: str) -> None:
+        if not display_name:
+            return
+        cfg = get_genre_by_display(display_name)
+        if cfg is None:
+            return
+        # 同步到 strategy
+        if isinstance(self._client.strategy, NovelStrategy):
+            self._client.strategy.genre = cfg.key
+        # 同步参数滑块
+        self._apply_genre_params(display_name)
+        # 同步到续写面板
+        self._sync_genre_tone_to_cont()
+        # 持久化
+        title = self._novel_title_edit.text().strip()
+        if title:
+            self._novel_manager.save_meta(title, genre=cfg.key)
+
+    def _on_novel_tone_changed(self, display_name: str) -> None:
+        if not display_name:
+            return
+        tone = get_tone_by_display(display_name)
+        if tone is None:
+            return
+        if isinstance(self._client.strategy, NovelStrategy):
+            self._client.strategy.style_tone = tone.key
+        self._sync_genre_tone_to_cont()
+        title = self._novel_title_edit.text().strip()
+        if title:
+            self._novel_manager.save_meta(title, style_tone=tone.key)
+
+    def _on_cont_genre_changed(self, display_name: str) -> None:
+        if not display_name:
+            return
+        cfg = get_genre_by_display(display_name)
+        if cfg is None:
+            return
+        self._apply_genre_params(display_name)
+        self._sync_genre_tone_to_novel()
+        book_title = self._cont_bookshelf_combo.currentText()
+        if book_title:
+            self._novel_manager.save_meta(book_title, genre=cfg.key)
+
+    def _on_cont_tone_changed(self, display_name: str) -> None:
+        if not display_name:
+            return
+        tone = get_tone_by_display(display_name)
+        if tone is None:
+            return
+        self._sync_genre_tone_to_novel()
+        book_title = self._cont_bookshelf_combo.currentText()
+        if book_title:
+            self._novel_manager.save_meta(book_title, style_tone=tone.key)
 
     def _on_edit_global_prompt(self) -> None:
         """打开编辑对话框，编辑用户全局提示词"""
@@ -2465,6 +2656,17 @@ class DeepSeekChatGUI(QMainWindow):
         self._cont_demand_edit.blockSignals(True)
         self._cont_demand_edit.setPlainText(meta.writing_demand)
         self._cont_demand_edit.blockSignals(False)
+
+        # 同步题材/风格到下拉框
+        genre_display = get_genre_display(meta.genre)
+        tone_display = get_tone_display(meta.style_tone)
+        self._cont_genre_combo.blockSignals(True)
+        self._cont_genre_combo.setCurrentText(genre_display or "无特定风格")
+        self._cont_genre_combo.blockSignals(False)
+        self._cont_tone_combo.blockSignals(True)
+        self._cont_tone_combo.setCurrentText(tone_display or "默认")
+        self._cont_tone_combo.blockSignals(False)
+        self._sync_genre_tone_to_novel()
 
         # 同步分析上下文，使左侧面板的 AI 建议 / 我指定剧情按钮可用
         self._cont_analysis_settings = {
@@ -2564,7 +2766,7 @@ class DeepSeekChatGUI(QMainWindow):
 
     def _on_cont_generate_chapter(self) -> None:
         """续写面板：生成下一章"""
-        if self._streaming:
+        if self._streaming or not self._chapter_finalized:
             return
 
         book_title = self._get_current_book_title()
@@ -2590,12 +2792,16 @@ class DeepSeekChatGUI(QMainWindow):
         plot = self._continue_plot.toPlainText().strip()
         chapter_num = self._novel_manager.get_next_chapter_num(book_title)
 
+        self._chapter_finalized = False
+        self._generate_btn.setEnabled(False)
+        self._cont_generate_btn.setEnabled(False)
         self._client.reset_cancel()
         self._stop_btn.setVisible(True)
         self._stop_btn.setEnabled(True)
         self._stop_btn.setText("⏹")
         self._mode_combo.setEnabled(False)
         self._streaming = True
+        self._streaming_start_time = time.time()
         self._assistant_text_buffer = []
         self._append_user_message(f"📝 续写「{book_title}」→ 第{chapter_num}章「{chapter_title}」")
 
@@ -2651,12 +2857,16 @@ class DeepSeekChatGUI(QMainWindow):
         if not title:
             QMessageBox.warning(self, "提示", "请先设置小说标题。")
             return
+        genre_cfg = get_genre_by_display(self._novel_genre_combo.currentText())
+        tone_cfg = get_tone_by_display(self._novel_tone_combo.currentText())
         self._novel_manager.create_book(title)
         self._novel_manager.save_meta(
             title,
             protagonist_bio=self._protagonist_edit.toPlainText().strip(),
             background_story=self._background_edit.toPlainText().strip(),
             writing_demand=self._demand_edit.toPlainText().strip(),
+            genre=genre_cfg.key if genre_cfg else "",
+            style_tone=tone_cfg.key if tone_cfg else "",
         )
         self._refresh_novel_bookshelf()
         self._bookshelf_combo.setCurrentText(title)
@@ -2665,6 +2875,8 @@ class DeepSeekChatGUI(QMainWindow):
             self._client.strategy.protagonist_bio = self._protagonist_edit.toPlainText().strip()
             self._client.strategy.background_story = self._background_edit.toPlainText().strip()
             self._client.strategy.writing_demand = self._demand_edit.toPlainText().strip()
+            self._client.strategy.genre = genre_cfg.key if genre_cfg else ""
+            self._client.strategy.style_tone = tone_cfg.key if tone_cfg else ""
         QMessageBox.information(self, "成功", f"小说「{title}」的设定已保存。")
 
     def _on_load_novel_settings(self) -> None:
@@ -2690,7 +2902,7 @@ class DeepSeekChatGUI(QMainWindow):
 
     def _on_generate_chapter(self) -> None:
         """生成下一章 → 完整工作流"""
-        if self._streaming:
+        if self._streaming or not self._chapter_finalized:
             return
 
         title = self._novel_title_edit.text().strip()
@@ -2702,12 +2914,16 @@ class DeepSeekChatGUI(QMainWindow):
             chapter_title = f"第{self._novel_manager.get_next_chapter_num(title)}章"
             self._chapter_title_edit.setText(chapter_title)
 
+        self._chapter_finalized = False
+        self._generate_btn.setEnabled(False)
+        self._cont_generate_btn.setEnabled(False)
         self._client.reset_cancel()
         self._stop_btn.setVisible(True)
         self._stop_btn.setEnabled(True)
         self._stop_btn.setText("⏹")
         self._mode_combo.setEnabled(False)
         self._streaming = True
+        self._streaming_start_time = time.time()
         self._assistant_text_buffer = []
 
         # 同步 UI 值到策略对象
@@ -2717,14 +2933,22 @@ class DeepSeekChatGUI(QMainWindow):
             self._client.strategy.protagonist_bio = self._protagonist_edit.toPlainText().strip()
             self._client.strategy.background_story = self._background_edit.toPlainText().strip()
             self._client.strategy.writing_demand = self._demand_edit.toPlainText().strip()
+            genre_cfg_sync = get_genre_by_display(self._novel_genre_combo.currentText())
+            tone_cfg_sync = get_tone_by_display(self._novel_tone_combo.currentText())
+            self._client.strategy.genre = genre_cfg_sync.key if genre_cfg_sync else ""
+            self._client.strategy.style_tone = tone_cfg_sync.key if tone_cfg_sync else ""
 
         # 保存当前设定到 meta.json
+        genre_cfg_save = get_genre_by_display(self._novel_genre_combo.currentText())
+        tone_cfg_save = get_tone_by_display(self._novel_tone_combo.currentText())
         self._novel_manager.create_book(title)
         self._novel_manager.save_meta(
             title,
             protagonist_bio=self._protagonist_edit.toPlainText().strip(),
             background_story=self._background_edit.toPlainText().strip(),
             writing_demand=self._demand_edit.toPlainText().strip(),
+            genre=genre_cfg_save.key if genre_cfg_save else "",
+            style_tone=tone_cfg_save.key if tone_cfg_save else "",
         )
 
         self._append_user_message(f"📖 生成第{self._novel_manager.get_next_chapter_num(title)}章：{chapter_title}")
@@ -2901,7 +3125,7 @@ class DeepSeekChatGUI(QMainWindow):
                 from utils.supplement import count_cn, supplement_content
                 actual_words = count_cn(content)
                 target_chars = target_words
-                if actual_words < target_chars * 0.8 and actual_words > 0:
+                if self._chapter_auto_supplement.isChecked() and actual_words < target_chars * 0.8 and actual_words > 0:
                     self._stream_signals.token.emit(f"\n📝 当前{actual_words}字，目标{target_chars}字，正在进行扩写...\n")
                     try:
                         # 收集全部上下文
@@ -3112,11 +3336,15 @@ class DeepSeekChatGUI(QMainWindow):
                 book_title = "续写作品"
             self._novel_manager.create_book(book_title)
             # 保存当前编辑器的设定内容到新书的 meta（防止 setCurrentText 触发信号清空）
+            genre_cfg_cont = get_genre_by_display(self._cont_genre_combo.currentText())
+            tone_cfg_cont = get_tone_by_display(self._cont_tone_combo.currentText())
             self._novel_manager.save_meta(
                 book_title,
                 protagonist_bio=self._cont_protagonist_edit.toPlainText().strip(),
                 background_story=self._cont_background_edit.toPlainText().strip(),
                 writing_demand=self._cont_demand_edit.toPlainText().strip(),
+                genre=genre_cfg_cont.key if genre_cfg_cont else "",
+                style_tone=tone_cfg_cont.key if tone_cfg_cont else "",
             )
             self._refresh_novel_bookshelf()
             self._cont_bookshelf_combo.setCurrentText(book_title)
@@ -3132,6 +3360,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._stop_btn.setText("⏹")
         self._mode_combo.setEnabled(False)
         self._streaming = True
+        self._streaming_start_time = time.time()
         self._assistant_text_buffer = []
 
         notice = f"续写「{os.path.basename(source_file) if source_file else os.path.basename(source_folder)}」→ 第{chapter_num}章"
@@ -3231,6 +3460,19 @@ class DeepSeekChatGUI(QMainWindow):
                 messages.append({"role": "system", "content": f"【核心设定】\n{bg_story}"})
             if protagonist_bio:
                 messages.append({"role": "system", "content": f"【人物背景】\n{protagonist_bio}"})
+            # 风格设定
+            genre_key = meta.genre if hasattr(meta, 'genre') else ""
+            tone_key = meta.style_tone if hasattr(meta, 'style_tone') else ""
+            if genre_key or tone_key:
+                style_parts = []
+                gcfg = get_genre_by_key(genre_key)
+                if gcfg and gcfg.style_instruction:
+                    style_parts.append(f"题材方向（{gcfg.display_name}）：{gcfg.style_instruction}")
+                tcfg = get_tone_by_key(tone_key)
+                if tcfg and tcfg.style_instruction:
+                    style_parts.append(f"写作基调（{tcfg.display_name}）：{tcfg.style_instruction}")
+                if style_parts:
+                    messages.append({"role": "system", "content": f"【风格设定】\n{chr(10).join(style_parts)}"})
             messages.append({"role": "user", "content": user_prompt})
 
             self._stream_signals.token.emit(
@@ -3300,7 +3542,7 @@ class DeepSeekChatGUI(QMainWindow):
             # 字数补充检查 → 扩写整章
             from utils.supplement import count_cn, supplement_content
             actual_words = count_cn(content)
-            if actual_words < word_count * 0.8 and actual_words > 0:
+            if self._continue_auto_supplement.isChecked() and actual_words < word_count * 0.8 and actual_words > 0:
                 self._stream_signals.token.emit(f"\n📝 当前{actual_words}字，目标{word_count}字，正在进行扩写...\n")
                 try:
                     # 收集全部上下文
@@ -3381,7 +3623,18 @@ class DeepSeekChatGUI(QMainWindow):
     def _on_send(self) -> None:
         """发送按钮点击处理"""
         if self._streaming:
-            return
+            # streaming 卡死超过 180 秒则强制复位，允许重新发送
+            if self._streaming_start_time and time.time() - self._streaming_start_time > 180:
+                self._streaming = False
+                self._chapter_finalized = True
+                self._streaming_start_time = 0
+                self._stop_btn.setVisible(False)
+                self._stop_btn.setEnabled(True)
+                self._mode_combo.setEnabled(True)
+                self._generate_btn.setEnabled(True)
+                self._cont_generate_btn.setEnabled(True)
+            else:
+                return
 
         # 如果当前是小说模式且开启了章节续写 → 触发章节生成
         if (
@@ -3412,6 +3665,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._stop_btn.setText("⏹")
         self._mode_combo.setEnabled(False)
         self._streaming = True
+        self._streaming_start_time = time.time()
         self._assistant_text_buffer = []
 
         threading.Thread(
@@ -3443,24 +3697,35 @@ class DeepSeekChatGUI(QMainWindow):
     def _on_stream_finished(self) -> None:
         """主线程：流式完成（可能因取消而结束）"""
         was_cancelled = self._client._cancel_requested if self._client else False
-        self._streaming = False
         self._stop_btn.setVisible(False)
         self._stop_btn.setEnabled(True)
         self._mode_combo.setEnabled(True)
         self._stream_count_label.setVisible(False)
 
         if was_cancelled:
+            self._streaming = False
             self._assistant_text_buffer = []
             self._append_user_message("⏹️ 已取消")
             if self._client:
                 self._client.reset_cancel()
+            self._on_chapter_rendering_done()
         else:
             full_text = "".join(self._assistant_text_buffer)
-            self._render_assistant_message(full_text)
+            self._render_assistant_message(full_text, callback=self._on_chapter_rendering_done)
+
+    def _on_chapter_rendering_done(self, result=None) -> None:
+        """JS 渲染完成后回调 — 释放章节生成锁"""
+        self._streaming = False
+        self._chapter_finalized = True
+        self._generate_btn.setEnabled(True)
+        self._cont_generate_btn.setEnabled(True)
 
     def _on_stream_error(self, error_msg: str) -> None:
         """主线程：流式出错"""
         self._streaming = False
+        self._chapter_finalized = True
+        self._generate_btn.setEnabled(True)
+        self._cont_generate_btn.setEnabled(True)
         self._stop_btn.setVisible(False)
         self._stop_btn.setEnabled(True)
         self._mode_combo.setEnabled(True)
@@ -3514,8 +3779,8 @@ class DeepSeekChatGUI(QMainWindow):
         """
         self._display.page().runJavaScript(script)
 
-    def _render_assistant_message(self, text: str) -> None:
-        """最终渲染"""
+    def _render_assistant_message(self, text: str, callback=None) -> None:
+        """最终渲染（含可选 JS 完成回调）"""
         html_body = md_lib.markdown(
             text,
             extensions=["fenced_code", "tables", "codehilite", "nl2br", "sane_lists"],
@@ -3534,7 +3799,7 @@ class DeepSeekChatGUI(QMainWindow):
                 window.scrollTo(0, document.body.scrollHeight);
             }})();
         """
-        self._display.page().runJavaScript(script)
+        self._display.page().runJavaScript(script, callback)
 
     @staticmethod
     def _escape_for_js(s: str) -> str:
@@ -3687,6 +3952,7 @@ class DeepSeekChatGUI(QMainWindow):
             self._stop_btn.setText("⏹")
             self._mode_combo.setEnabled(False)
             self._streaming = True
+            self._streaming_start_time = time.time()
             self._assistant_text_buffer = []
             self._append_user_message(f"📂 批量导入章节 → {title}")
             self._cont_analysis_source = source_text
@@ -3712,6 +3978,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._stop_btn.setText("⏹")
         self._mode_combo.setEnabled(False)
         self._streaming = True
+        self._streaming_start_time = time.time()
         self._assistant_text_buffer = []
         self._append_user_message(f"🔍 分析源文档并导入小说：{title}")
 
@@ -4018,6 +4285,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._stop_btn.setText("⏹")
         self._mode_combo.setEnabled(False)
         self._streaming = True
+        self._streaming_start_time = time.time()
         self._assistant_text_buffer = []
         self._append_user_message("🎲 AI 建议发展方向")
 
@@ -4087,6 +4355,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._stop_btn.setText("⏹")
         self._mode_combo.setEnabled(False)
         self._streaming = True
+        self._streaming_start_time = time.time()
         self._assistant_text_buffer = []
         self._append_user_message(f"📝 续写第{chapter_num}章：{chapter_title}")
 
@@ -4507,15 +4776,12 @@ class DeepSeekChatGUI(QMainWindow):
                 data = self._get_selected_data()
                 if not data:
                     return
+                warning = ""
                 if data["is_active"]:
-                    QMessageBox.warning(
-                        self, "警告",
-                        "不能删除活跃版本。请先选择其他版本设为活跃。"
-                    )
-                    return
+                    warning = "\n\n⚠ 这是活跃版本，删除后将自动切换到该章节的最新版本。"
                 reply = QMessageBox.question(
                     self, "确认删除",
-                    f"确定要删除第{data['chapter_num']}章 v{data['version']}？\n此操作不可恢复！",
+                    f"确定要删除第{data['chapter_num']}章 v{data['version']}？\n此操作不可恢复！{warning}",
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 )
                 if reply == QMessageBox.StandardButton.Yes:
