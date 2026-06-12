@@ -144,6 +144,56 @@ class AuthManager:
         return True, enc_key
 
     @staticmethod
+    def change_password(username: str, old_password: str, new_password: str) -> bytes:
+        """
+        Change a user's password and re-encrypt all user data with the new key.
+
+        The users database is updated only after every encrypted file in the
+        user's directory has been successfully rewritten.
+        """
+        if not new_password:
+            raise AuthError("新密码不能为空")
+        ok, old_key = AuthManager.authenticate(username, old_password)
+        if not ok or old_key is None:
+            raise AuthError("旧密码错误")
+
+        users = AuthManager._load_users()
+        record = users.get(username)
+        if record is None:
+            raise AuthError("用户不存在")
+
+        new_salt = os.urandom(16)
+        new_full_key = AuthManager._derive_full_key(new_password, new_salt)
+        new_auth_hash = base64.urlsafe_b64encode(new_full_key[:32]).decode()
+        new_enc_key = base64.urlsafe_b64encode(new_full_key[32:])
+
+        user_dir = AuthManager.get_user_dir(username)
+        encrypted_files: list[str] = []
+        for root, _, files in os.walk(user_dir):
+            for fname in files:
+                if fname.endswith(".enc"):
+                    encrypted_files.append(os.path.join(root, fname))
+
+        rewritten: list[tuple[str, bytes]] = []
+        try:
+            for path in encrypted_files:
+                with open(path, "rb") as f:
+                    raw = f.read()
+                plaintext = AuthManager.decrypt(old_key, raw)
+                rewritten.append((path, AuthManager.encrypt(new_enc_key, plaintext)))
+        except Exception as exc:
+            raise AuthError(f"数据重加密失败，密码未修改：{exc}") from exc
+
+        for path, data in rewritten:
+            with open(path, "wb") as f:
+                f.write(data)
+
+        record["salt"] = base64.b16encode(new_salt).decode()
+        record["auth_hash"] = new_auth_hash
+        AuthManager._save_users(users)
+        return new_enc_key
+
+    @staticmethod
     def get_user_dir(username: str) -> str:
         """获取用户数据目录路径（使用 dir_id，而非用户名原文）"""
         users = AuthManager._load_users()

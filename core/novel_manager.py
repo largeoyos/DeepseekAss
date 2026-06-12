@@ -61,6 +61,11 @@ class NovelMeta:
     compressed_early_summary: str = ""
     # 加密模式下的小说唯一标识（UUID 目录名）
     book_id: str = ""
+    # 章节树元数据（schema_version 1 为旧线性版本，2 为树形兼容层）
+    schema_version: int = 1
+    root_chapter_id: str = ""
+    active_path: list[str] = field(default_factory=list)
+    chapter_nodes: dict[str, dict] = field(default_factory=dict)
 
     def __post_init__(self):
         """加载时归一化：确保字符串字段不是 list（兼容 LLM 返回 JSON 数组的情况）"""
@@ -332,6 +337,134 @@ class NovelManager:
         meta_path = self._meta_path(title)
         self._write_encrypted_json(meta_path, asdict(meta))
 
+    # ========== 章节树兼容层 ==========
+
+    @staticmethod
+    def _node_id(chapter_num: int, version: int) -> str:
+        return f"ch{chapter_num:04d}_v{version:03d}"
+
+    def ensure_chapter_tree(self, title: str) -> NovelMeta:
+        """Build tree metadata from legacy chapter_versions when needed."""
+        meta = self.load_meta(title)
+        changed = self._ensure_tree_meta_from_versions(meta)
+        if changed:
+            self._save_meta(title, meta)
+        return meta
+
+    def _ensure_tree_meta_from_versions(self, meta: NovelMeta) -> bool:
+        if meta.schema_version >= 2 and meta.chapter_nodes:
+            return False
+        nodes: dict[str, dict] = {}
+        active_path: list[str] = []
+        previous_active_id: str | None = None
+        changed = False
+
+        for key in sorted(meta.chapter_versions, key=lambda k: int(k) if str(k).isdigit() else 0):
+            info = meta.chapter_versions[key]
+            try:
+                chapter_num = int(key)
+            except ValueError:
+                continue
+            active_version = info.get("active", 1)
+            parent_for_chapter = previous_active_id
+            for order, version_info in enumerate(info.get("versions", []), start=1):
+                version = int(version_info.get("v", 1))
+                node_id = self._node_id(chapter_num, version)
+                nodes[node_id] = {
+                    "id": node_id,
+                    "chapter_num": chapter_num,
+                    "version": version,
+                    "title": version_info.get("title", f"第{chapter_num}章"),
+                    "file": version_info.get("file", ""),
+                    "summary": "",
+                    "user_direction": "",
+                    "generation_params": {},
+                    "parent_id": parent_for_chapter,
+                    "children_ids": [],
+                    "sibling_order": order,
+                    "created_at": version_info.get("created_at", ""),
+                    "updated_at": version_info.get("created_at", ""),
+                }
+            active_id = self._node_id(chapter_num, int(active_version))
+            if active_id in nodes:
+                active_path.append(active_id)
+                previous_active_id = active_id
+
+        for node in nodes.values():
+            parent_id = node.get("parent_id")
+            if parent_id and parent_id in nodes:
+                children = nodes[parent_id].setdefault("children_ids", [])
+                if node["id"] not in children:
+                    children.append(node["id"])
+
+        meta.schema_version = 2
+        meta.chapter_nodes = nodes
+        meta.active_path = active_path
+        meta.root_chapter_id = active_path[0] if active_path else ""
+        changed = True
+        return changed
+
+    def list_chapter_tree_nodes(self, title: str) -> list[dict]:
+        meta = self.ensure_chapter_tree(title)
+        nodes = list(meta.chapter_nodes.values())
+        return sorted(nodes, key=lambda n: (int(n.get("chapter_num", 0)), int(n.get("version", 0))))
+
+    def get_active_path_nodes(self, title: str) -> list[dict]:
+        meta = self.ensure_chapter_tree(title)
+        return [meta.chapter_nodes[nid] for nid in meta.active_path if nid in meta.chapter_nodes]
+
+    def read_chapter_node(self, title: str, node_id: str) -> str | None:
+        meta = self.ensure_chapter_tree(title)
+        node = meta.chapter_nodes.get(node_id)
+        if not node:
+            return None
+        return self.read_chapter_version(title, int(node["chapter_num"]), int(node["version"]))
+
+    def switch_active_node(self, title: str, node_id: str) -> bool:
+        meta = self.ensure_chapter_tree(title)
+        if node_id not in meta.chapter_nodes:
+            return False
+        path: list[str] = []
+        cursor: str | None = node_id
+        seen: set[str] = set()
+        while cursor and cursor not in seen:
+            seen.add(cursor)
+            node = meta.chapter_nodes.get(cursor)
+            if not node:
+                break
+            path.append(cursor)
+            cursor = node.get("parent_id")
+        path.reverse()
+        meta.active_path = path
+        for active_id in path:
+            active = meta.chapter_nodes.get(active_id)
+            if active:
+                key = str(active["chapter_num"])
+                if key in meta.chapter_versions:
+                    meta.chapter_versions[key]["active"] = int(active["version"])
+        meta.root_chapter_id = path[0] if path else ""
+        meta.compressed_early_summary = ""
+        self._save_meta(title, meta)
+        return True
+
+    def delete_chapter_node(self, title: str, node_id: str) -> bool:
+        meta = self.ensure_chapter_tree(title)
+        if node_id not in meta.chapter_nodes:
+            return False
+        to_delete: set[str] = set()
+
+        def collect(nid: str) -> None:
+            to_delete.add(nid)
+            for child_id in meta.chapter_nodes.get(nid, {}).get("children_ids", []):
+                collect(child_id)
+
+        collect(node_id)
+        for nid in sorted(to_delete, reverse=True):
+            node = meta.chapter_nodes.get(nid)
+            if node:
+                self.delete_chapter_version(title, int(node["chapter_num"]), int(node["version"]))
+        return True
+
     # ========== 章节版本管理 ==========
 
     def get_next_chapter_num(self, title: str) -> int:
@@ -407,14 +540,75 @@ class NovelManager:
         if chapter_title not in meta.chapter_titles:
             meta.chapter_titles.append(chapter_title)
 
+        self._ensure_tree_meta_from_versions(meta)
+        node_id = self._node_id(chapter_num, version)
+        parent_id = None
+        if chapter_num > 1 and meta.active_path:
+            for active_id in reversed(meta.active_path):
+                active_node = meta.chapter_nodes.get(active_id)
+                if active_node and int(active_node.get("chapter_num", 0)) < chapter_num:
+                    parent_id = active_id
+                    break
+        if node_id not in meta.chapter_nodes:
+            siblings = [
+                n for n in meta.chapter_nodes.values()
+                if int(n.get("chapter_num", 0)) == chapter_num
+            ]
+            meta.chapter_nodes[node_id] = {
+                "id": node_id,
+                "chapter_num": chapter_num,
+                "version": version,
+                "title": chapter_title,
+                "file": file_name,
+                "summary": "",
+                "user_direction": "",
+                "generation_params": {},
+                "parent_id": parent_id,
+                "children_ids": [],
+                "sibling_order": len(siblings) + 1,
+                "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+                "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            }
+            if parent_id and parent_id in meta.chapter_nodes:
+                children = meta.chapter_nodes[parent_id].setdefault("children_ids", [])
+                if node_id not in children:
+                    children.append(node_id)
+            if not meta.root_chapter_id:
+                meta.root_chapter_id = node_id
+
+        if meta.chapter_versions[key]["active"] == version:
+            existing_nums = {
+                int(meta.chapter_nodes[nid]["chapter_num"])
+                for nid in meta.active_path
+                if nid in meta.chapter_nodes
+            }
+            if chapter_num not in existing_nums:
+                meta.active_path.append(node_id)
+
         self._save_meta(title, meta)
         return written_path, version
+
     def set_active_version(self, title: str, chapter_num: int, version: int) -> None:
         """设置某章节的活跃版本（用于计入剧情摘要）"""
         meta = self.load_meta(title)
         key = str(chapter_num)
         if key in meta.chapter_versions:
             meta.chapter_versions[key]["active"] = version
+            self._ensure_tree_meta_from_versions(meta)
+            node_id = self._node_id(chapter_num, version)
+            if node_id in meta.chapter_nodes:
+                path = []
+                cursor: str | None = node_id
+                seen: set[str] = set()
+                while cursor and cursor not in seen:
+                    seen.add(cursor)
+                    node = meta.chapter_nodes.get(cursor)
+                    if not node:
+                        break
+                    path.append(cursor)
+                    cursor = node.get("parent_id")
+                meta.active_path = list(reversed(path))
+                meta.root_chapter_id = meta.active_path[0] if meta.active_path else ""
             self._save_meta(title, meta)
 
     def get_active_version(self, title: str, chapter_num: int) -> int | None:
@@ -503,6 +697,18 @@ class NovelManager:
                         (int(k) for k in meta.chapter_versions.keys()),
                         default=0,
                     )
+            self._save_meta(title, meta)
+
+        meta = self.load_meta(title)
+        if meta.chapter_nodes:
+            node_id = self._node_id(chapter_num, version)
+            for node in meta.chapter_nodes.values():
+                children = node.get("children_ids", [])
+                if node_id in children:
+                    node["children_ids"] = [cid for cid in children if cid != node_id]
+            meta.chapter_nodes.pop(node_id, None)
+            meta.active_path = [nid for nid in meta.active_path if nid in meta.chapter_nodes]
+            meta.root_chapter_id = meta.active_path[0] if meta.active_path else ""
             self._save_meta(title, meta)
 
         return True

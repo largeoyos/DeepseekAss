@@ -50,6 +50,8 @@ from config import Config
 from core.chat_client import DeepSeekChatClient
 from core.novel_manager import NovelManager
 from core.conversation_manager import ConversationManager
+from core.settings_manager import SettingsManager
+from core.token_log_manager import TokenLogManager
 from strategies import (
     RolePlayStrategy,
     NovelStrategy,
@@ -64,7 +66,10 @@ from utils.export import (
     FORMAT_LABELS,
 )
 from ui.world_bible_dialog import WorldBibleDialog
-from ui.presets import PRESETS, CUSTOM_LABEL, COMBO_ITEMS
+from ui.presets import PRESETS, CUSTOM_LABEL
+from ui.settings_dialog import SettingsDialog
+from ui.token_log_dialog import TokenLogDialog
+from ui.chapter_tree_dialog import ChapterTreeDialog
 from ui.continuation_dialogs import (
     analyze_source_text, suggest_directions,
     ContinuationAnalysisDialog, DirectionSelectionDialog,
@@ -298,32 +303,137 @@ HTML_STYLE = """
 </style>
 """
 
-# 初始页面模板
-INITIAL_HTML = f"""
-<html><head>{HTML_STYLE}</head><body>
+LIGHT_HTML_STYLE = """
+<style>
+  * { scrollbar-width: thin; scrollbar-color: #b7c1d3 #edf1f7; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-track { background: #edf1f7; }
+  ::-webkit-scrollbar-thumb { background: #b7c1d3; border-radius: 4px; }
+  body {
+    font-family: "Microsoft YaHei", "Segoe UI", -apple-system, Arial, sans-serif;
+    font-size: 14.5px;
+    line-height: 1.8;
+    color: #202635;
+    background: linear-gradient(135deg, #f4f6fb 0%, #ffffff 55%, #eef3ff 100%);
+    padding: 20px;
+    margin: 0;
+  }
+  .user-msg, .assistant-msg, .system-msg { animation: fadeIn 0.25s ease-out; }
+  @keyframes fadeIn {
+    from { opacity: 0; transform: translateY(6px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  .user-msg {
+    background: linear-gradient(135deg, #dbe7ff 0%, #c6dcff 100%);
+    border-radius: 12px 12px 4px 12px;
+    padding: 12px 18px;
+    margin: 10px 0 10px 20%;
+    color: #123a8a;
+    border: 1px solid #9fbcff;
+    font-size: 14px;
+    line-height: 1.7;
+  }
+  .assistant-msg {
+    margin: 10px 20% 10px 0;
+    padding: 12px 18px;
+    background: rgba(255, 255, 255, 0.9);
+    border-radius: 12px 12px 12px 4px;
+    border: 1px solid #dce2ef;
+    box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
+    font-size: 14px;
+    line-height: 1.8;
+  }
+  .system-msg {
+    color: #287044;
+    font-style: italic;
+    margin: 10px auto;
+    text-align: center;
+    font-size: 13px;
+    padding: 6px 12px;
+    background: rgba(40, 112, 68, 0.08);
+    border-radius: 8px;
+    max-width: 80%;
+  }
+  pre {
+    background: #f0f4fb !important;
+    border-radius: 8px;
+    padding: 14px 18px;
+    overflow-x: auto;
+    border: 1px solid #dce2ef;
+  }
+  code {
+    background: #eef3ff;
+    border-radius: 4px;
+    padding: 2px 7px;
+    color: #1d4ed8;
+  }
+  pre code { background: transparent; padding: 0; color: #202635; }
+  blockquote {
+    border-left: 3px solid #2563eb;
+    margin: 10px 0;
+    padding: 8px 18px;
+    color: #475569;
+    background: linear-gradient(90deg, rgba(37, 99, 235, 0.08) 0%, transparent 100%);
+    border-radius: 0 6px 6px 0;
+  }
+  table { border-collapse: collapse; margin: 14px 0; width: 100%; border-radius: 8px; overflow: hidden; }
+  th, td { border: 1px solid #dce2ef; padding: 10px 14px; text-align: left; }
+  th { background: #eef3ff; color: #1d4ed8; font-weight: 600; }
+  td { background: rgba(255, 255, 255, 0.65); }
+  tr:nth-child(even) td { background: rgba(244, 246, 251, 0.9); }
+  a { color: #2563eb; text-decoration: none; }
+  h1, h2, h3, h4, h5, h6 { color: #1d4ed8; margin-top: 1.3em; margin-bottom: 0.5em; font-weight: 600; }
+  h1 { font-size: 1.6em; border-bottom: 1px solid #dbe7ff; padding-bottom: 8px; }
+  h2 { font-size: 1.35em; }
+  h3 { font-size: 1.2em; }
+  hr { border: none; height: 1px; background: #dce2ef; margin: 20px 0; }
+  p { margin: 0.6em 0; }
+  ul, ol { padding-left: 26px; }
+  li { margin: 4px 0; }
+  img { max-width: 100%; border-radius: 8px; margin: 8px 0; }
+</style>
+"""
+
+CURRENT_HTML_STYLE = HTML_STYLE
+
+
+def initial_html() -> str:
+    """按当前主题生成欢迎页 HTML。"""
+    is_light = CURRENT_HTML_STYLE == LIGHT_HTML_STYLE
+    muted = "#64748b" if is_light else "#888"
+    card_bg = "rgba(255,255,255,0.80)" if is_light else "rgba(255,255,255,0.03)"
+    card_border = "#dce2ef" if is_light else "rgba(255,255,255,0.06)"
+    tip_color = "#287044" if is_light else "#6a9955"
+    tip_bg = "rgba(40,112,68,0.08)" if is_light else "rgba(106,153,85,0.08)"
+    return f"""
+<html><head>{CURRENT_HTML_STYLE}</head><body>
 <div style="text-align:center; padding: 40px 20px;">
   <div style="font-size: 48px; margin-bottom: 16px;">🚀</div>
   <h1 style="border:none; font-size: 1.8em;">DeepSeek 多功能聊天客户端</h1>
-  <p style="color: #888; font-size: 14px; margin-bottom: 32px;">请在左侧面板选择模式和模型，然后开始对话</p>
+  <p style="color: {muted}; font-size: 14px; margin-bottom: 32px;">请在最左侧栏选择模式，然后在控制面板调整模型和参数</p>
 
-  <div style="display:inline-block; text-align:left; max-width:480px; background:rgba(255,255,255,0.03); border-radius:12px; padding:24px 32px; border:1px solid rgba(255,255,255,0.06);">
+  <div style="display:inline-block; text-align:left; max-width:520px; background:{card_bg}; border-radius:12px; padding:24px 32px; border:1px solid {card_border};">
     <h3 style="margin-top:0; font-size:15px;">当前可用模式</h3>
     <table style="box-shadow:none;">
-      <tr><td style="border:none; padding:8px 0;"><strong>🎭 角色扮演</strong></td><td style="border:none; padding:8px 0; color:#999;">模拟特定人物/身份的对话风格</td></tr>
-      <tr><td style="border:none; padding:8px 0;"><strong>📚 小说写作</strong></td><td style="border:none; padding:8px 0; color:#999;">创意写作、情节构思、文笔润色（支持书架管理 + 章节续写）</td></tr>
+      <tr><td style="border:none; padding:8px 0;"><strong>🎭 角色扮演</strong></td><td style="border:none; padding:8px 0; color:{muted};">模拟特定人物/身份的对话风格</td></tr>
+      <tr><td style="border:none; padding:8px 0;"><strong>📚 小说写作</strong></td><td style="border:none; padding:8px 0; color:{muted};">创意写作、情节构思、文笔润色（支持书架管理 + 章节续写）</td></tr>
+      <tr><td style="border:none; padding:8px 0;"><strong>📄 续写小说</strong></td><td style="border:none; padding:8px 0; color:{muted};">导入已有文本并延续故事</td></tr>
     </table>
 
     <h3 style="margin-top:20px; font-size:15px;">可用模型</h3>
     <table style="box-shadow:none;">
-      <tr><td style="border:none; padding:6px 0;"><code>deepseek-v4-flash</code></td><td style="border:none; padding:6px 0; color:#999;">v4 闪电版</td></tr>
-      <tr><td style="border:none; padding:6px 0;"><code>deepseek-v4-pro</code></td><td style="border:none; padding:6px 0; color:#999;">v4 专业版</td></tr>
+      <tr><td style="border:none; padding:6px 0;"><code>deepseek-v4-flash</code></td><td style="border:none; padding:6px 0; color:{muted};">v4 闪电版</td></tr>
+      <tr><td style="border:none; padding:6px 0;"><code>deepseek-v4-pro</code></td><td style="border:none; padding:6px 0; color:{muted};">v4 专业版</td></tr>
     </table>
 
-    <p style="color:#6a9955; font-size: 13px; margin-top: 24px; text-align:center; background:rgba(106,153,85,0.08); border-radius:6px; padding:8px;">若尚未配置 API Key，程序启动时会弹出输入框</p>
+    <p style="color:{tip_color}; font-size: 13px; margin-top: 24px; text-align:center; background:{tip_bg}; border-radius:6px; padding:8px;">设置和 Token 日志在最左侧栏底部</p>
   </div>
 </div>
 </body></html>
 """
+
+
+INITIAL_HTML = initial_html()
 
 
 # ========== 工具函数 ==========
@@ -340,7 +450,7 @@ def md_to_html(text: str) -> str:
             "sane_lists",
         ],
     )
-    return f"<html><head>{HTML_STYLE}</head><body>{md_body}</body></html>"
+    return f"<html><head>{CURRENT_HTML_STYLE}</head><body>{md_body}</body></html>"
 
 
 # ========== 主窗口 ==========
@@ -375,6 +485,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._loading_conversation = False
         # 参数预设守卫：预设驱动滑块时阻止 handler 切回"自定义"
         self._preset_applying = False
+        self._settings_applying = False
         # 模式切换守卫：记录上次有效模式，用于 streaming 时回退
         self._last_mode: str = ""
 
@@ -401,6 +512,7 @@ class DeepSeekChatGUI(QMainWindow):
         os.makedirs(os.path.join(user_dir, "conversations"), exist_ok=True)
         os.makedirs(os.path.join(user_dir, "bookshelf"), exist_ok=True)
 
+        self._user_dir = user_dir
         self._novel_manager = NovelManager(
             bookshelf_root=os.path.join(user_dir, "bookshelf"),
             crypto=self._auth, enc_key=self._enc_key,
@@ -409,6 +521,19 @@ class DeepSeekChatGUI(QMainWindow):
             root_dir=os.path.join(user_dir, "conversations"),
             crypto=self._auth, enc_key=self._enc_key,
         )
+        self._settings_manager = SettingsManager(
+            root_dir=user_dir,
+            crypto=self._auth,
+            enc_key=self._enc_key,
+        )
+        self._token_log_manager = TokenLogManager(
+            root_dir=user_dir,
+            crypto=self._auth,
+            enc_key=self._enc_key,
+        )
+        self._settings = self._settings_manager.load()
+        self._presets = self._settings.get("presets", PRESETS).copy()
+        self._model_options = self._build_model_options()
         self._current_conversation_id: str | None = None
         self._current_conversation_title: str = ""
 
@@ -436,8 +561,8 @@ class DeepSeekChatGUI(QMainWindow):
 
         # Step 4: 构建 UI
         self._init_ui()
-        self._preset_combo.setCurrentText("狂野")
-        self._apply_dark_theme()
+        self._apply_settings_to_controls()
+        self._apply_theme()
         self._refresh_novel_bookshelf()
 
     # ========== 加密配置 ==========
@@ -762,6 +887,73 @@ class DeepSeekChatGUI(QMainWindow):
         strategy = RolePlayStrategy()
         self._client = DeepSeekChatClient(strategy=strategy, model=strategy.recommended_model)
 
+    def _build_model_options(self) -> list[str]:
+        settings = getattr(self, "_settings", {}) or {}
+        models: list[str] = []
+        for model in MODEL_OPTIONS:
+            if model not in models:
+                models.append(model)
+        for key in ("favorite_models", "custom_models"):
+            for model in settings.get(key, []) or []:
+                if model and model not in models:
+                    models.append(model)
+        last_model = settings.get("last_model")
+        if last_model and last_model not in models:
+            models.append(last_model)
+        return models
+
+    def _reload_user_settings(self) -> None:
+        self._settings = self._settings_manager.load()
+        self._presets = self._settings.get("presets", PRESETS).copy()
+        self._model_options = self._build_model_options()
+
+    def _apply_settings_to_controls(self) -> None:
+        self._reload_user_settings()
+        if hasattr(self, "_model_combo"):
+            self._settings_applying = True
+            current_model = self._client.model
+            self._model_combo.blockSignals(True)
+            self._model_combo.clear()
+            self._model_combo.addItems(self._model_options)
+            target_model = self._settings.get("last_model") or current_model
+            if target_model in self._model_options:
+                self._model_combo.setCurrentText(target_model)
+                self._client.switch_model(target_model)
+            self._model_combo.blockSignals(False)
+            self._settings_applying = False
+        if hasattr(self, "_preset_combo"):
+            self._settings_applying = True
+            current_preset = self._settings.get("current_preset", "狂野")
+            self._preset_combo.blockSignals(True)
+            self._preset_combo.clear()
+            self._preset_combo.addItems([CUSTOM_LABEL, *self._presets.keys()])
+            if current_preset in self._presets:
+                self._preset_combo.setCurrentText(current_preset)
+            else:
+                self._preset_combo.setCurrentText(CUSTOM_LABEL)
+            self._preset_combo.blockSignals(False)
+            self._on_preset_changed(self._preset_combo.currentText())
+            self._settings_applying = False
+        if hasattr(self, "_display"):
+            self._apply_theme()
+            has_messages = any(
+                msg.get("role") in ("user", "assistant")
+                for msg in self._client.export_messages()
+            )
+            if not has_messages:
+                self._display.setHtml(INITIAL_HTML)
+        self._update_status()
+
+    def _save_runtime_settings(self) -> None:
+        if getattr(self, "_settings_applying", False):
+            return
+        settings = self._settings_manager.load()
+        settings["last_model"] = self._client.model
+        settings["current_preset"] = self._preset_combo.currentText() if hasattr(self, "_preset_combo") else settings.get("current_preset", "")
+        settings["presets"] = self._presets
+        self._settings_manager.save(settings)
+        self._settings = settings
+
     def _load_global_user_prompt(self) -> str:
         """从加密存储加载全局提示词"""
         if self._enc_key:
@@ -802,6 +994,19 @@ class DeepSeekChatGUI(QMainWindow):
         self.setWindowTitle("DeepSeek 多功能聊天客户端")
         self.resize(1200, 780)
 
+        central = QWidget()
+        root_layout = QHBoxLayout(central)
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.setSpacing(0)
+
+        root_layout.addWidget(self._build_navigation_sidebar())
+
+        main_area = QWidget()
+        main_layout = QVBoxLayout(main_area)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+        main_layout.addWidget(self._build_top_toolbar())
+
         # 中央分割器
         splitter = QSplitter(Qt.Orientation.Horizontal)
 
@@ -815,11 +1020,94 @@ class DeepSeekChatGUI(QMainWindow):
         splitter.setStretchFactor(1, 2)
         splitter.setSizes([450, 750])
 
-        self.setCentralWidget(splitter)
+        main_layout.addWidget(splitter, stretch=1)
+        root_layout.addWidget(main_area, stretch=1)
+        self.setCentralWidget(central)
 
         self._display.setHtml(INITIAL_HTML)
         self._mode_stack.setCurrentIndex(0)  # 默认显示角色扮演面板
+        self._sync_mode_sidebar()
         self._refresh_history_list()
+
+    def _build_navigation_sidebar(self) -> QWidget:
+        """构建最左侧导航栏：模式、设置、Token 日志。"""
+        sidebar = QFrame()
+        sidebar.setObjectName("appSidebar")
+        sidebar.setFixedWidth(76)
+
+        layout = QVBoxLayout(sidebar)
+        layout.setContentsMargins(8, 10, 8, 10)
+        layout.setSpacing(8)
+
+        brand = QLabel("DS")
+        brand.setObjectName("sidebarBrand")
+        brand.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(brand)
+
+        layout.addSpacing(8)
+        self._mode_nav_group = QButtonGroup(sidebar)
+        self._mode_nav_group.setExclusive(True)
+        self._mode_nav_buttons: dict[str, QPushButton] = {}
+
+        nav_items = [
+            ("角色扮演", "🎭", "聊天"),
+            ("小说写作", "📚", "写作"),
+            ("续写小说", "📄", "续写"),
+        ]
+        for mode_name, icon, label in nav_items:
+            btn = QPushButton(f"{icon}\n{label}")
+            btn.setObjectName("navButton")
+            btn.setCheckable(True)
+            btn.setToolTip(mode_name)
+            btn.setFixedSize(58, 54)
+            btn.clicked.connect(lambda _checked=False, m=mode_name: self._set_mode_from_sidebar(m))
+            self._mode_nav_group.addButton(btn)
+            self._mode_nav_buttons[mode_name] = btn
+            layout.addWidget(btn)
+
+        layout.addStretch()
+
+        token_btn = QPushButton("📊\nToken")
+        token_btn.setObjectName("navButton")
+        token_btn.setToolTip("Token 消耗日志")
+        token_btn.setFixedSize(58, 54)
+        token_btn.clicked.connect(self._open_token_log_dialog)
+        layout.addWidget(token_btn)
+
+        settings_btn = QPushButton("⚙️\n设置")
+        settings_btn.setObjectName("navButton")
+        settings_btn.setToolTip("设置中心")
+        settings_btn.setFixedSize(58, 54)
+        settings_btn.clicked.connect(self._open_settings_dialog)
+        layout.addWidget(settings_btn)
+
+        return sidebar
+
+    def _set_mode_from_sidebar(self, mode_name: str) -> None:
+        if not hasattr(self, "_mode_combo"):
+            return
+        if self._mode_combo.currentText() == mode_name:
+            self._sync_mode_sidebar()
+            return
+        self._mode_combo.setCurrentText(mode_name)
+        self._sync_mode_sidebar()
+
+    def _sync_mode_sidebar(self) -> None:
+        if not hasattr(self, "_mode_nav_buttons") or not hasattr(self, "_mode_combo"):
+            return
+        current = self._mode_combo.currentText()
+        for mode_name, btn in self._mode_nav_buttons.items():
+            btn.setChecked(mode_name == current)
+
+    def _build_top_toolbar(self) -> QWidget:
+        bar = QFrame()
+        bar.setObjectName("topToolbar")
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(10, 6, 10, 6)
+        self._top_status_label = QLabel("模式: 角色扮演 | 书籍: - | 状态: 就绪")
+        self._top_status_label.setObjectName("topStatusLabel")
+        layout.addWidget(self._top_status_label, stretch=1)
+        return bar
 
     def closeEvent(self, event):
         """关闭窗口时检查是否正在流式输出"""
@@ -849,23 +1137,19 @@ class DeepSeekChatGUI(QMainWindow):
         layout.setSpacing(4)
         layout.setContentsMargins(6, 6, 6, 6)
 
-        # ── 聊天模式 ──
-        mode_group = QGroupBox("📌 聊天模式")
-        mode_layout = QVBoxLayout(mode_group)
-        mode_layout.setContentsMargins(8, 4, 8, 4)
-        self._mode_combo = QComboBox()
+        # 模式切换入口在最左侧导航栏；保留隐藏下拉框作为既有切换逻辑的状态桥。
+        self._mode_combo = QComboBox(container)
         self._mode_combo.addItems(list(STRATEGY_OPTIONS.keys()))
         self._mode_combo.currentTextChanged.connect(self._on_mode_changed)
         self._last_mode = self._mode_combo.currentText() or list(STRATEGY_OPTIONS.keys())[0]
-        mode_layout.addWidget(self._mode_combo)
-        layout.addWidget(mode_group)
+        self._mode_combo.hide()
 
         # ── 模型选择 ──
         model_group = QGroupBox("🧠 模型选择")
         model_layout = QVBoxLayout(model_group)
         model_layout.setContentsMargins(8, 4, 8, 4)
         self._model_combo = QComboBox()
-        self._model_combo.addItems(MODEL_OPTIONS)
+        self._model_combo.addItems(self._model_options)
         self._model_combo.currentTextChanged.connect(self._on_model_changed)
         model_layout.addWidget(self._model_combo)
         layout.addWidget(model_group)
@@ -882,7 +1166,7 @@ class DeepSeekChatGUI(QMainWindow):
         preset_label = QLabel("预设方案")
         preset_label.setFixedWidth(60)
         self._preset_combo = QComboBox()
-        self._preset_combo.addItems(COMBO_ITEMS)
+        self._preset_combo.addItems([CUSTOM_LABEL, *self._presets.keys()])
         self._preset_combo.currentTextChanged.connect(self._on_preset_changed)
         preset_row.addWidget(preset_label)
         preset_row.addWidget(self._preset_combo, stretch=1)
@@ -989,7 +1273,7 @@ class DeepSeekChatGUI(QMainWindow):
         clear_btn.clicked.connect(self._on_clear)
         btn_layout.addWidget(clear_btn)
 
-        api_key_btn = QPushButton("🔑 修改 API Key")
+        api_key_btn = QPushButton("⚙ 设置中心")
         api_key_btn.setStyleSheet("""
             QPushButton {
                 background: #2a4a6b;
@@ -1007,7 +1291,7 @@ class DeepSeekChatGUI(QMainWindow):
                 background: #1a3a5b;
             }
         """)
-        api_key_btn.clicked.connect(self._on_change_api_key)
+        api_key_btn.clicked.connect(self._open_settings_dialog)
         btn_layout.addWidget(api_key_btn)
 
         layout.addWidget(self._btn_group)
@@ -1376,10 +1660,15 @@ class DeepSeekChatGUI(QMainWindow):
         layout.addLayout(save_settings_row)
 
         # ── 章节管理按钮 ──
-        manage_chapters_btn = QPushButton("⚙ 章节管理（查看 / 删除 / 选择版本）")
+        manage_chapters_btn = QPushButton("🌳 章节树管理")
         manage_chapters_btn.setMinimumHeight(32)
         manage_chapters_btn.clicked.connect(self._on_manage_chapters)
         layout.addWidget(manage_chapters_btn)
+
+        self._chapter_tree_status = QLabel("活跃路径：未加载")
+        self._chapter_tree_status.setWordWrap(True)
+        self._chapter_tree_status.setStyleSheet("color: #9cdcfe; font-size: 12px;")
+        layout.addWidget(self._chapter_tree_status)
 
         # ── 世界书按钮 ──
         tool_row = QHBoxLayout()
@@ -1841,6 +2130,18 @@ class DeepSeekChatGUI(QMainWindow):
 
     # ========== 主题 ==========
 
+    def _apply_theme(self) -> None:
+        """根据用户设置应用暗色/亮色主题。"""
+        global CURRENT_HTML_STYLE, INITIAL_HTML
+        theme = (getattr(self, "_settings", {}) or {}).get("theme", "dark")
+        if theme == "light":
+            CURRENT_HTML_STYLE = LIGHT_HTML_STYLE
+            self._apply_light_theme()
+        else:
+            CURRENT_HTML_STYLE = HTML_STYLE
+            self._apply_dark_theme()
+        INITIAL_HTML = initial_html()
+
     def _apply_dark_theme(self) -> None:
         """应用现代化深色主题样式"""
         self.setStyleSheet("""
@@ -2091,6 +2392,258 @@ class DeepSeekChatGUI(QMainWindow):
             QSplitter::handle:hover { background: rgba(86, 156, 214, 0.3); }
 
         """)
+        self.setStyleSheet(self.styleSheet() + """
+            QFrame#appSidebar {
+                background: #11111d;
+                border-right: 1px solid rgba(255, 255, 255, 0.08);
+            }
+            QLabel#sidebarBrand {
+                color: #f2f6ff;
+                font-size: 18px;
+                font-weight: 700;
+                background: #0e639c;
+                border-radius: 8px;
+                min-height: 42px;
+            }
+            QPushButton#navButton {
+                background: transparent;
+                color: #b0b0c0;
+                border: 1px solid transparent;
+                border-radius: 8px;
+                padding: 4px 2px;
+                font-size: 12px;
+                min-height: 0;
+            }
+            QPushButton#navButton:hover {
+                background: #25253a;
+                color: #ffffff;
+                border-color: rgba(86, 156, 214, 0.35);
+            }
+            QPushButton#navButton:checked {
+                background: #1e3a5f;
+                color: #ffffff;
+                border-color: #569cd6;
+            }
+            QFrame#topToolbar {
+                background: #181826;
+                border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+            }
+            QLabel#topStatusLabel {
+                color: #d4d4d4;
+                font-weight: 600;
+            }
+        """)
+
+    def _apply_light_theme(self) -> None:
+        """应用亮色主题样式。"""
+        self.setStyleSheet("""
+            QMainWindow {
+                background-color: #f4f6fb;
+            }
+            QWidget {
+                background-color: #f4f6fb;
+                color: #202635;
+                font-family: "Microsoft YaHei", "Segoe UI", sans-serif;
+            }
+            QFrame#appSidebar {
+                background: #ffffff;
+                border-right: 1px solid #d9deea;
+            }
+            QLabel#sidebarBrand {
+                color: #ffffff;
+                font-size: 18px;
+                font-weight: 700;
+                background: #2563eb;
+                border-radius: 8px;
+                min-height: 42px;
+            }
+            QPushButton#navButton {
+                background: transparent;
+                color: #526070;
+                border: 1px solid transparent;
+                border-radius: 8px;
+                padding: 4px 2px;
+                font-size: 12px;
+                min-height: 0;
+            }
+            QPushButton#navButton:hover {
+                background: #eef3ff;
+                color: #1f3b7a;
+                border-color: #bfd0ff;
+            }
+            QPushButton#navButton:checked {
+                background: #dbe7ff;
+                color: #123a8a;
+                border-color: #7aa2ff;
+            }
+            QFrame#topToolbar {
+                background: #ffffff;
+                border-bottom: 1px solid #d9deea;
+            }
+            QLabel#topStatusLabel {
+                color: #1e293b;
+                font-weight: 600;
+            }
+            QScrollArea {
+                background: transparent;
+                border: none;
+            }
+            QScrollArea > QWidget > QWidget {
+                background: transparent;
+            }
+            QGroupBox {
+                color: #202635;
+                font-weight: 600;
+                font-size: 13px;
+                border: 1px solid #dce2ef;
+                border-radius: 10px;
+                margin-top: 12px;
+                padding: 16px 12px 12px 12px;
+                background: #ffffff;
+            }
+            QGroupBox::title {
+                subcontrol-origin: margin;
+                left: 12px;
+                padding: 0 8px;
+                color: #2563eb;
+                background: transparent;
+            }
+            QComboBox, QSpinBox, QLineEdit, QTextEdit {
+                background: #ffffff;
+                color: #202635;
+                border: 1px solid #cfd7e6;
+                border-radius: 6px;
+                padding: 6px 10px;
+                font-size: 13px;
+                selection-background-color: #bfd7ff;
+            }
+            QTextEdit {
+                padding: 6px 8px;
+            }
+            QComboBox:hover, QSpinBox:hover, QLineEdit:hover, QTextEdit:hover {
+                border-color: #7aa2ff;
+            }
+            QComboBox:focus, QSpinBox:focus, QLineEdit:focus, QTextEdit:focus {
+                border-color: #2563eb;
+            }
+            QComboBox QAbstractItemView {
+                background: #ffffff;
+                color: #202635;
+                selection-background-color: #dbe7ff;
+                selection-color: #123a8a;
+                border: 1px solid #cfd7e6;
+                outline: none;
+            }
+            QLabel {
+                color: #526070;
+                font-size: 12.5px;
+                background: transparent;
+            }
+            QPushButton {
+                background: #2563eb;
+                color: #ffffff;
+                border: 1px solid #1d4ed8;
+                border-radius: 6px;
+                padding: 7px 16px;
+                font-weight: 500;
+                font-size: 12.5px;
+                min-height: 24px;
+            }
+            QPushButton:hover {
+                background: #1d4ed8;
+            }
+            QPushButton:pressed {
+                background: #1e40af;
+                padding-top: 9px;
+                padding-bottom: 5px;
+            }
+            QPushButton:disabled {
+                background: #e2e8f0;
+                color: #94a3b8;
+                border-color: #d4dbe8;
+            }
+            QSlider::groove:horizontal {
+                background: #d7deea;
+                height: 4px;
+                border-radius: 2px;
+            }
+            QSlider::handle:horizontal {
+                background: #2563eb;
+                width: 16px;
+                height: 16px;
+                margin: -6px 0;
+                border-radius: 8px;
+            }
+            QSlider::sub-page:horizontal {
+                background: #7aa2ff;
+                border-radius: 2px;
+            }
+            QCheckBox, QRadioButton {
+                color: #526070;
+                font-size: 12.5px;
+                spacing: 8px;
+                background: transparent;
+            }
+            QCheckBox::indicator, QRadioButton::indicator {
+                width: 18px;
+                height: 18px;
+                background: #ffffff;
+                border: 1px solid #aeb9ca;
+            }
+            QCheckBox::indicator {
+                border-radius: 4px;
+            }
+            QRadioButton::indicator {
+                border-radius: 10px;
+            }
+            QCheckBox::indicator:checked, QRadioButton::indicator:checked {
+                background: #2563eb;
+                border-color: #2563eb;
+            }
+            QSplitter::handle {
+                background: #d9deea;
+                width: 2px;
+                margin: 4px 0;
+            }
+            QSplitter::handle:hover {
+                background: #7aa2ff;
+            }
+            QScrollBar:vertical {
+                background: #edf1f7;
+                width: 8px;
+                border: none;
+            }
+            QScrollBar::handle:vertical {
+                background: #b7c1d3;
+                border-radius: 4px;
+                min-height: 30px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #7aa2ff;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0;
+            }
+            QPushButton#navButton {
+                background: transparent;
+                color: #526070;
+                border: 1px solid transparent;
+                border-radius: 8px;
+                padding: 4px 2px;
+                font-size: 12px;
+                min-height: 0;
+            }
+            QPushButton#navButton:hover {
+                background: #eef3ff;
+                color: #1f3b7a;
+                border-color: #bfd0ff;
+            }
+            QPushButton#navButton:checked {
+                background: #dbe7ff;
+                color: #123a8a;
+                border-color: #7aa2ff;
+            }
+        """)
 
     # ========== 信号处理 ==========
 
@@ -2101,11 +2654,12 @@ class DeepSeekChatGUI(QMainWindow):
             self._client.cancel()
 
     def _on_mode_changed(self, text: str) -> None:
-        """模式下拉框变化"""
+        """模式变化（由左侧导航栏驱动，隐藏下拉框承载旧状态）。"""
         if self._streaming:
             self._mode_combo.blockSignals(True)
             self._mode_combo.setCurrentText(self._last_mode)
             self._mode_combo.blockSignals(False)
+            self._sync_mode_sidebar()
             return
 
         strategy_cls = STRATEGY_OPTIONS.get(text)
@@ -2131,6 +2685,7 @@ class DeepSeekChatGUI(QMainWindow):
                     self._mode_combo.blockSignals(True)
                     self._mode_combo.setCurrentText(self._last_mode)
                     self._mode_combo.blockSignals(False)
+                    self._sync_mode_sidebar()
                     return
                 if clicked == btn_save:
                     self._on_save_conversation()
@@ -2149,7 +2704,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._sync_sliders_to_client()
         # 如果当前是命名预设，直接应用预设值（setCurrentText 在文本未变时不触发信号）
         if current_preset != CUSTOM_LABEL:
-            preset = PRESETS.get(current_preset)
+            preset = self._presets.get(current_preset)
             if preset:
                 self._temp_slider.setValue(preset["temp"])
                 self._top_p_slider.setValue(preset["top_p"])
@@ -2188,8 +2743,12 @@ class DeepSeekChatGUI(QMainWindow):
         elif not self._loading_conversation:
             self._display.setHtml(md_to_html(strategy.get_welcome_message()))
 
+        self._sync_mode_sidebar()
+        self._update_status()
+
     def _on_model_changed(self, model: str) -> None:
         self._client.switch_model(model)
+        self._save_runtime_settings()
         self._update_status()
 
     def _on_temp_changed(self, value: int) -> None:
@@ -2226,7 +2785,7 @@ class DeepSeekChatGUI(QMainWindow):
         """参数预设下拉框切换时应用预设值。"""
         if text == CUSTOM_LABEL:
             return
-        preset = PRESETS.get(text)
+        preset = self._presets.get(text)
         if preset is None:
             return
         self._preset_applying = True
@@ -2236,6 +2795,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._mt_spin.setValue(preset["max_tokens"])
         self._preset_applying = False
         self._update_status()
+        self._save_runtime_settings()
 
     def _sync_sliders_to_client(self) -> None:
         self._temp_slider.setValue(int(self._client.temperature * 100))
@@ -2252,6 +2812,72 @@ class DeepSeekChatGUI(QMainWindow):
         self._current_conversation_id = None
         self._current_conversation_title = ""
 
+    def _current_book_for_status(self) -> str:
+        try:
+            if isinstance(self._client.strategy, NovelStrategy):
+                return self._bookshelf_combo.currentText().strip()
+            if isinstance(self._client.strategy, ContinuationStrategy):
+                return self._cont_bookshelf_combo.currentText().strip()
+        except Exception:
+            pass
+        return ""
+
+    def _refresh_top_status(self) -> None:
+        if not hasattr(self, "_top_status_label") or not self._client:
+            return
+        book = self._current_book_for_status() or "-"
+        state = "生成中" if self._streaming else "就绪"
+        self._top_status_label.setText(
+            f"模式: {self._client.strategy.get_name()} | "
+            f"模型: {self._client.model} | "
+            f"书籍: {book} | 状态: {state}"
+        )
+
+    def _open_token_log_dialog(self) -> None:
+        dialog = TokenLogDialog(self, self._token_log_manager)
+        dialog.exec()
+
+    def _log_token_usage(
+        self,
+        *,
+        operation: str,
+        direction: str,
+        content: str,
+        usage,
+        model: str | None = None,
+        strategy: str | None = None,
+    ) -> None:
+        usage_dict = DeepSeekChatClient._usage_to_dict(usage)
+        self._token_log_manager.add_entry(
+            operation=operation,
+            direction=direction,
+            strategy=strategy or self._client.strategy.get_name(),
+            model=model or self._client.model,
+            content=content,
+            usage=usage_dict,
+        )
+
+    def _open_settings_dialog(self) -> None:
+        dialog = SettingsDialog(
+            self,
+            settings_manager=self._settings_manager,
+            auth=self._auth,
+            username=self._username,
+            user_dir=self._user_dir,
+            encrypted=self._enc_key is not None,
+            api_key_callback=self._on_change_api_key,
+            settings_changed_callback=self._apply_settings_to_controls,
+            password_changed_callback=self._on_password_changed,
+        )
+        dialog.exec()
+
+    def _on_password_changed(self, new_key: bytes) -> None:
+        self._enc_key = new_key
+        self._novel_manager._enc_key = new_key
+        self._conversation_manager._enc_key = new_key
+        self._settings_manager._enc_key = new_key
+        self._token_log_manager._enc_key = new_key
+
     def _update_status(self) -> None:
         self._status_label.setText(
             f"模式: {self._client.strategy.get_name()}\n"
@@ -2261,6 +2887,7 @@ class DeepSeekChatGUI(QMainWindow):
             f"freq_p: {self._client.frequency_penalty:.2f} | "
             f"max_tk: {self._client.max_tokens}"
         )
+        self._refresh_top_status()
 
     # ========== 🎭 角色扮演面板事件 ==========
 
@@ -3058,6 +3685,18 @@ class DeepSeekChatGUI(QMainWindow):
                 stream=False,
             )
             content = response.choices[0].message.content or ""
+            self._log_token_usage(
+                operation="novel_chapter",
+                direction="send",
+                content=user_prompt,
+                usage=getattr(response, "usage", None),
+            )
+            self._log_token_usage(
+                operation="novel_chapter",
+                direction="receive",
+                content=content,
+                usage=getattr(response, "usage", None),
+            )
 
             if self._client._cancel_requested:
                 self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
@@ -3489,6 +4128,18 @@ class DeepSeekChatGUI(QMainWindow):
                 stream=False,
             )
             content = response.choices[0].message.content or ""
+            self._log_token_usage(
+                operation="continuation",
+                direction="send",
+                content=user_prompt,
+                usage=getattr(response, "usage", None),
+            )
+            self._log_token_usage(
+                operation="continuation",
+                direction="receive",
+                content=content,
+                usage=getattr(response, "usage", None),
+            )
 
             if self._client._cancel_requested:
                 self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
@@ -3679,6 +4330,29 @@ class DeepSeekChatGUI(QMainWindow):
         try:
             for token in self._client.chat_stream(user_input):
                 self._stream_signals.token.emit(token)
+            usage = self._client.last_usage
+            strategy_name = self._client.strategy.get_name()
+            self._token_log_manager.add_entry(
+                operation="chat",
+                direction="send",
+                strategy=strategy_name,
+                model=self._client.model,
+                content=user_input,
+                usage=usage,
+            )
+            assistant_messages = [
+                m.get("content", "") for m in self._client.export_messages()
+                if m.get("role") == "assistant"
+            ]
+            assistant_content = assistant_messages[-1] if assistant_messages else ""
+            self._token_log_manager.add_entry(
+                operation="chat",
+                direction="receive",
+                strategy=strategy_name,
+                model=self._client.model,
+                content=assistant_content,
+                usage=usage,
+            )
             self._stream_signals.finished.emit()
         except Exception as e:
             self._stream_signals.error.emit(str(e))
@@ -3829,6 +4503,20 @@ class DeepSeekChatGUI(QMainWindow):
             info_text = "\n".join(lines)
         self._chapter_info_label.setText(info_text)
         self._cont_chapter_info_label.setText(info_text)
+        try:
+            if hasattr(self, "_chapter_tree_status") and title:
+                nodes = self._novel_manager.get_active_path_nodes(title)
+                if nodes:
+                    path_text = " → ".join(
+                        f"第{n.get('chapter_num')}章v{n.get('version')}" for n in nodes
+                    )
+                    self._chapter_tree_status.setText(f"活跃路径：{path_text}")
+                else:
+                    self._chapter_tree_status.setText("活跃路径：未设置")
+        except Exception:
+            if hasattr(self, "_chapter_tree_status"):
+                self._chapter_tree_status.setText("活跃路径：读取失败")
+        self._refresh_top_status()
 
     # ========== 📖 世界书对话框 ==========
 
@@ -4727,6 +5415,18 @@ class DeepSeekChatGUI(QMainWindow):
                         stream=False,
                     )
                     content = response.choices[0].message.content or ""
+                    parent._log_token_usage(
+                        operation="chapter_regenerate",
+                        direction="send",
+                        content=messages[-1].get("content", ""),
+                        usage=getattr(response, "usage", None),
+                    )
+                    parent._log_token_usage(
+                        operation="chapter_regenerate",
+                        direction="receive",
+                        content=content,
+                        usage=getattr(response, "usage", None),
+                    )
 
                     new_version = self._novel_mgr.get_next_version(self._book_title, chapter_num)
                     file_path, saved_version = self._novel_mgr.save_chapter_version(
@@ -4794,8 +5494,9 @@ class DeepSeekChatGUI(QMainWindow):
                     if hasattr(parent, "_refresh_chapter_info_display"):
                         parent._refresh_chapter_info_display(self._book_title)
 
-        dialog = ChapterManagerDialog(self, self._novel_manager, title, self._client)
+        dialog = ChapterTreeDialog(self, self._novel_manager, title, self._client)
         dialog.exec()
+        self._refresh_chapter_info_display(title)
 
     # ========== 📤 导出功能 ==========
 

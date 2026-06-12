@@ -51,6 +51,10 @@ class LoginDialog(QDialog):
         self._password_input.setEchoMode(QLineEdit.EchoMode.Password)
         layout.addWidget(self._password_input)
 
+        self._strength_label = QLabel("")
+        self._strength_label.setStyleSheet("font-size: 12px; color: #888;")
+        layout.addWidget(self._strength_label)
+
         # 确认密码（默认隐藏，注册模式显示）
         self._confirm_label = QLabel("确认密码:")
         self._confirm_label.setVisible(False)
@@ -87,6 +91,7 @@ class LoginDialog(QDialog):
         self._username_input.returnPressed.connect(self._password_input.setFocus)
         self._password_input.returnPressed.connect(self._on_login)
         self._confirm_input.returnPressed.connect(self._on_register)
+        self._password_input.textChanged.connect(self._update_strength)
 
         self._register_mode = False
         layout.addStretch()
@@ -100,6 +105,7 @@ class LoginDialog(QDialog):
             self._switch_btn.setText("已有账号？去登录")
             self._confirm_label.setVisible(True)
             self._confirm_input.setVisible(True)
+            self._update_strength(self._password_input.text())
         else:
             self.setWindowTitle("DeepSeekAss - 登录")
             self._login_btn.setVisible(True)
@@ -107,6 +113,21 @@ class LoginDialog(QDialog):
             self._switch_btn.setText("没有账号？去注册")
             self._confirm_label.setVisible(False)
             self._confirm_input.setVisible(False)
+            self._strength_label.setText("")
+
+    def _password_strength_ok(self, password: str) -> bool:
+        return len(password) >= 6 and any(c.isalpha() for c in password) and any(c.isdigit() for c in password)
+
+    def _update_strength(self, password: str) -> None:
+        if not self._register_mode:
+            self._strength_label.setText("")
+            return
+        if self._password_strength_ok(password):
+            self._strength_label.setText("密码强度：可用")
+            self._strength_label.setStyleSheet("font-size: 12px; color: #6a9955;")
+        else:
+            self._strength_label.setText("密码至少 6 位，并同时包含字母和数字")
+            self._strength_label.setStyleSheet("font-size: 12px; color: #d7ba7d;")
 
     def _on_login(self):
         username = self._username_input.text().strip()
@@ -134,6 +155,9 @@ class LoginDialog(QDialog):
             return
         if not password:
             QMessageBox.warning(self, "提示", "密码不能为空")
+            return
+        if not self._password_strength_ok(password):
+            QMessageBox.warning(self, "提示", "密码至少 6 位，并同时包含字母和数字")
             return
         if password != confirm:
             QMessageBox.warning(self, "提示", "两次密码输入不一致")

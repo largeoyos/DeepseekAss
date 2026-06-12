@@ -2,6 +2,7 @@
 DeepSeek 聊天客户端 - 核心逻辑
 负责 API 调用、对话管理、模型切换、参数控制，与具体模式（策略）解耦
 """
+from datetime import datetime
 from typing import Generator
 
 from openai import OpenAI
@@ -45,6 +46,7 @@ class DeepSeekChatClient:
         self._frequency_penalty = strategy.recommended_frequency_penalty
         self._messages: list[dict] = []
         self._global_user_prompt: str = ""
+        self._last_usage: dict | None = None
 
         # 取消机制
         self._cancel_requested = False
@@ -117,6 +119,11 @@ class DeepSeekChatClient:
     def messages(self) -> list[dict]:
         """返回当前对话历史副本"""
         return list(self._messages)
+
+    @property
+    def last_usage(self) -> dict | None:
+        """Return usage from the most recent completed API call, if provided."""
+        return dict(self._last_usage) if self._last_usage else None
 
     # ========== 模式切换 ==========
 
@@ -198,9 +205,27 @@ class DeepSeekChatClient:
 
     # ========== 核心 API 调用 ==========
 
-    def _build_api_kwargs(self, stream: bool = False) -> dict:
-        """构造 API 调用参数字典"""
+    @staticmethod
+    def _now_ts() -> str:
+        return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    @staticmethod
+    def _usage_to_dict(usage) -> dict | None:
+        if usage is None:
+            return None
+        if isinstance(usage, dict):
+            return usage
+        if hasattr(usage, "model_dump"):
+            return usage.model_dump()
         return {
+            "prompt_tokens": getattr(usage, "prompt_tokens", None),
+            "completion_tokens": getattr(usage, "completion_tokens", None),
+            "total_tokens": getattr(usage, "total_tokens", None),
+        }
+
+    def _build_api_kwargs(self, stream: bool = False, include_usage: bool = False) -> dict:
+        """构造 API 调用参数字典"""
+        kwargs = {
             "model": self._model,
             "messages": self._messages,
             "temperature": self._temperature,
@@ -209,6 +234,9 @@ class DeepSeekChatClient:
             "frequency_penalty": self._frequency_penalty,
             "stream": stream,
         }
+        if stream and include_usage:
+            kwargs["stream_options"] = {"include_usage": True}
+        return kwargs
 
     def chat(self, user_input: str) -> str:
         """
@@ -220,7 +248,8 @@ class DeepSeekChatClient:
         Returns:
             模型的完整回复文本
         """
-        self._messages.append({"role": "user", "content": user_input})
+        self._last_usage = None
+        self._messages.append({"role": "user", "content": user_input, "timestamp": self._now_ts()})
 
         try:
             response = self._client.chat.completions.create(
@@ -233,7 +262,8 @@ class DeepSeekChatClient:
             assistant_content = response.choices[0].message.content
             if assistant_content is None:
                 assistant_content = "[模型返回了空回复]"
-            self._messages.append({"role": "assistant", "content": assistant_content})
+            self._last_usage = self._usage_to_dict(getattr(response, "usage", None))
+            self._messages.append({"role": "assistant", "content": assistant_content, "timestamp": self._now_ts()})
             return assistant_content
         except Exception as e:
             self._messages.pop()
@@ -249,18 +279,27 @@ class DeepSeekChatClient:
         Yields:
             每次产出一个 token 字符串
         """
-        self._messages.append({"role": "user", "content": user_input})
+        self._last_usage = None
+        self._messages.append({"role": "user", "content": user_input, "timestamp": self._now_ts()})
 
         try:
-            stream = self._client.chat.completions.create(
-                **self._build_api_kwargs(stream=True),
-            )
+            try:
+                stream = self._client.chat.completions.create(
+                    **self._build_api_kwargs(stream=True, include_usage=True),
+                )
+            except Exception:
+                stream = self._client.chat.completions.create(
+                    **self._build_api_kwargs(stream=True),
+                )
             self._current_stream = stream
 
             full_reply: list[str] = []
             for chunk in stream:
                 if self._cancel_requested:
                     break
+                usage = getattr(chunk, "usage", None)
+                if usage is not None:
+                    self._last_usage = self._usage_to_dict(usage)
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta
@@ -272,7 +311,11 @@ class DeepSeekChatClient:
                 self._messages.pop()  # 取消时不保留部分回复
             else:
                 # 流式结束后将完整回复写入对话历史
-                self._messages.append({"role": "assistant", "content": "".join(full_reply)})
+                self._messages.append({
+                    "role": "assistant",
+                    "content": "".join(full_reply),
+                    "timestamp": self._now_ts(),
+                })
 
         except Exception as e:
             self._messages.pop()
