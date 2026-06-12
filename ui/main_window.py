@@ -453,6 +453,62 @@ def md_to_html(text: str) -> str:
     return f"<html><head>{CURRENT_HTML_STYLE}</head><body>{md_body}</body></html>"
 
 
+class _UsageLoggingCompletionsProxy:
+    def __init__(self, completions, owner, operation: str):
+        self._completions = completions
+        self._owner = owner
+        self._operation = operation
+
+    def create(self, *args, **kwargs):
+        response = self._completions.create(*args, **kwargs)
+        messages = kwargs.get("messages") or []
+        prompt = "\n\n".join(
+            str(m.get("content", "")) for m in messages if m.get("role") == "user"
+        )
+        choices = getattr(response, "choices", []) or []
+        content = ""
+        if choices:
+            message = getattr(choices[0], "message", None)
+            content = getattr(message, "content", "") or ""
+        usage = getattr(response, "usage", None)
+        self._owner._log_token_usage(
+            operation=self._operation,
+            direction="send",
+            content=prompt,
+            usage=usage,
+            model=kwargs.get("model"),
+        )
+        self._owner._log_token_usage(
+            operation=self._operation,
+            direction="receive",
+            content=content,
+            usage=usage,
+            model=kwargs.get("model"),
+        )
+        return response
+
+    def __getattr__(self, name):
+        return getattr(self._completions, name)
+
+
+class _UsageLoggingChatProxy:
+    def __init__(self, chat, owner, operation: str):
+        self._chat = chat
+        self.completions = _UsageLoggingCompletionsProxy(chat.completions, owner, operation)
+
+    def __getattr__(self, name):
+        return getattr(self._chat, name)
+
+
+class _UsageLoggingClientProxy:
+    def __init__(self, client, owner, operation: str):
+        self._client = client
+        self.chat = _UsageLoggingChatProxy(client.chat, owner, operation)
+
+    def __getattr__(self, name):
+        return getattr(self._client, name)
+
+
 # ========== 主窗口 ==========
 
 class DeepSeekChatGUI(QMainWindow):
@@ -1132,7 +1188,7 @@ class DeepSeekChatGUI(QMainWindow):
         scroll.setMinimumWidth(280)
 
         container = QWidget()
-        container.setStyleSheet("QWidget { background: transparent; }")
+        container.setObjectName("leftPanelContainer")
         layout = QVBoxLayout(container)
         layout.setSpacing(4)
         layout.setContentsMargins(6, 6, 6, 6)
@@ -2044,14 +2100,8 @@ class DeepSeekChatGUI(QMainWindow):
 
         # 底部输入区
         input_frame = QFrame()
+        input_frame.setObjectName("inputFrame")
         input_frame.setFrameShape(QFrame.Shape.StyledPanel)
-        input_frame.setStyleSheet("""
-            QFrame {
-                background: rgba(26, 26, 46, 0.95);
-                border: none;
-                border-top: 1px solid rgba(255, 255, 255, 0.06);
-            }
-        """)
         input_layout = QHBoxLayout(input_frame)
         input_layout.setContentsMargins(12, 8, 12, 8)
         input_layout.setSpacing(10)
@@ -2137,9 +2187,13 @@ class DeepSeekChatGUI(QMainWindow):
         if theme == "light":
             CURRENT_HTML_STYLE = LIGHT_HTML_STYLE
             self._apply_light_theme()
+            if hasattr(self, "_display"):
+                self._display.page().setBackgroundColor(QColor("#f4f6fb"))
         else:
             CURRENT_HTML_STYLE = HTML_STYLE
             self._apply_dark_theme()
+            if hasattr(self, "_display"):
+                self._display.page().setBackgroundColor(QColor("#1e1e2e"))
         INITIAL_HTML = initial_html()
 
     def _apply_dark_theme(self) -> None:
@@ -2320,6 +2374,53 @@ class DeepSeekChatGUI(QMainWindow):
                 border: none;
             }
             QScrollArea > QWidget > QWidget { background: transparent; }
+            QFrame#inputFrame {
+                background: rgba(26, 26, 46, 0.95);
+                border: none;
+                border-top: 1px solid rgba(255, 255, 255, 0.06);
+            }
+            QGraphicsView, QListWidget, QTableWidget, QTreeWidget {
+                background: #222238;
+                color: #d4d4d4;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 6px;
+                selection-background-color: #264f78;
+                selection-color: #ffffff;
+            }
+            QListWidget::item, QTableWidget::item, QTreeWidget::item {
+                color: #d4d4d4;
+                padding: 4px;
+            }
+            QListWidget::item:selected, QTableWidget::item:selected, QTreeWidget::item:selected {
+                background: #264f78;
+                color: #ffffff;
+            }
+            QHeaderView::section {
+                background: #2a2a3e;
+                color: #d4d4d4;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                padding: 6px;
+            }
+            QTabWidget::pane {
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-radius: 6px;
+                background: #1e1e2e;
+            }
+            QTabBar::tab {
+                background: #25253a;
+                color: #b0b0c0;
+                border: 1px solid rgba(255, 255, 255, 0.08);
+                border-bottom: none;
+                padding: 7px 12px;
+                margin-right: 2px;
+                border-top-left-radius: 6px;
+                border-top-right-radius: 6px;
+            }
+            QTabBar::tab:selected {
+                background: #1e3a5f;
+                color: #ffffff;
+                border-color: #569cd6;
+            }
 
             /* ========== 数字输入框 ========== */
             QSpinBox {
@@ -2490,6 +2591,53 @@ class DeepSeekChatGUI(QMainWindow):
             }
             QScrollArea > QWidget > QWidget {
                 background: transparent;
+            }
+            QFrame#inputFrame {
+                background: #ffffff;
+                border: none;
+                border-top: 1px solid #d9deea;
+            }
+            QGraphicsView, QListWidget, QTableWidget, QTreeWidget {
+                background: #ffffff;
+                color: #202635;
+                border: 1px solid #cfd7e6;
+                border-radius: 6px;
+                selection-background-color: #dbe7ff;
+                selection-color: #123a8a;
+            }
+            QListWidget::item, QTableWidget::item, QTreeWidget::item {
+                color: #202635;
+                padding: 4px;
+            }
+            QListWidget::item:selected, QTableWidget::item:selected, QTreeWidget::item:selected {
+                background: #dbe7ff;
+                color: #123a8a;
+            }
+            QHeaderView::section {
+                background: #eef3ff;
+                color: #1e293b;
+                border: 1px solid #cfd7e6;
+                padding: 6px;
+            }
+            QTabWidget::pane {
+                border: 1px solid #cfd7e6;
+                border-radius: 6px;
+                background: #ffffff;
+            }
+            QTabBar::tab {
+                background: #edf1f7;
+                color: #526070;
+                border: 1px solid #cfd7e6;
+                border-bottom: none;
+                padding: 7px 12px;
+                margin-right: 2px;
+                border-top-left-radius: 6px;
+                border-top-right-radius: 6px;
+            }
+            QTabBar::tab:selected {
+                background: #dbe7ff;
+                color: #123a8a;
+                border-color: #7aa2ff;
             }
             QGroupBox {
                 color: #202635;
@@ -2847,15 +2995,21 @@ class DeepSeekChatGUI(QMainWindow):
         model: str | None = None,
         strategy: str | None = None,
     ) -> None:
-        usage_dict = DeepSeekChatClient._usage_to_dict(usage)
-        self._token_log_manager.add_entry(
-            operation=operation,
-            direction=direction,
-            strategy=strategy or self._client.strategy.get_name(),
-            model=model or self._client.model,
-            content=content,
-            usage=usage_dict,
-        )
+        try:
+            usage_dict = DeepSeekChatClient._usage_to_dict(usage)
+            self._token_log_manager.add_entry(
+                operation=operation,
+                direction=direction,
+                strategy=strategy or self._client.strategy.get_name(),
+                model=model or self._client.model,
+                content=content,
+                usage=usage_dict,
+            )
+        except Exception:
+            pass
+
+    def _usage_logged_client(self, operation: str):
+        return _UsageLoggingClientProxy(self._client.raw_client, self, operation)
 
     def _open_settings_dialog(self) -> None:
         dialog = SettingsDialog(
@@ -3595,7 +3749,7 @@ class DeepSeekChatGUI(QMainWindow):
         chapter_num = self._novel_manager.get_next_chapter_num(title)
 
         # 智能前情提要（剧情摘要）
-        client = self._client.raw_client if hasattr(self, '_client') else None
+        client = self._usage_logged_client("novel_context_summary") if hasattr(self, '_client') else None
         summary = self._novel_manager.load_smart_summary(
             title,
             client=client,
@@ -3752,7 +3906,7 @@ class DeepSeekChatGUI(QMainWindow):
             if new_chapter:
                 self._stream_signals.token.emit("\n🔍 正在提炼剧情记忆...\n")
                 summary = self._novel_manager.generate_summary(
-                    self._client.raw_client, content, chapter_num, chapter_title,
+                    self._usage_logged_client("novel_summary"), content, chapter_num, chapter_title,
                     global_user_prompt=self._client.global_user_prompt
                 )
                 self._novel_manager.append_summary(
@@ -3782,7 +3936,7 @@ class DeepSeekChatGUI(QMainWindow):
                         history_summary = self._novel_manager.build_history_summary(title, exclude_chapter=chapter_num)
 
                         expanded = supplement_content(
-                            self._client.raw_client, content, target_chars, actual_words,
+                            self._usage_logged_client("novel_supplement"), content, target_chars, actual_words,
                             chapter_title, self._client.model, self._client.temperature,
                             global_user_prompt=self._client.global_user_prompt,
                             protagonist_bio=protagonist_bio,
@@ -3820,7 +3974,7 @@ class DeepSeekChatGUI(QMainWindow):
                 from core.world_bible import extract_and_merge_world_bible
                 bible = self._novel_manager.load_world_bible(title)
                 updated_bible = extract_and_merge_world_bible(
-                    self._client.raw_client, content, chapter_num, bible, self._client.model,
+                    self._usage_logged_client("world_bible_update"), content, chapter_num, bible, self._client.model,
                     global_user_prompt=self._client.global_user_prompt
                 )
                 self._novel_manager.save_world_bible(title, updated_bible)
@@ -3939,7 +4093,7 @@ class DeepSeekChatGUI(QMainWindow):
             return
 
         # ── 段落预览弹窗 ──
-        client = self._client.raw_client if hasattr(self, '_client') else None
+        client = self._usage_logged_client("continuation_segment") if hasattr(self, '_client') else None
         dlg = SectionPreviewDialog(
             self,
             source_text=source_text if not source_folder else None,
@@ -4040,7 +4194,7 @@ class DeepSeekChatGUI(QMainWindow):
             # 加载前情提要（复用小说模式的智能摘要算法）
             try:
                 summary = self._novel_manager.load_smart_summary(
-                    book_title, self._client.raw_client,
+                    book_title, self._usage_logged_client("continuation_context_summary"),
                     next_chapter_num=chapter_num,
                     max_recent=10,
                     model=self._client.model,
@@ -4182,7 +4336,7 @@ class DeepSeekChatGUI(QMainWindow):
             # 提炼摘要
             self._stream_signals.token.emit("\n🔍 正在提炼剧情记忆...\n")
             summary = self._novel_manager.generate_summary(
-                self._client.raw_client, content, chapter_num, chapter_title,
+                self._usage_logged_client("continuation_summary"), content, chapter_num, chapter_title,
                 global_user_prompt=self._client.global_user_prompt
             )
             self._novel_manager.append_summary(
@@ -4215,7 +4369,7 @@ class DeepSeekChatGUI(QMainWindow):
                     history_summary = self._novel_manager.build_history_summary(book_title, exclude_chapter=chapter_num)
 
                     expanded = supplement_content(
-                        self._client.raw_client, content, word_count, actual_words,
+                        self._usage_logged_client("continuation_supplement"), content, word_count, actual_words,
                         chapter_title, self._client.model, self._client.temperature,
                         global_user_prompt=self._client.global_user_prompt,
                         protagonist_bio=p_bio,
@@ -4253,7 +4407,7 @@ class DeepSeekChatGUI(QMainWindow):
                 from core.world_bible import extract_and_merge_world_bible
                 bible = self._novel_manager.load_world_bible(book_title)
                 updated_bible = extract_and_merge_world_bible(
-                    self._client.raw_client, content, chapter_num, bible, self._client.model,
+                    self._usage_logged_client("world_bible_update"), content, chapter_num, bible, self._client.model,
                     global_user_prompt=self._client.global_user_prompt
                 )
                 self._novel_manager.save_world_bible(book_title, updated_bible)
@@ -4595,7 +4749,7 @@ class DeepSeekChatGUI(QMainWindow):
             QMessageBox.warning(self, "提示", "请先选择续写源文档或文件夹。")
             return
 
-        client = self._client.raw_client if hasattr(self, '_client') else None
+        client = self._usage_logged_client("continuation_segment") if hasattr(self, '_client') else None
         if client is None:
             QMessageBox.warning(self, "错误", "客户端未初始化。")
             return
@@ -4647,7 +4801,7 @@ class DeepSeekChatGUI(QMainWindow):
             self._cont_analysis_source_path = source_folder
             threading.Thread(
                 target=self._run_batch_folder_import,
-                args=(title, source_folder, self._client.model, client),
+                args=(title, source_folder, self._client.model, self._usage_logged_client("batch_import_analysis")),
                 kwargs={"files_list": result["files"]},
                 daemon=True,
             ).start()
@@ -4673,7 +4827,9 @@ class DeepSeekChatGUI(QMainWindow):
         self._cont_analysis_source = source_text
         self._cont_analysis_source_path = source_file or source_folder or ""
 
-        self._start_analysis_with_sections(title, source_text, sections, client)
+        self._start_analysis_with_sections(
+            title, source_text, sections, self._usage_logged_client("continuation_import_analysis")
+        )
 
     def _start_analysis_with_sections(self, title: str, source_text: str, sections: list, client) -> None:
         """后台线程：使用已确认的段落直接进行世界观提取（跳过 AI 分段）"""
@@ -4963,7 +5119,7 @@ class DeepSeekChatGUI(QMainWindow):
     def _on_cont_suggest(self, setting: str, plot_outline: str, word_count: int,
                          world_data: dict | None = None) -> None:
         """AI 建议发展方向 → 用户选择 → 续写"""
-        client = self._client.raw_client if hasattr(self, '_client') else None
+        client = self._usage_logged_client("continuation_suggest") if hasattr(self, '_client') else None
         if client is None:
             return
 

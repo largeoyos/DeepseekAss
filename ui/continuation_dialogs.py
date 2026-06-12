@@ -639,6 +639,7 @@ class SectionPreviewDialog(QDialog):
         from utils.summarize import segment_by_ai
 
         self._resegment_btn.setEnabled(False)
+        self._confirm_btn.setEnabled(False)
 
         def _run():
             try:

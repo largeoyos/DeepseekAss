@@ -1,9 +1,14 @@
 import threading
 
 from PyQt6.QtCore import Qt, pyqtSignal
-from PyQt6.QtGui import QColor
+from PyQt6.QtGui import QBrush, QColor, QPainterPath, QPen
 from PyQt6.QtWidgets import (
     QDialog,
+    QGraphicsPathItem,
+    QGraphicsRectItem,
+    QGraphicsScene,
+    QGraphicsTextItem,
+    QGraphicsView,
     QHBoxLayout,
     QInputDialog,
     QLabel,
@@ -11,8 +16,6 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QSplitter,
     QTextEdit,
-    QTreeWidget,
-    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -21,6 +24,52 @@ from core.novel_manager import NovelManager
 from ui.chapter_editor_dialog import ChapterEditorDialog
 from utils.prompts import Prompts
 from utils.supplement import count_cn
+
+
+class ChapterNodeItem(QGraphicsRectItem):
+    """Clickable chapter node used by the layered graph view."""
+
+    def __init__(
+        self,
+        dialog: "ChapterTreeDialog",
+        node: dict,
+        x: float,
+        y: float,
+        width: float,
+        height: float,
+        *,
+        active: bool,
+        selected: bool,
+    ):
+        super().__init__(0, 0, width, height)
+        self._dialog = dialog
+        self._node = node
+        self.setPos(x, y)
+        self.setAcceptHoverEvents(True)
+        self._apply_style(active=active, selected=selected)
+
+        title = node.get("title") or f"第{node.get('chapter_num')}章"
+        text = QGraphicsTextItem(
+            f"第{node.get('chapter_num')}章  v{node.get('version')}\n{title}",
+            self,
+        )
+        text.setDefaultTextColor(QColor("#ffffff" if active or selected else "#d8dde8"))
+        text.setTextWidth(width - 16)
+        text.setPos(8, 7)
+
+    def _apply_style(self, *, active: bool, selected: bool) -> None:
+        if selected:
+            fill, border, width = "#254f78", "#86c7ff", 2
+        elif active:
+            fill, border, width = "#1e3a5f", "#4fc1ff", 2
+        else:
+            fill, border, width = "#2a2a3e", "#596070", 1
+        self.setBrush(QBrush(QColor(fill)))
+        self.setPen(QPen(QColor(border), width))
+
+    def mousePressEvent(self, event) -> None:
+        self._dialog._select_node(self._node["id"])
+        super().mousePressEvent(event)
 
 
 class ChapterTreeDialog(QDialog):
@@ -36,6 +85,7 @@ class ChapterTreeDialog(QDialog):
         self._client = client
         self._meta = None
         self._current_node: dict | None = None
+        self._selected_node_id: str | None = None
         self.setWindowTitle(f"章节树管理 - {book_title}")
         self.resize(980, 640)
         self.generation_done.connect(self._on_generation_done)
@@ -49,10 +99,14 @@ class ChapterTreeDialog(QDialog):
 
         left = QWidget()
         left_layout = QVBoxLayout(left)
-        self._tree = QTreeWidget()
-        self._tree.setHeaderLabels(["章节树"])
-        self._tree.currentItemChanged.connect(self._on_tree_selection)
-        left_layout.addWidget(self._tree, stretch=1)
+        hint = QLabel("章节图形树（从上到下为父子层级；高亮为活跃路径）")
+        hint.setWordWrap(True)
+        left_layout.addWidget(hint)
+        self._scene = QGraphicsScene(self)
+        self._graph = QGraphicsView(self._scene)
+        self._graph.setRenderHints(self._graph.renderHints())
+        self._graph.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        left_layout.addWidget(self._graph, stretch=1)
         splitter.addWidget(left)
 
         right = QWidget()
@@ -95,7 +149,7 @@ class ChapterTreeDialog(QDialog):
 
     def _load_tree(self) -> None:
         self._meta = self._novel_manager.ensure_chapter_tree(self._book_title)
-        self._tree.clear()
+        self._scene.clear()
         nodes = self._meta.chapter_nodes
         active = set(self._meta.active_path)
         by_parent: dict[str | None, list[dict]] = {}
@@ -104,30 +158,77 @@ class ChapterTreeDialog(QDialog):
         for siblings in by_parent.values():
             siblings.sort(key=lambda n: (int(n.get("chapter_num", 0)), int(n.get("sibling_order", 0))))
 
-        def add_node(parent_item, node: dict) -> None:
-            label = f"第{node.get('chapter_num')}章 v{node.get('version')} · {node.get('title', '')}"
-            item = QTreeWidgetItem([label])
-            item.setData(0, Qt.ItemDataRole.UserRole, node["id"])
-            if node["id"] in active:
-                item.setForeground(0, QColor("#4fc1ff"))
-            else:
-                item.setForeground(0, QColor("#aaaaaa"))
-            if parent_item is None:
-                self._tree.addTopLevelItem(item)
-            else:
-                parent_item.addChild(item)
-            for child in by_parent.get(node["id"], []):
-                add_node(item, child)
-
         roots = by_parent.get(None, [])
         if not roots and self._meta.root_chapter_id in nodes:
             roots = [nodes[self._meta.root_chapter_id]]
-        for root in roots:
-            add_node(None, root)
-        self._tree.expandAll()
+        if self._selected_node_id not in nodes:
+            self._selected_node_id = self._meta.active_path[-1] if self._meta.active_path else (roots[0]["id"] if roots else None)
+        self._draw_layered_tree(roots, by_parent, active)
         self._update_path_label()
-        if self._tree.topLevelItemCount():
-            self._tree.setCurrentItem(self._tree.topLevelItem(0))
+        self._on_tree_selection()
+
+    def _draw_layered_tree(
+        self,
+        roots: list[dict],
+        by_parent: dict[str | None, list[dict]],
+        active: set[str],
+    ) -> None:
+        levels: list[list[dict]] = []
+        queue = [(node, 0) for node in roots]
+        while queue:
+            node, depth = queue.pop(0)
+            while len(levels) <= depth:
+                levels.append([])
+            levels[depth].append(node)
+            for child in by_parent.get(node["id"], []):
+                queue.append((child, depth + 1))
+
+        node_w, node_h = 190, 64
+        x_gap, y_gap = 36, 72
+        positions: dict[str, tuple[float, float]] = {}
+        scene_width = max(1, max((len(level) for level in levels), default=1)) * (node_w + x_gap)
+
+        for depth, level in enumerate(levels):
+            row_width = len(level) * node_w + max(0, len(level) - 1) * x_gap
+            start_x = max(20, (scene_width - row_width) / 2)
+            y = 24 + depth * (node_h + y_gap)
+            for idx, node in enumerate(level):
+                x = start_x + idx * (node_w + x_gap)
+                positions[node["id"]] = (x, y)
+
+        for parent_id, children in by_parent.items():
+            if not parent_id or parent_id not in positions:
+                continue
+            px, py = positions[parent_id]
+            for child in children:
+                if child["id"] not in positions:
+                    continue
+                cx, cy = positions[child["id"]]
+                path = QPainterPath()
+                path.moveTo(px + node_w / 2, py + node_h)
+                mid_y = py + node_h + y_gap / 2
+                path.cubicTo(px + node_w / 2, mid_y, cx + node_w / 2, mid_y, cx + node_w / 2, cy)
+                edge = QGraphicsPathItem(path)
+                edge.setPen(QPen(QColor("#4fc1ff" if child["id"] in active and parent_id in active else "#596070"), 2))
+                edge.setZValue(-1)
+                self._scene.addItem(edge)
+
+        for node_id, (x, y) in positions.items():
+            node = self._meta.chapter_nodes[node_id]
+            self._scene.addItem(
+                ChapterNodeItem(
+                    self,
+                    node,
+                    x,
+                    y,
+                    node_w,
+                    node_h,
+                    active=node_id in active,
+                    selected=node_id == self._selected_node_id,
+                )
+            )
+        self._scene.setSceneRect(self._scene.itemsBoundingRect().adjusted(-24, -24, 24, 24))
+        self._graph.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
 
     def _update_path_label(self) -> None:
         if not self._meta:
@@ -140,11 +241,13 @@ class ChapterTreeDialog(QDialog):
         self._path_label.setText("活跃路径: " + (" → ".join(parts) if parts else "未设置"))
 
     def _selected_node(self) -> dict | None:
-        item = self._tree.currentItem()
-        if not item or not self._meta:
+        if not self._selected_node_id or not self._meta:
             return None
-        node_id = item.data(0, Qt.ItemDataRole.UserRole)
-        return self._meta.chapter_nodes.get(node_id)
+        return self._meta.chapter_nodes.get(self._selected_node_id)
+
+    def _select_node(self, node_id: str) -> None:
+        self._selected_node_id = node_id
+        self._load_tree()
 
     def _on_tree_selection(self, current=None, previous=None) -> None:
         self._current_node = self._selected_node()

@@ -170,7 +170,44 @@ def _parse_json(text: str) -> dict:
         text = text.split("```json")[1].split("```")[0].strip()
     elif "```" in text:
         text = text.split("```")[1].split("```")[0].strip()
-    return json.loads(text)
+    return json.loads(_repair_json(_extract_json_object(text)))
+
+
+def _extract_json_object(text: str) -> str:
+    """截取响应中的第一个 JSON 对象，避免模型附带解释文本导致解析失败。"""
+    start = text.find("{")
+    end = text.rfind("}")
+    if start >= 0 and end > start:
+        return text[start:end + 1]
+    return text
+
+
+def _repair_json(text: str) -> str:
+    """修复常见 JSON 响应问题。"""
+    text = text.strip()
+    text = re.sub(r",\s*([}\]])", r"\1", text)
+    return text
+
+
+def _parse_json_with_repair(text: str) -> dict:
+    """尽量稳健地解析 LLM JSON。"""
+    candidates = []
+    raw = text.strip()
+    if "```json" in raw:
+        raw = raw.split("```json", 1)[1].split("```", 1)[0].strip()
+    elif "```" in raw:
+        raw = raw.split("```", 1)[1].split("```", 1)[0].strip()
+    candidates.append(raw)
+    candidates.append(_extract_json_object(raw))
+    candidates.append(_repair_json(_extract_json_object(raw)))
+
+    last_error = None
+    for candidate in candidates:
+        try:
+            return json.loads(candidate)
+        except json.JSONDecodeError as exc:
+            last_error = exc
+    raise last_error or json.JSONDecodeError("Invalid JSON", raw, 0)
 
 
 def _safe_format(template: str, **kwargs) -> str:
@@ -310,6 +347,37 @@ def _parse_break_markers(raw: str) -> list[tuple[str, str]] | None:
     return segments or None
 
 
+def split_text_locally(text: str, max_chars: int = 3000) -> list[tuple[str, str]]:
+    """
+    本地确定性分段兜底。
+
+    AI 分段失败时不能退回整篇“全文”，否则后续世界书提取会看起来像没有分段。
+    """
+    text = text.strip()
+    if not text:
+        return []
+
+    titled = detect_sections(text)
+    if titled:
+        return titled
+
+    paragraphs = [p.strip() for p in re.split(r"\n\s*\n+", text) if p.strip()]
+    if len(paragraphs) >= 2:
+        return [(f"段落 {idx}", para) for idx, para in enumerate(paragraphs, 1)]
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) >= 2:
+        return [(f"段落 {idx}", line) for idx, line in enumerate(lines, 1)]
+
+    if len(text) <= max_chars:
+        return [("全文", text)]
+
+    result = []
+    for idx, start in enumerate(range(0, len(text), max_chars), 1):
+        result.append((f"片段 {idx}", text[start:start + max_chars]))
+    return result
+
+
 def segment_by_ai(client, text: str, model: str, global_user_prompt: str = "") -> list[tuple[str, str]]:
     """
     AI 语义分段。
@@ -328,10 +396,13 @@ def segment_by_ai(client, text: str, model: str, global_user_prompt: str = "") -
     except Exception:
         pass
 
-    # Fallback：按 3000 字均匀切块，每块用 AI 取标题
+    # Fallback：先按自然段/行本地拆分，避免短文直接退回“全文”一段
+    local_segments = split_text_locally(text)
+    if len(local_segments) > 1 or len(text) <= 5000:
+        return local_segments
+
+    # 长文本没有自然段时，按 3000 字均匀切块，每块用 AI 取标题
     n = len(text)
-    if n <= 5000:
-        return [("全文", text)]
     chunk_size = n // max(1, min(6, n // 3000))
     result = []
     for i in range(0, n, chunk_size):
@@ -366,6 +437,7 @@ def extract_world_bible_from_segments(
         "key_worldbuilding": [],
         "global_foreshadowing": [],
         "global_key_dialogues": [],
+        "_errors": [],
     }
     seen_names = {"characters": set(), "locations": set(), "rules": set(), "plot_threads": set()}
     # 用 chapter_marker 标记语义段落序号（从 1 开始，避免"第0章"）
@@ -394,10 +466,26 @@ def extract_world_bible_from_segments(
             dedup_context = ""
 
         prompt = _safe_format(EXTRACT_PROMPT, title=title, content=content_sample, dedup_context=dedup_context)
-        try:
-            raw = _call_api(client, [{"role": "user", "content": prompt}], model, max_tokens=4096, temperature=0.1, global_user_prompt=global_user_prompt)
-            data = _parse_json(raw)
-        except Exception:
+        data = None
+        last_error = None
+        for max_tokens in (8192, 16384):
+            try:
+                raw = _call_api(
+                    client,
+                    [{"role": "user", "content": prompt}],
+                    model,
+                    max_tokens=max_tokens,
+                    temperature=0.1,
+                    global_user_prompt=global_user_prompt,
+                )
+                data = _parse_json_with_repair(raw)
+                break
+            except Exception as exc:
+                last_error = exc
+                prompt += "\n\n注意：上一轮输出无法解析。请只输出完整、合法的 JSON，不要添加解释，不要截断。"
+        if data is None:
+            merged["_errors"].append(f"段落 {idx + 1}「{title}」提取失败: {last_error}")
+            chapter_marker += 1
             continue
 
         all_segment_data.append(data)
@@ -838,11 +926,10 @@ def detect_sections(text: str) -> list[tuple[str, str]]:
         [(title, content), ...]  每个段落的标题和正文
         如果没有正确的 # 划分则返回空列表
     """
-    if not has_proper_sections(text):
-        return []
-
     lines = text.split('\n')
-    h1_positions = [i for i, line in enumerate(lines) if re.match(r'^#\s', line.strip())]
+    h1_positions = [i for i, line in enumerate(lines) if re.match(r'^#(?!#)\s*', line.strip())]
+    if len(h1_positions) < 2:
+        return []
 
     sections = []
     for idx, pos in enumerate(h1_positions):
