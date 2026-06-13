@@ -77,6 +77,25 @@ class ChapterNodeItem(QGraphicsRectItem):
         event.accept()
 
 
+class ZoomableGraphicsView(QGraphicsView):
+    """Graphics view with Ctrl+wheel zoom routed through the dialog."""
+
+    def __init__(self, scene: QGraphicsScene, dialog: "ChapterTreeDialog"):
+        super().__init__(scene)
+        self._dialog = dialog
+
+    def wheelEvent(self, event) -> None:
+        if event.modifiers() & Qt.KeyboardModifier.ControlModifier:
+            delta = event.angleDelta().y()
+            if delta > 0:
+                self._dialog._zoom_in()
+            elif delta < 0:
+                self._dialog._zoom_out()
+            event.accept()
+            return
+        super().wheelEvent(event)
+
+
 class ChapterTreeDialog(QDialog):
     """Tree-based chapter manager backed by NovelManager's compatible metadata."""
 
@@ -94,6 +113,7 @@ class ChapterTreeDialog(QDialog):
         self._current_node: dict | None = None
         self._selected_node_id: str | None = None
         self._node_items: dict[str, ChapterNodeItem] = {}
+        self._zoom_factor = 1.0
         self.setWindowTitle(f"章节树管理 - {book_title}")
         self.resize(980, 640)
         self.generation_done.connect(self._on_generation_done)
@@ -112,10 +132,34 @@ class ChapterTreeDialog(QDialog):
         hint = QLabel("章节图形树（从上到下为父子层级；高亮为活跃路径）")
         hint.setWordWrap(True)
         left_layout.addWidget(hint)
+
+        zoom_row = QHBoxLayout()
+        zoom_out_btn = QPushButton("-")
+        zoom_out_btn.setToolTip("缩小章节树")
+        zoom_out_btn.clicked.connect(self._zoom_out)
+        zoom_reset_btn = QPushButton("100%")
+        zoom_reset_btn.setToolTip("恢复默认缩放")
+        zoom_reset_btn.clicked.connect(self._reset_zoom)
+        zoom_in_btn = QPushButton("+")
+        zoom_in_btn.setToolTip("放大章节树")
+        zoom_in_btn.clicked.connect(self._zoom_in)
+        zoom_fit_btn = QPushButton("适应")
+        zoom_fit_btn.setToolTip("适应当前窗口")
+        zoom_fit_btn.clicked.connect(self._fit_zoom)
+        self._zoom_label = QLabel("100%")
+        self._zoom_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        for btn in (zoom_out_btn, zoom_reset_btn, zoom_in_btn, zoom_fit_btn):
+            zoom_row.addWidget(btn)
+        zoom_row.addWidget(self._zoom_label)
+        zoom_row.addStretch()
+        left_layout.addLayout(zoom_row)
+
         self._scene = QGraphicsScene(self)
-        self._graph = QGraphicsView(self._scene)
+        self._graph = ZoomableGraphicsView(self._scene, self)
         self._graph.setRenderHints(self._graph.renderHints())
         self._graph.setDragMode(QGraphicsView.DragMode.ScrollHandDrag)
+        self._graph.setTransformationAnchor(QGraphicsView.ViewportAnchor.AnchorUnderMouse)
+        self._graph.setResizeAnchor(QGraphicsView.ViewportAnchor.AnchorViewCenter)
         left_layout.addWidget(self._graph, stretch=1)
         splitter.addWidget(left)
 
@@ -239,7 +283,42 @@ class ChapterTreeDialog(QDialog):
             self._node_items[node_id] = item
             self._scene.addItem(item)
         self._scene.setSceneRect(self._scene.itemsBoundingRect().adjusted(-24, -24, 24, 24))
-        self._graph.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
+        self._apply_graph_zoom(fit=True)
+
+    def _apply_graph_zoom(self, *, fit: bool = False) -> None:
+        rect = self._scene.sceneRect()
+        if rect.isNull() or rect.isEmpty():
+            return
+        if fit:
+            self._graph.resetTransform()
+            self._graph.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
+        if self._zoom_factor != 1.0:
+            self._graph.scale(self._zoom_factor, self._zoom_factor)
+        if hasattr(self, "_zoom_label"):
+            self._zoom_label.setText(f"{int(self._zoom_factor * 100)}%")
+
+    def _set_zoom_factor(self, factor: float) -> None:
+        next_factor = max(0.35, min(3.0, factor))
+        if next_factor == self._zoom_factor:
+            return
+        ratio = next_factor / self._zoom_factor
+        self._zoom_factor = next_factor
+        self._graph.scale(ratio, ratio)
+        if hasattr(self, "_zoom_label"):
+            self._zoom_label.setText(f"{int(self._zoom_factor * 100)}%")
+
+    def _zoom_in(self) -> None:
+        self._set_zoom_factor(self._zoom_factor * 1.15)
+
+    def _zoom_out(self) -> None:
+        self._set_zoom_factor(self._zoom_factor / 1.15)
+
+    def _reset_zoom(self) -> None:
+        self._set_zoom_factor(1.0)
+
+    def _fit_zoom(self) -> None:
+        self._zoom_factor = 1.0
+        self._apply_graph_zoom(fit=True)
 
     def _update_path_label(self) -> None:
         if not self._meta:

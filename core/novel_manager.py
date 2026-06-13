@@ -49,6 +49,7 @@ class NovelMeta:
     protagonist_bio: str = ""
     background_story: str = ""
     writing_demand: str = ""
+    author_plan: str = ""   # 作者规划层：主线/阶段目标/人物弧光/主题/节奏/禁写事项
     genre: str = ""        # 题材 key（对应 utils.genre_styles.GENRES）
     style_tone: str = ""   # 风格基调 key（对应 utils.genre_styles.STYLE_TONES）
     xp_mode: bool = False  # 成人向/性癖向创作模式开关
@@ -69,11 +70,28 @@ class NovelMeta:
     chapter_nodes: dict[str, dict] = field(default_factory=dict)
 
     def __post_init__(self):
-        """加载时归一化：确保字符串字段不是 list（兼容 LLM 返回 JSON 数组的情况）"""
-        for field_name in ("protagonist_bio", "background_story", "writing_demand"):
-            val = getattr(self, field_name)
-            if isinstance(val, list):
-                setattr(self, field_name, "\n".join(str(item) for item in val))
+        """加载时归一化：确保文本字段是 str（兼容 LLM 返回 JSON 数组/对象）。"""
+        for field_name in ("protagonist_bio", "background_story", "writing_demand", "author_plan"):
+            setattr(self, field_name, self._coerce_text(getattr(self, field_name)))
+
+    @staticmethod
+    def _coerce_text(value) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value
+        if isinstance(value, list):
+            return "\n".join(NovelMeta._coerce_text(item) for item in value if item is not None)
+        if isinstance(value, dict):
+            lines = []
+            for key, item in value.items():
+                text = NovelMeta._coerce_text(item).strip()
+                if text:
+                    lines.append(f"{key}: {text}")
+            if lines:
+                return "\n".join(lines)
+            return json.dumps(value, ensure_ascii=False, indent=2)
+        return str(value)
 
 
 class NovelManager:
@@ -330,6 +348,7 @@ class NovelManager:
         for key, value in kwargs.items():
             if hasattr(meta, key):
                 setattr(meta, key, value)
+        meta.__post_init__()
         meta.updated_at = datetime.now().strftime("%Y-%m-%d %H:%M")
         self._save_meta(title, meta)
         return meta
@@ -801,9 +820,10 @@ class NovelManager:
         meta = self.load_meta(title)
         effective_xp_mode = xp_mode or meta.xp_mode
         full_summary_parts = ["# 完整前情提要（基于活跃章节自动生成）\n"]
+        from utils.prompts import Prompts
+        summary_guide = Prompts.CONTINUITY_SUMMARY_GUIDE
         xp_hint = ""
         if effective_xp_mode:
-            from utils.prompts import Prompts
             xp_hint = f"\n\n{Prompts.XP_SUMMARY_GUIDE}"
         for ch in chapters:
             content = self.read_active_chapter(title, ch["num"])
@@ -816,11 +836,7 @@ class NovelManager:
                         "role": "user",
                         "content": (
                             f"请为以下小说片段（第{ch['num']}章「{ch['title']}」）"
-                            f"写一段 500 字以内的剧情梗概，要求包含：\n"
-                            f"1. 本章核心事件（什么 + 为什么 + 结果）\n"
-                            f"2. 人物关系变化或新人物登场\n"
-                            f"3. 新出现的设定、伏笔或世界观信息\n"
-                            f"4. 本章结尾状态（角色去向、悬念等）\n\n{content}"
+                            f"生成一段用于后续续写的结构化剧情记忆。\n\n{summary_guide}\n\n章节正文：\n{content}"
                             + xp_hint
                             + (f"\n\n用户偏好参考: {global_user_prompt}" if global_user_prompt.strip() else "")
                         ),
@@ -879,6 +895,7 @@ class NovelManager:
                 ch["num"],
                 bible,
                 model,
+                chapter_version=ch.get("active_version", 0) or 0,
                 global_user_prompt=global_user_prompt,
                 story_context=story_context,
                 background_story=meta.background_story,
@@ -973,9 +990,9 @@ class NovelManager:
             # 无缓存，调用 API 压缩
             try:
                 early_block = "\n\n".join(early_texts)
+                from utils.prompts import Prompts
                 xp_hint = ""
                 if meta.xp_mode:
-                    from utils.prompts import Prompts
                     xp_hint = f"\n4. 仍会影响后续成人向关系张力、边界试探和性癖递进的内容\n\n{Prompts.XP_SUMMARY_GUIDE}"
                 response = client.chat.completions.create(
                     model=model,
@@ -1031,6 +1048,102 @@ class NovelManager:
         # 回退：找不到时返回空
         return "[摘要不可用]"
 
+    def build_continuity_contract(
+        self,
+        title: str,
+        chapter_num: int,
+        chapter_title: str = "",
+        plot_content: str = "",
+        *,
+        max_characters: int = 6,
+        max_threads: int = 6,
+        max_foreshadowing: int = 8,
+    ) -> str:
+        """构造下一章生成前的连贯性契约，供 prompt 和逻辑审稿复用。"""
+        parts = [f"【本章连贯性契约】\n目标章节：第{chapter_num}章「{chapter_title or f'第{chapter_num}章'}」"]
+        previous_summary = self._extract_chapter_summary(self.load_summary(title), chapter_num - 1)
+        if previous_summary and previous_summary != "[摘要不可用]":
+            parts.append(f"上章结尾/承接点：\n{previous_summary[:1200]}")
+        try:
+            bible = self.load_world_bible(title)
+        except Exception:
+            bible = None
+
+        if bible:
+            active_chars = [
+                c for c in bible.characters
+                if c.current_location or c.current_goal or c.current_emotion or c.recent_action or c.knowledge_state
+            ]
+            if active_chars:
+                lines = []
+                for ch in active_chars[:max_characters]:
+                    fields = []
+                    if ch.current_location:
+                        fields.append(f"位置={ch.current_location}")
+                    if ch.current_goal:
+                        fields.append(f"目标={ch.current_goal}")
+                    if ch.current_emotion:
+                        fields.append(f"状态={ch.current_emotion}")
+                    if ch.knowledge_state:
+                        fields.append(f"已知={ch.knowledge_state}")
+                    if ch.recent_action:
+                        fields.append(f"近况={ch.recent_action}")
+                    if ch.unresolved_conflicts:
+                        fields.append("未解冲突=" + "；".join(ch.unresolved_conflicts[:2]))
+                    lines.append(f"- {ch.name}：" + "；".join(fields))
+                parts.append("角色状态必须承接：\n" + "\n".join(lines))
+
+            active_threads = [p for p in bible.active_plot_threads if p.status == "active"]
+            if active_threads:
+                lines = []
+                for p in active_threads[:max_threads]:
+                    line = f"- {p.name}：{p.description[:120]}"
+                    if p.expected_payoff:
+                        line += f"；预期回收={p.expected_payoff[:80]}"
+                    if p.payoff_hint:
+                        line += f"；推进提示={p.payoff_hint[:80]}"
+                    if p.last_touched_chapter:
+                        line += f"；最近触达=第{p.last_touched_chapter}章"
+                    lines.append(line)
+                parts.append("活跃剧情线必须延续：\n" + "\n".join(lines))
+
+            open_foreshadowing = [
+                f for f in bible.global_foreshadowing
+                if f.get("status", "open") not in ("resolved", "已回收")
+            ]
+            if open_foreshadowing:
+                lines = []
+                for f in open_foreshadowing[:max_foreshadowing]:
+                    line = f"- {f.get('hint', '')}"
+                    if f.get("status"):
+                        line += f" [{f.get('status')}]"
+                    if f.get("relates_to"):
+                        line += f"；关联={f.get('relates_to')}"
+                    if f.get("next_step"):
+                        line += f"；下次推进={f.get('next_step')}"
+                    if f.get("reveal_rule"):
+                        line += f"；回收限制={f.get('reveal_rule')}"
+                    lines.append(line)
+                parts.append("伏笔状态机：\n" + "\n".join(lines))
+
+        if plot_content.strip():
+            parts.append(f"本章已定情节必须兑现：\n{plot_content[:1200]}")
+        parts.append("生成时禁止：无交代跳时间/换地点、角色动机突变、角色知道未获得的信息、设定规则前后冲突、伏笔无铺垫突然揭底。")
+        return "\n\n".join(parts)
+
+    def build_author_planning_prompt(self, title: str) -> str:
+        """返回独立作者规划层。规划是未来意图，不视为已发生事实。"""
+        meta = self.load_meta(title)
+        plan = NovelMeta._coerce_text(meta.author_plan).strip()
+        if not plan:
+            return ""
+        return (
+            "【作者规划层（未来写作意图，不等同于已发生事实）】\n"
+            "用途：控制主线目标、阶段目标、人物弧光、本卷主题、节奏要求和禁写事项。\n"
+            "规则：可以按规划铺垫和推进，但不得把尚未写出的规划当作角色已知信息或正文既成事实。\n"
+            f"{plan}"
+        )
+
     def clear_compressed_cache(self, title: str) -> None:
         """清除早期章节压缩缓存（章节切换或重建摘要后调用）"""
         meta = self.load_meta(title)
@@ -1062,9 +1175,10 @@ class NovelManager:
             生成的摘要文本
         """
         try:
+            from utils.prompts import Prompts
+            summary_guide = Prompts.CONTINUITY_SUMMARY_GUIDE
             xp_hint = ""
             if xp_mode:
-                from utils.prompts import Prompts
                 xp_hint = f"\n\n{Prompts.XP_SUMMARY_GUIDE}"
             response = client.chat.completions.create(
                 model=model,
@@ -1072,11 +1186,7 @@ class NovelManager:
                     "role": "user",
                     "content": (
                         f"请为以下小说片段（第{chapter_num}章「{chapter_title}」）"
-                        f"写一段 500 字以内的剧情梗概，包含：\n"
-                        f"1. 本章核心事件与结果\n"
-                        f"2. 人物动向与关系变化\n"
-                        f"3. 新设定、伏笔或世界观信息\n"
-                        f"4. 结尾状态（悬念/去向）\n\n{chapter_content}"
+                        f"生成一段用于后续续写的结构化剧情记忆。\n\n{summary_guide}\n\n章节正文：\n{chapter_content}"
                         + xp_hint
                         + (f"\n\n用户偏好参考: {global_user_prompt}" if global_user_prompt.strip() else "")
                     ),

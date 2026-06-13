@@ -257,10 +257,14 @@ def _build_world_summary(world_data: dict | None) -> str:
         for f in foreshadowing[:8]:
             hint = f.get("hint", "")[:80]
             relates = f.get("relates_to", "")
+            meta = [f.get("status", "open")]
             if relates:
-                lines.append(f"- 🔮 {hint} → 关联：{relates[:40]}")
-            else:
-                lines.append(f"- 🔮 {hint}")
+                meta.append(f"关联：{relates[:40]}")
+            if f.get("next_step"):
+                meta.append(f"推进：{f.get('next_step', '')[:60]}")
+            if f.get("reveal_rule"):
+                meta.append(f"限制：{f.get('reveal_rule', '')[:60]}")
+            lines.append(f"- 🔮 {hint} [{'; '.join(m for m in meta if m)}]")
         parts.append("【待回收伏笔】\n" + "\n".join(lines))
 
     # 关键世界观设定段落

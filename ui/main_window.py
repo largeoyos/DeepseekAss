@@ -758,6 +758,7 @@ class DeepSeekChatGUI(QMainWindow):
                         protagonist_bio=old_meta.protagonist_bio,
                         background_story=old_meta.background_story,
                         writing_demand=old_meta.writing_demand,
+                        author_plan=getattr(old_meta, "author_plan", ""),
                         xp_mode=old_meta.xp_mode,
                         created_at=old_meta.created_at,
                         updated_at=old_meta.updated_at,
@@ -1632,6 +1633,14 @@ class DeepSeekChatGUI(QMainWindow):
         self._demand_edit.setMinimumHeight(48)
         layout.addWidget(self._demand_edit)
 
+        plan_label = QLabel("🧭 作者规划（不视为已发生事实）")
+        layout.addWidget(plan_label)
+        self._author_plan_edit = QTextEdit()
+        self._author_plan_edit.setPlaceholderText("主线目标、阶段目标、人物弧光、本卷主题、节奏要求、禁写事项...")
+        self._author_plan_edit.setMaximumHeight(80)
+        self._author_plan_edit.setMinimumHeight(56)
+        layout.addWidget(self._author_plan_edit)
+
         # ── 用户全局提示词 ──
         global_prompt_btn = QPushButton("🌐 编辑全局偏好提示词")
         global_prompt_btn.setMinimumHeight(32)
@@ -1928,6 +1937,14 @@ class DeepSeekChatGUI(QMainWindow):
         self._cont_demand_edit.setMaximumHeight(60)
         self._cont_demand_edit.setMinimumHeight(48)
         layout.addWidget(self._cont_demand_edit)
+
+        cont_plan_label = QLabel("🧭 作者规划（不视为已发生事实）")
+        layout.addWidget(cont_plan_label)
+        self._cont_author_plan_edit = QTextEdit()
+        self._cont_author_plan_edit.setPlaceholderText("主线目标、阶段目标、人物弧光、本卷主题、节奏要求、禁写事项...")
+        self._cont_author_plan_edit.setMaximumHeight(80)
+        self._cont_author_plan_edit.setMinimumHeight(56)
+        layout.addWidget(self._cont_author_plan_edit)
 
         # ── 用户全局提示词 ──
         cont_global_prompt_btn = QPushButton("🌐 编辑全局偏好提示词")
@@ -3236,6 +3253,9 @@ class DeepSeekChatGUI(QMainWindow):
         self._demand_edit.blockSignals(True)
         self._demand_edit.setPlainText(meta.writing_demand)
         self._demand_edit.blockSignals(False)
+        self._author_plan_edit.blockSignals(True)
+        self._author_plan_edit.setPlainText(getattr(meta, "author_plan", ""))
+        self._author_plan_edit.blockSignals(False)
         next_ch = self._novel_manager.get_next_chapter_num(title)
         chapters = self._novel_manager.list_chapters(title)
         self._chapter_info_label.setText(
@@ -3463,6 +3483,7 @@ class DeepSeekChatGUI(QMainWindow):
             self._cont_protagonist_edit.clear()
             self._cont_background_edit.clear()
             self._cont_demand_edit.clear()
+            self._cont_author_plan_edit.clear()
             self._cont_xp_mode_check.blockSignals(True)
             self._cont_xp_mode_check.setChecked(False)
             self._cont_xp_mode_check.blockSignals(False)
@@ -3479,6 +3500,9 @@ class DeepSeekChatGUI(QMainWindow):
         self._cont_demand_edit.blockSignals(True)
         self._cont_demand_edit.setPlainText(meta.writing_demand)
         self._cont_demand_edit.blockSignals(False)
+        self._cont_author_plan_edit.blockSignals(True)
+        self._cont_author_plan_edit.setPlainText(getattr(meta, "author_plan", ""))
+        self._cont_author_plan_edit.blockSignals(False)
 
         # 同步题材/风格到下拉框
         genre_display = get_genre_display(meta.genre)
@@ -3573,6 +3597,7 @@ class DeepSeekChatGUI(QMainWindow):
             protagonist_bio=self._cont_protagonist_edit.toPlainText().strip(),
             background_story=self._cont_background_edit.toPlainText().strip(),
             writing_demand=self._cont_demand_edit.toPlainText().strip(),
+            author_plan=self._cont_author_plan_edit.toPlainText().strip(),
             xp_mode=self._cont_xp_mode_check.isChecked(),
         )
         QMessageBox.information(self, "成功", f"「{title}」的设定已保存。")
@@ -3593,6 +3618,9 @@ class DeepSeekChatGUI(QMainWindow):
         self._cont_demand_edit.blockSignals(True)
         self._cont_demand_edit.setPlainText(meta.writing_demand)
         self._cont_demand_edit.blockSignals(False)
+        self._cont_author_plan_edit.blockSignals(True)
+        self._cont_author_plan_edit.setPlainText(getattr(meta, "author_plan", ""))
+        self._cont_author_plan_edit.blockSignals(False)
         self._cont_xp_mode_check.blockSignals(True)
         self._cont_xp_mode_check.setChecked(bool(meta.xp_mode))
         self._cont_xp_mode_check.blockSignals(False)
@@ -3645,6 +3673,7 @@ class DeepSeekChatGUI(QMainWindow):
             protagonist_bio=self._cont_protagonist_edit.toPlainText().strip(),
             background_story=self._cont_background_edit.toPlainText().strip(),
             writing_demand=self._cont_demand_edit.toPlainText().strip(),
+            author_plan=self._cont_author_plan_edit.toPlainText().strip(),
             xp_mode=self._cont_xp_mode_check.isChecked(),
         )
 
@@ -3700,6 +3729,7 @@ class DeepSeekChatGUI(QMainWindow):
             protagonist_bio=self._protagonist_edit.toPlainText().strip(),
             background_story=self._background_edit.toPlainText().strip(),
             writing_demand=self._demand_edit.toPlainText().strip(),
+            author_plan=self._author_plan_edit.toPlainText().strip(),
             genre=genre_cfg.key if genre_cfg else "",
             style_tone=tone_cfg.key if tone_cfg else "",
             xp_mode=self._xp_mode_check.isChecked(),
@@ -3733,6 +3763,9 @@ class DeepSeekChatGUI(QMainWindow):
         self._demand_edit.blockSignals(True)
         self._demand_edit.setPlainText(meta.writing_demand)
         self._demand_edit.blockSignals(False)
+        self._author_plan_edit.blockSignals(True)
+        self._author_plan_edit.setPlainText(getattr(meta, "author_plan", ""))
+        self._author_plan_edit.blockSignals(False)
         self._on_book_selected(title)
 
     # ========== 🚀 生成章节 ==========
@@ -3785,6 +3818,7 @@ class DeepSeekChatGUI(QMainWindow):
             protagonist_bio=self._protagonist_edit.toPlainText().strip(),
             background_story=self._background_edit.toPlainText().strip(),
             writing_demand=self._demand_edit.toPlainText().strip(),
+            author_plan=self._author_plan_edit.toPlainText().strip(),
             genre=genre_cfg_save.key if genre_cfg_save else "",
             style_tone=tone_cfg_save.key if tone_cfg_save else "",
             xp_mode=self._xp_mode_check.isChecked(),
@@ -3845,6 +3879,20 @@ class DeepSeekChatGUI(QMainWindow):
             pass
 
         parts = [f"【前情提要】：\n{summary}\n"]
+        try:
+            contract = self._novel_manager.build_continuity_contract(
+                title, chapter_num, chapter_title, plot_content
+            )
+            if contract:
+                parts.append(f"{contract}\n")
+        except Exception:
+            pass
+        try:
+            author_plan = self._novel_manager.build_author_planning_prompt(title)
+            if author_plan:
+                parts.append(f"{author_plan}\n")
+        except Exception:
+            pass
         if world_bible_text:
             parts.append(f"【世界书（已建立设定库）】：\n{world_bible_text}\n")
         if history and history != "暂无历史记录。" and history != "暂无历史记录（排除当前章节后）。":
@@ -3866,6 +3914,66 @@ class DeepSeekChatGUI(QMainWindow):
             parts.append(f"{Prompts.XP_MODE_SYSTEM}\n")
 
         return "\n".join(parts)
+
+    def _audit_and_repair_chapter_content(
+        self,
+        *,
+        title: str,
+        chapter_num: int,
+        chapter_title: str,
+        content: str,
+        context: str,
+        xp_mode: bool,
+        operation_prefix: str,
+    ) -> str:
+        """检查生成正文与长篇上下文的一致性，必要时做最小修补。"""
+        if not content.strip():
+            return content
+        try:
+            from utils.continuity import audit_chapter_continuity, repair_chapter_continuity
+
+            self._stream_signals.token.emit("\n🧭 正在检查章节连贯性...\n")
+            audit = audit_chapter_continuity(
+                self._usage_logged_client(f"{operation_prefix}_continuity_audit"),
+                chapter_content=content,
+                context=context,
+                chapter_title=f"第{chapter_num}章「{chapter_title}」",
+                model=self._client.model,
+                global_user_prompt=self._client.global_user_prompt,
+                xp_mode=xp_mode,
+            )
+            issues = audit.get("issues", [])
+            if not audit.get("has_issues") or not issues:
+                self._stream_signals.token.emit("✅ 连贯性检查通过。\n")
+                return content
+
+            major_count = sum(1 for item in issues if item.get("severity") == "major")
+            issue_types = "、".join(
+                str(item.get("type", "逻辑")).strip() for item in issues[:3] if item.get("type")
+            )
+            self._stream_signals.token.emit(
+                f"⚠️ 发现 {len(issues)} 个连贯性问题"
+                f"{f'（严重 {major_count} 个）' if major_count else ''}"
+                f"{f'：{issue_types}' if issue_types else ''}，正在定向修补...\n"
+            )
+            repaired = repair_chapter_continuity(
+                self._usage_logged_client(f"{operation_prefix}_continuity_repair"),
+                chapter_content=content,
+                context=context,
+                audit_result=audit,
+                chapter_title=f"第{chapter_num}章「{chapter_title}」",
+                model=self._client.model,
+                temperature=min(float(getattr(self._client, "temperature", 0.7)), 0.5),
+                global_user_prompt=self._client.global_user_prompt,
+                xp_mode=xp_mode,
+            )
+            if repaired:
+                self._stream_signals.token.emit("✅ 连贯性修补完成，后续摘要和世界书将基于修补版正文。\n")
+                return repaired
+            self._stream_signals.token.emit("⚠️ 连贯性修补未产出有效正文，保留原生成结果。\n")
+        except Exception as e:
+            self._stream_signals.token.emit(f"⚠️ 连贯性检查跳过: {e}\n")
+        return content
 
     def _run_chapter_generation(self, title: str, chapter_title: str,
                                  plot_content: str = "", target_words: int = 2000) -> None:
@@ -3915,6 +4023,15 @@ class DeepSeekChatGUI(QMainWindow):
                 direction="receive",
                 content=content,
                 usage=getattr(response, "usage", None),
+            )
+            content = self._audit_and_repair_chapter_content(
+                title=title,
+                chapter_num=chapter_num,
+                chapter_title=chapter_title,
+                content=content,
+                context=user_prompt,
+                xp_mode=xp_mode,
+                operation_prefix="novel_chapter",
             )
 
             if self._client._cancel_requested:
@@ -3992,11 +4109,16 @@ class DeepSeekChatGUI(QMainWindow):
                 bible = self._novel_manager.load_world_bible(title)
                 updated_bible = extract_and_merge_world_bible(
                     self._usage_logged_client("world_bible_update"), content, chapter_num, bible, self._client.model,
+                    chapter_version=saved_version,
                     global_user_prompt=self._client.global_user_prompt,
                     xp_mode=xp_mode,
                 )
                 self._novel_manager.save_world_bible(title, updated_bible)
                 self._stream_signals.token.emit("✅ 世界书已更新。\n")
+                if getattr(updated_bible, "consistency_warnings", None):
+                    self._stream_signals.token.emit(
+                        f"⚠️ 世界书发现 {len(updated_bible.consistency_warnings)} 条一致性提醒，可在世界书窗口查看。\n"
+                    )
             except Exception as wb_e:
                 self._stream_signals.token.emit(f"⚠️ 世界书更新跳过: {wb_e}\n")
 
@@ -4154,6 +4276,7 @@ class DeepSeekChatGUI(QMainWindow):
                 protagonist_bio=self._cont_protagonist_edit.toPlainText().strip(),
                 background_story=self._cont_background_edit.toPlainText().strip(),
                 writing_demand=self._cont_demand_edit.toPlainText().strip(),
+                author_plan=self._cont_author_plan_edit.toPlainText().strip(),
                 genre=genre_cfg_cont.key if genre_cfg_cont else "",
                 style_tone=tone_cfg_cont.key if tone_cfg_cont else "",
                 xp_mode=self._cont_xp_mode_check.isChecked(),
@@ -4184,6 +4307,7 @@ class DeepSeekChatGUI(QMainWindow):
             protagonist_bio=self._cont_protagonist_edit.toPlainText().strip(),
             background_story=self._cont_background_edit.toPlainText().strip(),
             writing_demand=self._cont_demand_edit.toPlainText().strip(),
+            author_plan=self._cont_author_plan_edit.toPlainText().strip(),
             xp_mode=self._cont_xp_mode_check.isChecked(),
         )
 
@@ -4236,6 +4360,21 @@ class DeepSeekChatGUI(QMainWindow):
                     )
                     if wb_text.strip():
                         user_parts.append(f"【世界书（已建立设定库）】\n{wb_text}\n")
+            except Exception:
+                pass
+
+            try:
+                contract = self._novel_manager.build_continuity_contract(
+                    book_title, chapter_num, chapter_title, plot
+                )
+                if contract:
+                    user_parts.append(f"{contract}\n")
+            except Exception:
+                pass
+            try:
+                author_plan = self._novel_manager.build_author_planning_prompt(book_title)
+                if author_plan:
+                    user_parts.append(f"{author_plan}\n")
             except Exception:
                 pass
 
@@ -4323,6 +4462,15 @@ class DeepSeekChatGUI(QMainWindow):
                 content=content,
                 usage=getattr(response, "usage", None),
             )
+            content = self._audit_and_repair_chapter_content(
+                title=book_title,
+                chapter_num=chapter_num,
+                chapter_title=chapter_title,
+                content=content,
+                context=user_prompt,
+                xp_mode=xp_mode,
+                operation_prefix="continuation",
+            )
 
             if self._client._cancel_requested:
                 self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
@@ -4385,11 +4533,16 @@ class DeepSeekChatGUI(QMainWindow):
                 bible = self._novel_manager.load_world_bible(book_title)
                 updated_bible = extract_and_merge_world_bible(
                     self._usage_logged_client("world_bible_update"), content, chapter_num, bible, self._client.model,
+                    chapter_version=saved_version,
                     global_user_prompt=self._client.global_user_prompt,
                     xp_mode=xp_mode,
                 )
                 self._novel_manager.save_world_bible(book_title, updated_bible)
                 self._stream_signals.token.emit("✅ 世界书已更新。\n")
+                if getattr(updated_bible, "consistency_warnings", None):
+                    self._stream_signals.token.emit(
+                        f"⚠️ 世界书发现 {len(updated_bible.consistency_warnings)} 条一致性提醒，可在世界书窗口查看。\n"
+                    )
             except Exception as wb_e:
                 self._stream_signals.token.emit(f"⚠️ 世界书更新跳过: {wb_e}\n")
 
@@ -4876,6 +5029,7 @@ class DeepSeekChatGUI(QMainWindow):
                     protagonist_bio=settings.get("protagonist_bio", ""),
                     background_story=settings.get("background_story", ""),
                     writing_demand=settings.get("writing_demand", ""),
+                    author_plan=settings.get("author_plan", ""),
                     xp_mode=xp_mode,
                 )
 
@@ -5022,10 +5176,15 @@ class DeepSeekChatGUI(QMainWindow):
                 # 加载 meta 中的设定
                 meta = self._novel_manager.load_meta(title)
 
+                # 先保存章节文件，拿到实际版本号，世界书来源才能绑定到章节版本
+                _, saved_version = self._novel_manager.save_chapter_version(
+                    title, chapter_num, chapter_title, content,
+                )
+
                 # 提取并合并世界书（带上全局上下文）
                 world_bible = extract_and_merge_world_bible(
                     client, content, chapter_num, world_bible,
-                    model, global_user_prompt=_global_prompt,
+                    model, chapter_version=saved_version, global_user_prompt=_global_prompt,
                     story_context=story_context,
                     background_story=meta.background_story,
                     protagonist_bio=meta.protagonist_bio,
@@ -5033,6 +5192,8 @@ class DeepSeekChatGUI(QMainWindow):
                     xp_mode=xp_mode,
                 )
                 self._novel_manager.save_world_bible(title, world_bible)
+                if getattr(world_bible, "consistency_warnings", None):
+                    si.token.emit(f"    ⚠️ 世界书一致性提醒：{len(world_bible.consistency_warnings)} 条\n")
 
                 # 生成章节摘要
                 summary_text = self._novel_manager.generate_summary(
@@ -5041,11 +5202,6 @@ class DeepSeekChatGUI(QMainWindow):
                     xp_mode=xp_mode,
                 )
                 self._novel_manager.append_summary(title, chapter_num, chapter_title, summary_text)
-
-                # 保存章节文件（自动管理版本）
-                self._novel_manager.save_chapter_version(
-                    title, chapter_num, chapter_title, content,
-                )
 
                 si.token.emit(f"    ✅ 世界书已更新 | 摘要已保存\n")
 
@@ -5074,6 +5230,7 @@ class DeepSeekChatGUI(QMainWindow):
                 protagonist_bio=settings.get("protagonist_bio", ""),
                 background_story=settings.get("background_story", ""),
                 writing_demand=settings.get("writing_demand", ""),
+                author_plan=settings.get("author_plan", ""),
                 xp_mode=xp_mode,
             )
 
@@ -5566,6 +5723,20 @@ class DeepSeekChatGUI(QMainWindow):
                     user_parts = [f"请创作小说的第 {chapter_num} 章，标题为「{chapter_title}」。\n"]
                     if summary and summary != "故事刚刚开始。":
                         user_parts.append(f"【前情提要】\n{summary}\n")
+                    try:
+                        contract = self._novel_mgr.build_continuity_contract(
+                            self._book_title, chapter_num, chapter_title, plot
+                        )
+                        if contract:
+                            user_parts.append(f"{contract}\n")
+                    except Exception:
+                        pass
+                    try:
+                        author_plan = self._novel_mgr.build_author_planning_prompt(self._book_title)
+                        if author_plan:
+                            user_parts.append(f"{author_plan}\n")
+                    except Exception:
+                        pass
                     if req:
                         user_parts.append(f"【原文续写要求】\n{req}\n")
                     if plot:
@@ -5604,6 +5775,15 @@ class DeepSeekChatGUI(QMainWindow):
                         content=content,
                         usage=getattr(response, "usage", None),
                     )
+                    content = parent._audit_and_repair_chapter_content(
+                        title=self._book_title,
+                        chapter_num=chapter_num,
+                        chapter_title=chapter_title,
+                        content=content,
+                        context=messages[-1].get("content", ""),
+                        xp_mode=xp_mode,
+                        operation_prefix="chapter_regenerate",
+                    )
 
                     new_version = self._novel_mgr.get_next_version(self._book_title, chapter_num)
                     file_path, saved_version = self._novel_mgr.save_chapter_version(
@@ -5618,6 +5798,7 @@ class DeepSeekChatGUI(QMainWindow):
                         updated_bible = extract_and_merge_world_bible(
                             self._client.raw_client, content, chapter_num, bible,
                             self._client.model,
+                            chapter_version=saved_version,
                             global_user_prompt=self._client.global_user_prompt,
                             xp_mode=xp_mode,
                         )
