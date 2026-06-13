@@ -16,6 +16,8 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
+from utils.prompts import Prompts
+
 SUGGESTION_PROMPT = """你是一位资深小说编辑。请根据以下完整世界观设定、待回收伏笔和剧情进展，为下一章提供 3-5 个发展方向建议。
 
 每个建议包含：
@@ -57,7 +59,66 @@ def _safe_format(template: str, **kwargs) -> str:
     return result
 
 
-def analyze_source_text(client, source_text: str, model: str, global_user_prompt: str = "") -> dict:
+def _theme_name(widget) -> str:
+    """读取主窗口保存的主题；读不到时默认暗色以兼容旧界面。"""
+    parent = widget.parent() if widget is not None else None
+    settings = getattr(parent, "_settings", None) or {}
+    return "light" if settings.get("theme") == "light" else "dark"
+
+
+def _is_light(widget) -> bool:
+    return _theme_name(widget) == "light"
+
+
+def _text_panel_style(widget) -> str:
+    if _is_light(widget):
+        return (
+            "background: #ffffff; color: #202635; "
+            "border: 1px solid #cfd7e6; border-radius: 6px; font-size: 13px;"
+        )
+    return (
+        "background: #2d2d2d; color: #e0e0e0; "
+        "border: 1px solid #444; border-radius: 6px; font-size: 13px;"
+    )
+
+
+def _list_panel_style(widget) -> str:
+    if _is_light(widget):
+        return """
+            QListWidget { background: #ffffff; color: #202635;
+                          border: 1px solid #cfd7e6; border-radius: 6px; font-size: 13px; }
+            QListWidget::item { color: #202635; padding: 4px 6px; }
+            QListWidget::item:selected { background: #dbe7ff; color: #123a8a; }
+        """
+    return """
+        QListWidget { background: #2d2d2d; color: #e0e0e0;
+                      border: 1px solid #444; border-radius: 6px; font-size: 13px; }
+        QListWidget::item { color: #e0e0e0; padding: 4px 6px; }
+        QListWidget::item:selected { background: #3d7abb; color: white; }
+    """
+
+
+def _status_style(widget, kind: str = "normal") -> str:
+    palette = {
+        "light": {
+            "normal": ("#334155", "#eef3ff"),
+            "success": ("#166534", "#e8f5ec"),
+            "warn": ("#8a5b00", "#fff6d6"),
+            "error": ("#b42318", "#fde7e5"),
+        },
+        "dark": {
+            "normal": ("#ccc", "#333"),
+            "success": ("#8f8", "#2d3d2d"),
+            "warn": ("#ff8", "#3d3d2d"),
+            "error": ("#f88", "#3d2d2d"),
+        },
+    }
+    color, bg = palette[_theme_name(widget)].get(kind, palette[_theme_name(widget)]["normal"])
+    return f"color: {color}; font-size: 13px; padding: 6px 10px; background: {bg}; border-radius: 4px;"
+
+
+def analyze_source_text(client, source_text: str, model: str, global_user_prompt: str = "",
+                        xp_mode: bool = False) -> dict:
     """
     新版分析：使用 AI 语义分段 + 结构化提取，返回可加载的小说设定。
 
@@ -89,10 +150,22 @@ def analyze_source_text(client, source_text: str, model: str, global_user_prompt
     segments = segment_by_ai(client, source_text, model, global_user_prompt=global_user_prompt)
 
     # 2. 逐段提取世界观
-    world_data = extract_world_bible_from_segments(client, segments, model, global_user_prompt=global_user_prompt)
+    world_data = extract_world_bible_from_segments(
+        client,
+        segments,
+        model,
+        global_user_prompt=global_user_prompt,
+        xp_mode=xp_mode,
+    )
 
     # 3. 生成小说设定
-    settings = generate_novel_settings_from_world_bible(client, world_data, model, global_user_prompt=global_user_prompt)
+    settings = generate_novel_settings_from_world_bible(
+        client,
+        world_data,
+        model,
+        global_user_prompt=global_user_prompt,
+        xp_mode=xp_mode,
+    )
 
     return {
         "world_data": world_data,
@@ -207,7 +280,8 @@ def _build_world_summary(world_data: dict | None) -> str:
 
 def suggest_directions(client, setting: str, plot: str, model: str,
                        world_data: dict | None = None,
-                       global_user_prompt: str = "") -> list[str]:
+                       global_user_prompt: str = "",
+                       xp_mode: bool = False) -> list[str]:
     """
     AI 建议 3-5 个发展方向
 
@@ -227,6 +301,8 @@ def suggest_directions(client, setting: str, plot: str, model: str,
     )
     if global_user_prompt.strip():
         prompt += f"\n\n用户偏好参考: {global_user_prompt}"
+    if xp_mode:
+        prompt += f"\n\n{Prompts.XP_MODE_SYSTEM}\n\n{Prompts.XP_SUGGESTION_GUIDE}"
     try:
         resp = client.chat.completions.create(
             model=model,
@@ -284,7 +360,7 @@ class ContinuationAnalysisDialog(QDialog):
             f"以下内容已保存到书架并加载到编辑面板，可在面板上直接修改。"
         )
         hint = QLabel(summary)
-        hint.setStyleSheet("color: #ccc; font-size: 13px; padding: 8px; background: #333; border-radius: 4px;")
+        hint.setStyleSheet(_status_style(self, "normal").replace("padding: 6px 10px;", "padding: 8px;"))
         hint.setWordWrap(True)
         layout.addWidget(hint)
 
@@ -302,7 +378,7 @@ class ContinuationAnalysisDialog(QDialog):
         )
         overview_edit = QTextEdit()
         overview_edit.setPlainText(overview_text)
-        overview_edit.setStyleSheet("background: #2d2d2d; color: #e0e0e0; border: 1px solid #444;")
+        overview_edit.setStyleSheet(f"QTextEdit {{ {_text_panel_style(self)} }}")
         tabs.addTab(overview_edit, "生成的小说设定")
 
         # 角色标签页
@@ -312,7 +388,7 @@ class ContinuationAnalysisDialog(QDialog):
         ) or "(未提取到角色)"
         char_edit = QTextEdit()
         char_edit.setPlainText(char_text)
-        char_edit.setStyleSheet("background: #2d2d2d; color: #e0e0e0; border: 1px solid #444;")
+        char_edit.setStyleSheet(f"QTextEdit {{ {_text_panel_style(self)} }}")
         tabs.addTab(char_edit, f"角色 ({len(chars)})")
 
         # 地点标签页
@@ -322,14 +398,14 @@ class ContinuationAnalysisDialog(QDialog):
         ) or "(未提取到地点)"
         loc_edit = QTextEdit()
         loc_edit.setPlainText(loc_text)
-        loc_edit.setStyleSheet("background: #2d2d2d; color: #e0e0e0; border: 1px solid #444;")
+        loc_edit.setStyleSheet(f"QTextEdit {{ {_text_panel_style(self)} }}")
         tabs.addTab(loc_edit, f"地点 ({len(locs)})")
 
         # 规则标签页
         rule_text = "\n".join(f"- {r[:200]}" for r in rules) or "(未提取到规则)"
         rule_edit = QTextEdit()
         rule_edit.setPlainText(rule_text)
-        rule_edit.setStyleSheet("background: #2d2d2d; color: #e0e0e0; border: 1px solid #444;")
+        rule_edit.setStyleSheet(f"QTextEdit {{ {_text_panel_style(self)} }}")
         tabs.addTab(rule_edit, f"规则 ({len(rules)})")
 
         # 剧情线标签页
@@ -339,7 +415,7 @@ class ContinuationAnalysisDialog(QDialog):
         ) or "(未提取到剧情线)"
         thread_edit = QTextEdit()
         thread_edit.setPlainText(thread_text)
-        thread_edit.setStyleSheet("background: #2d2d2d; color: #e0e0e0; border: 1px solid #444;")
+        thread_edit.setStyleSheet(f"QTextEdit {{ {_text_panel_style(self)} }}")
         tabs.addTab(thread_edit, f"剧情线 ({len(threads)})")
 
         # 时间线标签页
@@ -349,7 +425,7 @@ class ContinuationAnalysisDialog(QDialog):
         ) or "(未提取到时间线)"
         tl_edit = QTextEdit()
         tl_edit.setPlainText(tl_text)
-        tl_edit.setStyleSheet("background: #2d2d2d; color: #e0e0e0; border: 1px solid #444;")
+        tl_edit.setStyleSheet(f"QTextEdit {{ {_text_panel_style(self)} }}")
         tabs.addTab(tl_edit, f"事件 ({len(timeline)})")
 
         layout.addWidget(tabs)
@@ -517,10 +593,7 @@ class SectionPreviewDialog(QDialog):
 
         # 状态标签
         self._status_label = QLabel("准备中…")
-        self._status_label.setStyleSheet(
-            "color: #ccc; font-size: 13px; padding: 6px 10px; "
-            "background: #333; border-radius: 4px;"
-        )
+        self._status_label.setStyleSheet(_status_style(self, "normal"))
         self._status_label.setWordWrap(True)
         layout.addWidget(self._status_label)
 
@@ -532,11 +605,7 @@ class SectionPreviewDialog(QDialog):
         left_layout = QVBoxLayout(left_frame)
         left_layout.setContentsMargins(0, 0, 0, 0)
         self._section_list = QListWidget()
-        self._section_list.setStyleSheet("""
-            QListWidget { background: #2d2d2d; color: #e0e0e0;
-                          border: 1px solid #444; font-size: 13px; }
-            QListWidget::item:selected { background: #3d7abb; color: white; }
-        """)
+        self._section_list.setStyleSheet(_list_panel_style(self))
         self._section_list.currentRowChanged.connect(self._on_section_selected)
         left_layout.addWidget(QLabel("段落列表"))
         left_layout.addWidget(self._section_list)
@@ -548,10 +617,7 @@ class SectionPreviewDialog(QDialog):
         right_layout.setContentsMargins(0, 0, 0, 0)
         self._preview_edit = QTextEdit()
         self._preview_edit.setReadOnly(True)
-        self._preview_edit.setStyleSheet("""
-            QTextEdit { background: #2d2d2d; color: #e0e0e0;
-                        border: 1px solid #444; font-size: 13px; }
-        """)
+        self._preview_edit.setStyleSheet(f"QTextEdit {{ {_text_panel_style(self)} }}")
         right_layout.addWidget(QLabel("内容预览"))
         right_layout.addWidget(self._preview_edit)
         splitter.addWidget(right_frame)
@@ -598,19 +664,13 @@ class SectionPreviewDialog(QDialog):
         if sections:
             self._sections_data = sections
             self._status_label.setText("✅ 文本已有正确的 # 段落划分")
-            self._status_label.setStyleSheet(
-                "color: #8f8; font-size: 13px; padding: 6px 10px; "
-                "background: #2d3d2d; border-radius: 4px;"
-            )
+            self._status_label.setStyleSheet(_status_style(self, "success"))
             self._populate_sections()
         else:
             # 先显示全文，再在后台线程调用 AI 分段（不阻塞 UI）
             self._sections_data = [("全文", text)]
             self._status_label.setText("⏳ 未检测到段落划分，正在由 AI 自动分段…")
-            self._status_label.setStyleSheet(
-                "color: #ff8; font-size: 13px; padding: 6px 10px; "
-                "background: #3d3d2d; border-radius: 4px;"
-            )
+            self._status_label.setStyleSheet(_status_style(self, "warn"))
             self._populate_sections()
             self._start_initial_segmentation()
 
@@ -660,10 +720,7 @@ class SectionPreviewDialog(QDialog):
         from utils.summarize import segment_by_ai
 
         self._status_label.setText("⏳ AI 正在重新分段…")
-        self._status_label.setStyleSheet(
-            "color: #ff8; font-size: 13px; padding: 6px 10px; "
-            "background: #3d3d2d; border-radius: 4px;"
-        )
+        self._status_label.setStyleSheet(_status_style(self, "warn"))
         self._resegment_btn.setEnabled(False)
         self._confirm_btn.setEnabled(False)
 
@@ -684,10 +741,7 @@ class SectionPreviewDialog(QDialog):
 
         if error:
             self._status_label.setText(f"❌ 重新分段失败: {error}")
-            self._status_label.setStyleSheet(
-                "color: #f88; font-size: 13px; padding: 6px 10px; "
-                "background: #3d2d2d; border-radius: 4px;"
-            )
+            self._status_label.setStyleSheet(_status_style(self, "error"))
             return
 
         # 同时更新 _sections_data（供预览）和文件夹模式下当前文件的段落
@@ -764,18 +818,12 @@ class SectionPreviewDialog(QDialog):
             self._status_label.setText(
                 f"📂 共 {len(self._folder_files)} 个文件，{auto_count} 个正在后台 AI 分段…"
             )
-            self._status_label.setStyleSheet(
-                "color: #ff8; font-size: 13px; padding: 6px 10px; "
-                "background: #3d3d2d; border-radius: 4px;"
-            )
+            self._status_label.setStyleSheet(_status_style(self, "warn"))
         else:
             self._status_label.setText(
                 f"📂 共 {len(self._folder_files)} 个文件，勾选后确认分析"
             )
-            self._status_label.setStyleSheet(
-                "color: #ccc; font-size: 13px; padding: 6px 10px; "
-                "background: #333; border-radius: 4px;"
-            )
+            self._status_label.setStyleSheet(_status_style(self, "normal"))
 
         self._populate_folder_list()
 
@@ -812,10 +860,7 @@ class SectionPreviewDialog(QDialog):
             self._status_label.setText(
                 f"✅ AI 分段完成，共 {len(self._folder_files)} 个文件，勾选后确认分析"
             )
-            self._status_label.setStyleSheet(
-                "color: #8f8; font-size: 13px; padding: 6px 10px; "
-                "background: #2d3d2d; border-radius: 4px;"
-            )
+            self._status_label.setStyleSheet(_status_style(self, "success"))
 
     def _populate_folder_list(self):
         """填充文件夹文件列表（带复选框）"""

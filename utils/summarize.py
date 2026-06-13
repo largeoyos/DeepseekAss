@@ -13,6 +13,8 @@ import re
 import time
 from typing import Callable
 
+from utils.prompts import Prompts
+
 
 SEGMENT_PROMPT = """分析以下文本的话题转折点，在转折处插入分隔标记。
 
@@ -60,7 +62,13 @@ EXTRACT_PROMPT = """你是一个小说信息深度提取专家。请严格根据
       "key_details": ["【原文引用】从原文中直接复制关于该角色的重要描述片段（每段100字内）"],
       "key_dialogues": ["【原文引用】从原文中直接复制该角色说出的重要台词（每句100字内）"],
       "motivation": "该角色的核心动机/目标（100字内）",
-      "arc": "该角色的成长弧线/变化趋势（100字内）"
+      "arc": "该角色的成长弧线/变化趋势（100字内）",
+      "current_location": "该角色章节结尾时所在位置（50字内，不确定则空字符串）",
+      "current_goal": "该角色当前最明确的目标/意图（100字内，不确定则空字符串）",
+      "current_emotion": "该角色当前情绪、关系状态或心理状态（100字内，不确定则空字符串）",
+      "recent_action": "该角色最近一次关键行动或章节结尾动作（100字内，不确定则空字符串）",
+      "knowledge_state": "该角色当前已知的重要信息、误解或隐瞒内容（100字内，不确定则空字符串）",
+      "unresolved_conflicts": ["该角色身上仍未解决的冲突/问题（每条50字内）"]
     }}
   ],
   "locations": [
@@ -89,7 +97,9 @@ EXTRACT_PROMPT = """你是一个小说信息深度提取专家。请严格根据
       "involved_characters": ["角色名"],
       "description": "【300字内】该线索的详细描述",
       "key_details": ["【原文引用】关于该剧情线的重要原文片段"],
-      "foreshadowing_related": ["该剧情线涉及的前期伏笔（50字内）"]
+      "foreshadowing_related": ["该剧情线涉及的前期伏笔（50字内）"],
+      "expected_payoff": "这条线索后续最可能/最应该回收的方向（100字内，不确定则空字符串）",
+      "payoff_hint": "适合在后续章节使用的推进或回收提示（100字内，不确定则空字符串）"
     }}
   ],
   "key_worldbuilding": [
@@ -244,6 +254,81 @@ def _merge_list_dedup(target: list, source: list) -> None:
         if isinstance(item, str) and item not in seen:
             target.append(item)
             seen.add(item)
+
+
+def _as_list(value) -> list:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    return [value]
+
+
+def _norm_key(text: str) -> str:
+    return re.sub(r"\s+", "", (text or "").strip()).lower()
+
+
+def _append_text_unique(current: str, new_text: str, limit: int = 800) -> str:
+    current = (current or "").strip()
+    new_text = (new_text or "").strip()
+    if not new_text:
+        return current[:limit]
+    if not current:
+        return new_text[:limit]
+    if new_text in current:
+        return current[:limit]
+    if current in new_text:
+        return new_text[:limit]
+    return f"{current}\n{new_text}"[:limit]
+
+
+def _character_keys(ch: dict) -> set[str]:
+    keys = {_norm_key(ch.get("name", ""))}
+    keys.update(_norm_key(alias) for alias in ch.get("aliases", []) if alias)
+    return {k for k in keys if k}
+
+
+def _find_character(characters: list[dict], name: str, aliases: list) -> dict | None:
+    incoming = {_norm_key(name)}
+    incoming.update(_norm_key(alias) for alias in aliases if alias)
+    incoming = {k for k in incoming if k}
+    for existing in characters:
+        if _character_keys(existing) & incoming:
+            return existing
+    return None
+
+
+def _merge_relationships(existing: list, incoming: list) -> None:
+    for rel in incoming:
+        if not isinstance(rel, dict):
+            continue
+        target = rel.get("target", "")
+        if not target:
+            continue
+        found = next(
+            (
+                old for old in existing
+                if _norm_key(old.get("target", "")) == _norm_key(target)
+                and (not rel.get("type") or not old.get("type") or old.get("type") == rel.get("type"))
+            ),
+            None,
+        )
+        if found:
+            if rel.get("type") and not found.get("type"):
+                found["type"] = rel["type"]
+            found["description"] = _append_text_unique(found.get("description", ""), rel.get("description", ""), 200)
+        else:
+            existing.append(rel)
+
+
+def _plot_status(existing_status: str, new_status: str) -> str:
+    if existing_status == "resolved" or new_status == "resolved":
+        return "resolved"
+    if new_status == "active" or existing_status == "active":
+        return "active"
+    return new_status if new_status in ("active", "resolved", "dormant") else existing_status
 
 
 SYNTHESIS_PROMPT = """你是一个小说信息合成专家。以下是从同一部作品的多个段落中分别提取的世界观信息。
@@ -420,6 +505,7 @@ def extract_world_bible_from_segments(
     *,
     progress_callback: Callable[[int, int], None] | None = None,
     global_user_prompt: str = "",
+    xp_mode: bool = False,
 ) -> dict:
     """
     对每个语义段落提取世界观信息，合并为完整数据。
@@ -466,6 +552,8 @@ def extract_world_bible_from_segments(
             dedup_context = ""
 
         prompt = _safe_format(EXTRACT_PROMPT, title=title, content=content_sample, dedup_context=dedup_context)
+        if xp_mode:
+            prompt += f"\n\n{Prompts.XP_WORLD_BIBLE_GUIDE}"
         data = None
         last_error = None
         for max_tokens in (8192, 16384):
@@ -495,31 +583,39 @@ def extract_world_bible_from_segments(
             name = ch.get("name", "").strip()
             if not name:
                 continue
-            if name in seen_names["characters"]:
-                # 更新已有角色（后续段落补充新信息）
-                for existing in merged["characters"]:
-                    if existing["name"] == name:
-                        if ch.get("traits"):
-                            existing["traits"] = ch["traits"][:500]
-                        if ch.get("status") in ("alive", "dead", "missing", "transformed"):
-                            existing["status"] = ch["status"]
-                        for alias in ch.get("aliases", []):
-                            if alias and alias not in existing["aliases"]:
-                                existing["aliases"].append(alias)
-                        new_imp = ch.get("importance", "normal")
-                        imp_rank = {"major": 3, "normal": 2, "minor": 1}
-                        if imp_rank.get(new_imp, 0) > imp_rank.get(existing.get("importance", "normal"), 0):
-                            existing["importance"] = new_imp
-                        _merge_list_dedup(existing["key_details"], [_verify_verbatim(kd, content) for kd in ch.get("key_details", [])])
-                        _merge_list_dedup(existing["key_dialogues"], [_verify_verbatim(kd, content) for kd in ch.get("key_dialogues", [])])
-                        if ch.get("motivation"):
-                            existing["motivation"] = ch["motivation"][:200]
-                        if ch.get("arc"):
-                            existing["arc"] = ch["arc"][:200]
-                        for r in ch.get("relationships", []):
-                            if not any(r.get("target") == rel.get("target") for rel in existing["relationships"]):
-                                existing["relationships"].append(r)
-                        break
+            existing = _find_character(merged["characters"], name, ch.get("aliases", []))
+            if existing:
+                if name != existing["name"] and name not in existing["aliases"]:
+                    existing["aliases"].append(name)
+                for alias in ch.get("aliases", []):
+                    if alias and alias != existing["name"] and alias not in existing["aliases"]:
+                        existing["aliases"].append(alias)
+                existing["traits"] = _append_text_unique(existing.get("traits", ""), ch.get("traits", "")[:500], 1000)
+                if ch.get("status") in ("dead", "missing", "transformed"):
+                    existing["status"] = ch["status"]
+                new_imp = ch.get("importance", "normal")
+                imp_rank = {"major": 3, "normal": 2, "minor": 1}
+                if imp_rank.get(new_imp, 0) > imp_rank.get(existing.get("importance", "normal"), 0):
+                    existing["importance"] = new_imp
+                _merge_list_dedup(existing["key_details"], [_verify_verbatim(kd, content) for kd in ch.get("key_details", [])])
+                _merge_list_dedup(existing["key_dialogues"], [_verify_verbatim(kd, content) for kd in ch.get("key_dialogues", [])])
+                existing["motivation"] = _append_text_unique(existing.get("motivation", ""), ch.get("motivation", "")[:200], 400)
+                existing["arc"] = _append_text_unique(existing.get("arc", ""), ch.get("arc", "")[:200], 400)
+                for field_name, limit in (
+                    ("current_location", 100),
+                    ("current_goal", 200),
+                    ("current_emotion", 200),
+                    ("recent_action", 200),
+                    ("knowledge_state", 200),
+                ):
+                    value = str(ch.get(field_name, "")).strip()
+                    if value:
+                        existing[field_name] = value[:limit]
+                _merge_list_dedup(
+                    existing.setdefault("unresolved_conflicts", []),
+                    [str(item)[:50] for item in _as_list(ch.get("unresolved_conflicts", [])) if item],
+                )
+                _merge_relationships(existing["relationships"], ch.get("relationships", []))
             else:
                 seen_names["characters"].add(name)
                 merged["characters"].append({
@@ -534,6 +630,12 @@ def extract_world_bible_from_segments(
                     "key_dialogues": [_verify_verbatim(kd, content) for kd in ch.get("key_dialogues", [])],
                     "motivation": ch.get("motivation", "")[:200],
                     "arc": ch.get("arc", "")[:200],
+                    "current_location": ch.get("current_location", "")[:100],
+                    "current_goal": ch.get("current_goal", "")[:200],
+                    "current_emotion": ch.get("current_emotion", "")[:200],
+                    "recent_action": ch.get("recent_action", "")[:200],
+                    "knowledge_state": ch.get("knowledge_state", "")[:200],
+                    "unresolved_conflicts": [str(item)[:50] for item in _as_list(ch.get("unresolved_conflicts", [])) if item],
                 })
 
         # 合并地点
@@ -588,24 +690,22 @@ def extract_world_bible_from_segments(
             name = pt.get("name", "").strip()
             if not name:
                 continue
-            if name in seen_names["plot_threads"]:
-                # 更新已有剧情线
-                for existing in merged["plot_threads"]:
-                    if existing["name"] == name:
-                        if pt.get("status") in ("active", "resolved", "dormant"):
-                            existing["status"] = pt["status"]
-                        if pt.get("description"):
-                            existing["description"] = pt["description"][:300]
-                        for char in pt.get("involved_characters", []):
-                            if char and char not in existing["involved_characters"]:
-                                existing["involved_characters"].append(char)
-                        new_imp = pt.get("importance", "normal")
-                        imp_rank = {"major": 3, "normal": 2, "minor": 1}
-                        if imp_rank.get(new_imp, 0) > imp_rank.get(existing.get("importance", "normal"), 0):
-                            existing["importance"] = new_imp
-                        _merge_list_dedup(existing["key_details"], [_verify_verbatim(kd, content) for kd in pt.get("key_details", [])])
-                        _merge_list_dedup(existing["foreshadowing_related"], [fr[:50] for fr in pt.get("foreshadowing_related", [])])
-                        break
+            existing = next((p for p in merged["plot_threads"] if _norm_key(p.get("name", "")) == _norm_key(name)), None)
+            if existing:
+                existing["status"] = _plot_status(existing.get("status", "active"), pt.get("status", "active"))
+                existing["description"] = _append_text_unique(existing.get("description", ""), pt.get("description", "")[:300], 800)
+                for char in pt.get("involved_characters", []):
+                    if char and char not in existing["involved_characters"]:
+                        existing["involved_characters"].append(char)
+                new_imp = pt.get("importance", "normal")
+                imp_rank = {"major": 3, "normal": 2, "minor": 1}
+                if imp_rank.get(new_imp, 0) > imp_rank.get(existing.get("importance", "normal"), 0):
+                    existing["importance"] = new_imp
+                existing["last_touched_chapter"] = max(existing.get("last_touched_chapter", 0), chapter_marker)
+                existing["expected_payoff"] = _append_text_unique(existing.get("expected_payoff", ""), pt.get("expected_payoff", "")[:100], 300)
+                existing["payoff_hint"] = _append_text_unique(existing.get("payoff_hint", ""), pt.get("payoff_hint", "")[:100], 300)
+                _merge_list_dedup(existing["key_details"], [_verify_verbatim(kd, content) for kd in pt.get("key_details", [])])
+                _merge_list_dedup(existing["foreshadowing_related"], [fr[:50] for fr in pt.get("foreshadowing_related", [])])
             else:
                 seen_names["plot_threads"].add(name)
                 merged["plot_threads"].append({
@@ -616,6 +716,10 @@ def extract_world_bible_from_segments(
                     "description": pt.get("description", "")[:300],
                     "key_details": [_verify_verbatim(kd, content) for kd in pt.get("key_details", [])],
                     "foreshadowing_related": [fr[:50] for fr in pt.get("foreshadowing_related", [])],
+                    "opened_chapter": chapter_marker,
+                    "last_touched_chapter": chapter_marker,
+                    "expected_payoff": pt.get("expected_payoff", "")[:100],
+                    "payoff_hint": pt.get("payoff_hint", "")[:100],
                 })
 
         # 合并顶层字段
@@ -754,6 +858,7 @@ def generate_novel_settings_from_world_bible(
     world_data: dict,
     model: str,
     global_user_prompt: str = "",
+    xp_mode: bool = False,
 ) -> dict:
     """
     从提取的世界书数据生成小说设定（背景故事、主角描述、写作要求）。
@@ -792,6 +897,8 @@ def generate_novel_settings_from_world_bible(
         plot_threads=plot_str,
         timeline=timeline_str,
     )
+    if xp_mode:
+        prompt += f"\n\n{Prompts.XP_MODE_SYSTEM}\n\n{Prompts.XP_SUGGESTION_GUIDE}"
 
     try:
         raw = _call_api(client, [{"role": "user", "content": prompt}], model, max_tokens=4096, temperature=0.3, global_user_prompt=global_user_prompt)

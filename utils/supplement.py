@@ -5,6 +5,8 @@
 
 import re
 
+from utils.prompts import Prompts
+
 
 def count_cn(text: str) -> int:
     """统计文本中的中文字符数"""
@@ -26,6 +28,7 @@ def supplement_content(
     world_bible_text: str = "",
     plot_content: str = "",
     history_summary: str = "",
+    xp_mode: bool = False,
 ) -> str:
     """
     字数不足时，将整章内容 + 全部上下文发送给 AI 进行扩写
@@ -57,6 +60,8 @@ def supplement_content(
         parts.append(f"【本章已定情节】\n{plot_content}\n")
     if history_summary.strip():
         parts.append(f"【历史生成参考】\n{history_summary}\n")
+    if xp_mode:
+        parts.append(f"{Prompts.XP_MODE_SYSTEM}\n")
     if global_user_prompt.strip():
         parts.append(f"【用户偏好提示】\n{global_user_prompt}\n")
 

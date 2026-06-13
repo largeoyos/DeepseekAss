@@ -105,6 +105,19 @@ class WorldBibleDialog(QDialog):
                 lines.append(f"  动机：{c.motivation}")
             if c.arc:
                 lines.append(f"  成长弧线：{c.arc}")
+            if c.current_location:
+                lines.append(f"  当前位置：{c.current_location}")
+            if c.current_goal:
+                lines.append(f"  当前目标：{c.current_goal}")
+            if c.current_emotion:
+                lines.append(f"  当前状态：{c.current_emotion}")
+            if c.recent_action:
+                lines.append(f"  最近行动：{c.recent_action}")
+            if c.knowledge_state:
+                lines.append(f"  已知信息：{c.knowledge_state}")
+            if c.unresolved_conflicts:
+                for conflict in c.unresolved_conflicts:
+                    lines.append(f"  ⚠️ 未解冲突：{conflict}")
             if c.notes:
                 lines.append(f"  备注：{c.notes}")
             if c.key_details:
@@ -151,6 +164,14 @@ class WorldBibleDialog(QDialog):
             lines.append(f"  重要性：{imp_map.get(p.importance, p.importance)}")
             lines.append(f"  描述：{p.description}")
             lines.append(f"  涉及角色：{chars}")
+            if p.opened_chapter:
+                lines.append(f"  开启章节：第{p.opened_chapter}章")
+            if p.last_touched_chapter:
+                lines.append(f"  最近触达：第{p.last_touched_chapter}章")
+            if p.expected_payoff:
+                lines.append(f"  预期回收：{p.expected_payoff}")
+            if p.payoff_hint:
+                lines.append(f"  回收提示：{p.payoff_hint}")
             if p.key_details:
                 for kd in p.key_details:
                     lines.append(f"  📌 关键细节：{kd}")
@@ -203,7 +224,26 @@ class WorldBibleDialog(QDialog):
                 if current and current.get("name"):
                     characters.append(CharacterEntry(**current))
                 name = line.strip("【】").strip()
-                current = {"name": name, "aliases": [], "traits": "", "relationships": [], "status": "alive", "importance": "normal", "first_appearance": 0, "notes": "", "key_details": [], "key_dialogues": [], "motivation": "", "arc": ""}
+                current = {
+                    "name": name,
+                    "aliases": [],
+                    "traits": "",
+                    "relationships": [],
+                    "status": "alive",
+                    "importance": "normal",
+                    "first_appearance": 0,
+                    "notes": "",
+                    "key_details": [],
+                    "key_dialogues": [],
+                    "motivation": "",
+                    "arc": "",
+                    "current_location": "",
+                    "current_goal": "",
+                    "current_emotion": "",
+                    "recent_action": "",
+                    "knowledge_state": "",
+                    "unresolved_conflicts": [],
+                }
             elif line.startswith("重要性：") and current:
                 imp_raw = line[4:].strip()
                 imp_map = {"重要": "major", "普通": "normal", "次要": "minor"}
@@ -218,6 +258,18 @@ class WorldBibleDialog(QDialog):
                 current["motivation"] = line[3:].strip()
             elif line.startswith("成长弧线：") and current:
                 current["arc"] = line[5:].strip()
+            elif line.startswith("当前位置：") and current:
+                current["current_location"] = line[5:].strip()
+            elif line.startswith("当前目标：") and current:
+                current["current_goal"] = line[5:].strip()
+            elif line.startswith("当前状态：") and current:
+                current["current_emotion"] = line[5:].strip()
+            elif line.startswith("最近行动：") and current:
+                current["recent_action"] = line[5:].strip()
+            elif line.startswith("已知信息：") and current:
+                current["knowledge_state"] = line[5:].strip()
+            elif line.startswith("⚠️ 未解冲突：") and current:
+                current.setdefault("unresolved_conflicts", []).append(line.split("：", 1)[1].strip())
             elif line.startswith("备注：") and current:
                 current["notes"] = line[3:].strip()
             elif line.startswith("📌 关键细节：") and current:
@@ -306,7 +358,19 @@ class WorldBibleDialog(QDialog):
                 name_end = line.index("】")
                 name = line[1:name_end].strip()
                 status = line[name_end+1:].strip("（）() ").strip()
-                current = {"name": name, "status": status or "active", "importance": "normal", "description": "", "involved_characters": [], "key_details": [], "foreshadowing_related": []}
+                current = {
+                    "name": name,
+                    "status": status or "active",
+                    "importance": "normal",
+                    "description": "",
+                    "involved_characters": [],
+                    "key_details": [],
+                    "foreshadowing_related": [],
+                    "opened_chapter": 0,
+                    "last_touched_chapter": 0,
+                    "expected_payoff": "",
+                    "payoff_hint": "",
+                }
             elif line.startswith("重要性：") and current:
                 imp_raw = line[4:].strip()
                 imp_map = {"重要": "major", "普通": "normal", "次要": "minor"}
@@ -316,6 +380,20 @@ class WorldBibleDialog(QDialog):
             elif line.startswith("涉及角色：") and current:
                 raw = line[5:].strip()
                 current["involved_characters"] = [c.strip() for c in raw.split("、") if c.strip() and c.strip() != "无"]
+            elif line.startswith("开启章节：") and current:
+                try:
+                    current["opened_chapter"] = int(''.join(filter(str.isdigit, line[5:])))
+                except ValueError:
+                    current["opened_chapter"] = 0
+            elif line.startswith("最近触达：") and current:
+                try:
+                    current["last_touched_chapter"] = int(''.join(filter(str.isdigit, line[5:])))
+                except ValueError:
+                    current["last_touched_chapter"] = 0
+            elif line.startswith("预期回收：") and current:
+                current["expected_payoff"] = line[5:].strip()
+            elif line.startswith("回收提示：") and current:
+                current["payoff_hint"] = line[5:].strip()
             elif line.startswith("📌 关键细节：") and current:
                 current.setdefault("key_details", []).append(line[7:].strip())
             elif line.startswith("🔮 关联伏笔：") and current:

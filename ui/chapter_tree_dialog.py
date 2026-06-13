@@ -49,13 +49,13 @@ class ChapterNodeItem(QGraphicsRectItem):
         self._apply_style(active=active, selected=selected)
 
         title = node.get("title") or f"第{node.get('chapter_num')}章"
-        text = QGraphicsTextItem(
+        self._text_item = QGraphicsTextItem(
             f"第{node.get('chapter_num')}章  v{node.get('version')}\n{title}",
             self,
         )
-        text.setDefaultTextColor(QColor("#ffffff" if active or selected else "#d8dde8"))
-        text.setTextWidth(width - 16)
-        text.setPos(8, 7)
+        self._text_item.setTextWidth(width - 16)
+        self._text_item.setPos(8, 7)
+        self._sync_text_color(active=active, selected=selected)
 
     def _apply_style(self, *, active: bool, selected: bool) -> None:
         if selected:
@@ -66,10 +66,15 @@ class ChapterNodeItem(QGraphicsRectItem):
             fill, border, width = "#2a2a3e", "#596070", 1
         self.setBrush(QBrush(QColor(fill)))
         self.setPen(QPen(QColor(border), width))
+        if hasattr(self, "_text_item"):
+            self._sync_text_color(active=active, selected=selected)
+
+    def _sync_text_color(self, *, active: bool, selected: bool) -> None:
+        self._text_item.setDefaultTextColor(QColor("#ffffff" if active or selected else "#d8dde8"))
 
     def mousePressEvent(self, event) -> None:
         self._dialog._select_node(self._node["id"])
-        super().mousePressEvent(event)
+        event.accept()
 
 
 class ChapterTreeDialog(QDialog):
@@ -77,6 +82,8 @@ class ChapterTreeDialog(QDialog):
 
     generation_done = pyqtSignal(str)
     generation_failed = pyqtSignal(str)
+    rebuild_done = pyqtSignal()
+    rebuild_failed = pyqtSignal(str)
 
     def __init__(self, parent, novel_manager: NovelManager, book_title: str, client=None):
         super().__init__(parent)
@@ -86,10 +93,13 @@ class ChapterTreeDialog(QDialog):
         self._meta = None
         self._current_node: dict | None = None
         self._selected_node_id: str | None = None
+        self._node_items: dict[str, ChapterNodeItem] = {}
         self.setWindowTitle(f"章节树管理 - {book_title}")
         self.resize(980, 640)
         self.generation_done.connect(self._on_generation_done)
         self.generation_failed.connect(self._on_generation_failed)
+        self.rebuild_done.connect(self._on_rebuild_done)
+        self.rebuild_failed.connect(self._on_rebuild_failed)
         self._init_ui()
         self._load_tree()
 
@@ -186,6 +196,7 @@ class ChapterTreeDialog(QDialog):
         node_w, node_h = 190, 64
         x_gap, y_gap = 36, 72
         positions: dict[str, tuple[float, float]] = {}
+        self._node_items = {}
         scene_width = max(1, max((len(level) for level in levels), default=1)) * (node_w + x_gap)
 
         for depth, level in enumerate(levels):
@@ -215,18 +226,18 @@ class ChapterTreeDialog(QDialog):
 
         for node_id, (x, y) in positions.items():
             node = self._meta.chapter_nodes[node_id]
-            self._scene.addItem(
-                ChapterNodeItem(
-                    self,
-                    node,
-                    x,
-                    y,
-                    node_w,
-                    node_h,
-                    active=node_id in active,
-                    selected=node_id == self._selected_node_id,
-                )
+            item = ChapterNodeItem(
+                self,
+                node,
+                x,
+                y,
+                node_w,
+                node_h,
+                active=node_id in active,
+                selected=node_id == self._selected_node_id,
             )
+            self._node_items[node_id] = item
+            self._scene.addItem(item)
         self._scene.setSceneRect(self._scene.itemsBoundingRect().adjusted(-24, -24, 24, 24))
         self._graph.fitInView(self._scene.sceneRect(), Qt.AspectRatioMode.KeepAspectRatio)
 
@@ -247,7 +258,10 @@ class ChapterTreeDialog(QDialog):
 
     def _select_node(self, node_id: str) -> None:
         self._selected_node_id = node_id
-        self._load_tree()
+        active = set(self._meta.active_path if self._meta else [])
+        for item_id, item in self._node_items.items():
+            item._apply_style(active=item_id in active, selected=item_id == node_id)
+        self._on_tree_selection()
 
     def _on_tree_selection(self, current=None, previous=None) -> None:
         self._current_node = self._selected_node()
@@ -289,7 +303,44 @@ class ChapterTreeDialog(QDialog):
             return
         if self._novel_manager.switch_active_node(self._book_title, node["id"]):
             self._load_tree()
-            QMessageBox.information(self, "完成", "已切换活跃路径。建议按需重建剧情摘要。")
+            reply = QMessageBox.question(
+                self,
+                "重建剧情记忆与世界书",
+                "已切换活跃路径。是否根据当前活跃路径重建剧情摘要和世界书？\n"
+                "（推荐：选「是」以清理旧分支残留设定）",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            )
+            if reply == QMessageBox.StandardButton.Yes and self._client:
+                self._details.setPlainText("正在重建剧情摘要和世界书，请稍候...")
+                threading.Thread(target=self._run_rebuild_memory, daemon=True).start()
+            else:
+                QMessageBox.information(self, "完成", "已切换活跃路径。")
+
+    def _run_rebuild_memory(self) -> None:
+        try:
+            self._novel_manager.rebuild_summary_from_active(
+                self._client.raw_client,
+                self._book_title,
+                model=self._client.model,
+                global_user_prompt=self._client.global_user_prompt,
+            )
+            self._novel_manager.rebuild_world_bible_from_active(
+                self._client.raw_client,
+                self._book_title,
+                model=self._client.model,
+                global_user_prompt=self._client.global_user_prompt,
+            )
+            self.rebuild_done.emit()
+        except Exception as exc:
+            self.rebuild_failed.emit(str(exc))
+
+    def _on_rebuild_done(self) -> None:
+        self._load_tree()
+        QMessageBox.information(self, "完成", "剧情摘要和世界书已重建。")
+
+    def _on_rebuild_failed(self, error: str) -> None:
+        QMessageBox.warning(self, "重建失败", error)
+        self._load_tree()
 
     def _edit_current(self) -> None:
         node = self._selected_node()

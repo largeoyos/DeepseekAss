@@ -51,6 +51,7 @@ class NovelMeta:
     writing_demand: str = ""
     genre: str = ""        # 题材 key（对应 utils.genre_styles.GENRES）
     style_tone: str = ""   # 风格基调 key（对应 utils.genre_styles.STYLE_TONES）
+    xp_mode: bool = False  # 成人向/性癖向创作模式开关
     created_at: str = ""
     updated_at: str = ""
     total_chapters: int = 0
@@ -786,7 +787,7 @@ class NovelManager:
         self._write_encrypted_text(summary_path, current)
 
     def rebuild_summary_from_active(self, client, title: str, model: str = "deepseek-v4-flash",
-                                     global_user_prompt: str = "") -> None:
+                                     global_user_prompt: str = "", xp_mode: bool = False) -> None:
         """
         根据所有活跃章节重新生成完整 plot_summary.txt
         当用户切换活跃版本后调用此方法重建摘要
@@ -797,7 +798,13 @@ class NovelManager:
             self._write_encrypted_text(self._summary_path(title), "故事刚刚开始。\n")
             return
 
+        meta = self.load_meta(title)
+        effective_xp_mode = xp_mode or meta.xp_mode
         full_summary_parts = ["# 完整前情提要（基于活跃章节自动生成）\n"]
+        xp_hint = ""
+        if effective_xp_mode:
+            from utils.prompts import Prompts
+            xp_hint = f"\n\n{Prompts.XP_SUMMARY_GUIDE}"
         for ch in chapters:
             content = self.read_active_chapter(title, ch["num"])
             if not content:
@@ -814,6 +821,7 @@ class NovelManager:
                             f"2. 人物关系变化或新人物登场\n"
                             f"3. 新出现的设定、伏笔或世界观信息\n"
                             f"4. 本章结尾状态（角色去向、悬念等）\n\n{content}"
+                            + xp_hint
                             + (f"\n\n用户偏好参考: {global_user_prompt}" if global_user_prompt.strip() else "")
                         ),
                     }],
@@ -832,9 +840,68 @@ class NovelManager:
         self._write_encrypted_text(summary_path, "".join(full_summary_parts))
 
         # 重建后清空压缩缓存，下次 load_smart_summary 会重新计算
-        meta = self.load_meta(title)
         meta.compressed_early_summary = ""
         self._save_meta(title, meta)
+
+    def rebuild_world_bible_from_active(
+        self,
+        client,
+        title: str,
+        model: str = "deepseek-v4-flash",
+        global_user_prompt: str = "",
+        xp_mode: bool = False,
+    ) -> None:
+        """
+        根据所有活跃章节重新生成 world_bible.json。
+
+        当用户切换章节活跃版本或重写章节后，旧版本提取出的角色状态、
+        剧情线和伏笔可能仍残留在世界书里。重建时只读取当前活跃版本，
+        让世界书重新对齐真正参与续写的正文。
+        """
+        from core.world_bible import WorldBible, extract_and_merge_world_bible
+
+        chapters = self.list_chapters(title)
+        if not chapters:
+            self.save_world_bible(title, WorldBible())
+            return
+
+        bible = WorldBible()
+        story_context_parts = []
+        meta = self.load_meta(title)
+        for ch in chapters:
+            content = self.read_active_chapter(title, ch["num"])
+            if not content:
+                continue
+            story_context = "\n".join(story_context_parts[-5:])
+            bible = extract_and_merge_world_bible(
+                client,
+                content,
+                ch["num"],
+                bible,
+                model,
+                global_user_prompt=global_user_prompt,
+                story_context=story_context,
+                background_story=meta.background_story,
+                protagonist_bio=meta.protagonist_bio,
+                writing_demand=meta.writing_demand,
+                xp_mode=xp_mode or meta.xp_mode,
+            )
+            try:
+                summary = self.generate_summary(
+                    client,
+                    content,
+                    ch["num"],
+                    ch.get("title", f"第{ch['num']}章"),
+                    model=model,
+                    global_user_prompt=global_user_prompt,
+                    xp_mode=xp_mode or meta.xp_mode,
+                )
+                if summary:
+                    story_context_parts.append(f"第{ch['num']}章：{summary}")
+            except Exception:
+                story_context_parts.append(f"第{ch['num']}章：{content[:300]}")
+
+        self.save_world_bible(title, bible)
 
     # ========== 🔬 智能前情提要选取算法 ==========
 
@@ -906,6 +973,10 @@ class NovelManager:
             # 无缓存，调用 API 压缩
             try:
                 early_block = "\n\n".join(early_texts)
+                xp_hint = ""
+                if meta.xp_mode:
+                    from utils.prompts import Prompts
+                    xp_hint = f"\n4. 仍会影响后续成人向关系张力、边界试探和性癖递进的内容\n\n{Prompts.XP_SUMMARY_GUIDE}"
                 response = client.chat.completions.create(
                     model=model,
                     messages=[{
@@ -916,6 +987,7 @@ class NovelManager:
                             f"1. 尚未解决的核心冲突/悬念\n"
                             f"2. 仍然活跃的人物及其当前关系\n"
                             f"3. 仍在发挥作用的世界设定\n"
+                            f"{xp_hint}\n"
                             f"忽略已完结的支线和不再重要的细节。简洁为主：\n\n{early_block}"
                             + (f"\n\n用户偏好参考: {global_user_prompt}" if global_user_prompt.strip() else "")
                         ),
@@ -975,6 +1047,7 @@ class NovelManager:
         chapter_title: str,
         model: str = "deepseek-v4-flash",
         global_user_prompt: str = "",
+        xp_mode: bool = False,
     ) -> str:
         """
         调用 API 生成章节摘要
@@ -989,6 +1062,10 @@ class NovelManager:
             生成的摘要文本
         """
         try:
+            xp_hint = ""
+            if xp_mode:
+                from utils.prompts import Prompts
+                xp_hint = f"\n\n{Prompts.XP_SUMMARY_GUIDE}"
             response = client.chat.completions.create(
                 model=model,
                 messages=[{
@@ -1000,6 +1077,7 @@ class NovelManager:
                         f"2. 人物动向与关系变化\n"
                         f"3. 新设定、伏笔或世界观信息\n"
                         f"4. 结尾状态（悬念/去向）\n\n{chapter_content}"
+                        + xp_hint
                         + (f"\n\n用户偏好参考: {global_user_prompt}" if global_user_prompt.strip() else "")
                     ),
                 }],

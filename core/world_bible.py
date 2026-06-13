@@ -36,6 +36,12 @@ class CharacterEntry:
     key_dialogues: list[str] = field(default_factory=list)     # 原文引用的角色重要台词
     motivation: str = ""                                       # 核心动机/目标
     arc: str = ""                                              # 成长弧线
+    current_location: str = ""                                  # 当前所在位置
+    current_goal: str = ""                                      # 当前目标/意图
+    current_emotion: str = ""                                   # 当前情绪/关系状态
+    recent_action: str = ""                                     # 最近一次关键行动
+    knowledge_state: str = ""                                   # 当前已知信息/误解
+    unresolved_conflicts: list[str] = field(default_factory=list)  # 仍未解决的个人冲突
 
 
 @dataclass
@@ -66,6 +72,10 @@ class PlotThread:
     description: str = ""
     key_details: list[str] = field(default_factory=list)             # 原文引用的剧情线重要内容
     foreshadowing_related: list[str] = field(default_factory=list)   # 该线关联的前期伏笔
+    opened_chapter: int = 0
+    last_touched_chapter: int = 0
+    expected_payoff: str = ""
+    payoff_hint: str = ""
 
 
 @dataclass
@@ -141,6 +151,21 @@ def format_world_bible_for_prompt(bible: WorldBible, max_entries: int = 10) -> s
                 line += f" | 动机：{ch.motivation[:60]}"
             if ch.arc:
                 line += f" | 弧光：{ch.arc[:60]}"
+            state_parts = []
+            if ch.current_location:
+                state_parts.append(f"位置：{ch.current_location[:40]}")
+            if ch.current_goal:
+                state_parts.append(f"目标：{ch.current_goal[:50]}")
+            if ch.current_emotion:
+                state_parts.append(f"状态：{ch.current_emotion[:40]}")
+            if ch.recent_action:
+                state_parts.append(f"近况：{ch.recent_action[:60]}")
+            if state_parts:
+                line += " | 当前" + "；".join(state_parts)
+            if ch.knowledge_state:
+                line += f" | 已知：{ch.knowledge_state[:50]}"
+            if ch.unresolved_conflicts:
+                line += " | 未解冲突：" + "；".join(ch.unresolved_conflicts[:2])
             rel_str = "; ".join(f"{r.type}({r.target})" for r in ch.relationships[:3])
             if rel_str:
                 line += f" | 关系：{rel_str}"
@@ -179,6 +204,12 @@ def format_world_bible_for_prompt(bible: WorldBible, max_entries: int = 10) -> s
                 line = f"- {p.name}：{p.description[:100]}"
                 if p.involved_characters:
                     line += f" | 角色：{', '.join(p.involved_characters[:4])}"
+                if p.expected_payoff:
+                    line += f" | 预期回收：{p.expected_payoff[:60]}"
+                if p.payoff_hint:
+                    line += f" | 提示：{p.payoff_hint[:60]}"
+                if p.last_touched_chapter:
+                    line += f" | 最近触达：第{p.last_touched_chapter}章"
                 if p.foreshadowing_related:
                     line += " | 伏笔：" + " | ".join(p.foreshadowing_related[:1])
                 parts.append(line)
@@ -187,7 +218,10 @@ def format_world_bible_for_prompt(bible: WorldBible, max_entries: int = 10) -> s
         if non_active:
             parts.append("\n【待回收剧情线】")
             for p in non_active[:4]:
-                parts.append(f"- {p.name} [{p.status}]：{p.description[:80]}")
+                line = f"- {p.name} [{p.status}]：{p.description[:80]}"
+                if p.expected_payoff:
+                    line += f" | 可回收：{p.expected_payoff[:50]}"
+                parts.append(line)
 
     if bible.timeline:
         recent = bible.timeline[-max_entries:]
@@ -213,6 +247,103 @@ def format_world_bible_for_prompt(bible: WorldBible, max_entries: int = 10) -> s
         parts.extend(extras)
 
     return "\n".join(parts)
+
+
+def format_relevant_world_bible_for_prompt(
+    bible: WorldBible,
+    query_text: str = "",
+    *,
+    max_characters: int = 8,
+    max_locations: int = 5,
+    max_threads: int = 6,
+) -> str:
+    """
+    根据本章标题/剧情走向检索相关世界书条目。
+
+    世界书变大后不应机械注入前 N 项；这里用轻量关键词评分优先保留相关角色、
+    地点、活跃剧情线和待回收伏笔。没有命中时退回重要性排序。
+    """
+    query = _norm_key(query_text)
+
+    def score_text(*values: str) -> int:
+        score = 0
+        for value in values:
+            value = value or ""
+            norm = _norm_key(value)
+            if not norm:
+                continue
+            if norm in query:
+                score += 8
+            if query and query in norm:
+                score += 5
+            for token in re.findall(r"[\u4e00-\u9fff]{2,}|[A-Za-z0-9_]+", value):
+                token_norm = _norm_key(token)
+                if len(token_norm) >= 2 and token_norm in query:
+                    score += 2
+        return score
+
+    imp_score = {"major": 4, "normal": 2, "minor": 0}
+    status_score = {"active": 4, "dormant": 1, "resolved": 0}
+
+    chars = sorted(
+        bible.characters,
+        key=lambda c: (
+            score_text(
+                c.name,
+                " ".join(c.aliases),
+                c.traits,
+                c.current_goal,
+                c.current_location,
+                c.recent_action,
+                " ".join(c.unresolved_conflicts),
+            ) + imp_score.get(c.importance, 2),
+            imp_score.get(c.importance, 2),
+            c.first_appearance,
+        ),
+        reverse=True,
+    )[:max_characters]
+
+    locs = sorted(
+        bible.locations,
+        key=lambda l: (
+            score_text(l.name, l.description, l.significance, l.atmosphere)
+            + (2 if l.key_details else 0),
+            l.first_appearance,
+        ),
+        reverse=True,
+    )[:max_locations]
+
+    threads = sorted(
+        bible.active_plot_threads,
+        key=lambda p: (
+            score_text(
+                p.name,
+                p.description,
+                " ".join(p.involved_characters),
+                " ".join(p.foreshadowing_related),
+                p.expected_payoff,
+                p.payoff_hint,
+            ) + imp_score.get(p.importance, 2) + status_score.get(p.status, 0),
+            p.last_touched_chapter,
+        ),
+        reverse=True,
+    )[:max_threads]
+
+    scoped = WorldBible(
+        characters=chars,
+        locations=locs,
+        rules=bible.rules,
+        timeline=bible.timeline,
+        active_plot_threads=threads,
+        last_updated_chapter=bible.last_updated_chapter,
+        key_worldbuilding_passages=bible.key_worldbuilding_passages,
+        global_foreshadowing=bible.global_foreshadowing,
+        global_key_dialogues=bible.global_key_dialogues,
+    )
+    return format_world_bible_for_prompt(
+        scoped,
+        max_entries=max(max_characters, max_locations, max_threads),
+    )
 
 
 # ========== AI 提取与合并 ==========
@@ -248,6 +379,146 @@ def _merge_list_dedup(target: list, source: list) -> None:
         if isinstance(item, str) and item not in seen:
             target.append(item)
             seen.add(item)
+
+
+def _as_list(value) -> list:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str):
+        return [value] if value.strip() else []
+    return [value]
+
+
+def _norm_key(text: str) -> str:
+    """用于名称/别名匹配的轻量归一化。"""
+    return re.sub(r"\s+", "", (text or "").strip()).lower()
+
+
+def _append_text_unique(current: str, new_text: str, limit: int = 800) -> str:
+    """保留旧信息，将新增描述拼接进去，避免同名更新直接覆盖。"""
+    current = (current or "").strip()
+    new_text = (new_text or "").strip()
+    if not new_text:
+        return current[:limit]
+    if not current:
+        return new_text[:limit]
+    if new_text in current:
+        return current[:limit]
+    if current in new_text:
+        return new_text[:limit]
+    return f"{current}\n{new_text}"[:limit]
+
+
+def _character_keys(ch: CharacterEntry) -> set[str]:
+    keys = {_norm_key(ch.name)}
+    keys.update(_norm_key(alias) for alias in ch.aliases if alias)
+    return {k for k in keys if k}
+
+
+def _find_character_by_name_or_alias(
+    characters: list[CharacterEntry], name: str, aliases: list[str]
+) -> CharacterEntry | None:
+    incoming = {_norm_key(name)}
+    incoming.update(_norm_key(alias) for alias in aliases if alias)
+    incoming = {k for k in incoming if k}
+    for existing in characters:
+        if _character_keys(existing) & incoming:
+            return existing
+    return None
+
+
+def _merge_relationships(target: list[Relationship], source_items: list[dict | Relationship]) -> None:
+    """按关系对象+关系类型合并关系描述。"""
+    for item in source_items:
+        if isinstance(item, Relationship):
+            rel = item
+        elif not isinstance(item, dict):
+            continue
+        else:
+            rel_fields = {k: v for k, v in item.items() if k in Relationship.__dataclass_fields__}
+            rel = Relationship(**rel_fields)
+        if not rel.target:
+            continue
+        existing = next(
+            (
+                r for r in target
+                if _norm_key(r.target) == _norm_key(rel.target)
+                and (not rel.type or not r.type or r.type == rel.type)
+            ),
+            None,
+        )
+        if existing:
+            if rel.type and not existing.type:
+                existing.type = rel.type
+            existing.description = _append_text_unique(existing.description, rel.description, 200)
+        else:
+            target.append(rel)
+
+
+def _merge_character_entry(existing: CharacterEntry, ch_data: dict, chapter_content: str) -> None:
+    """稳定合并角色字段，不用新提取结果覆盖旧信息。"""
+    name = ch_data.get("name", "").strip()
+    if name and name != existing.name and name not in existing.aliases:
+        existing.aliases.append(name)
+    for alias in ch_data.get("aliases", []):
+        alias = str(alias).strip()
+        if alias and alias != existing.name and alias not in existing.aliases:
+            existing.aliases.append(alias)
+    existing.traits = _append_text_unique(existing.traits, ch_data.get("traits", "")[:500], 1000)
+    if ch_data.get("status") in ("dead", "missing", "transformed"):
+        existing.status = ch_data["status"]
+    existing.importance = _higher_importance(existing.importance, ch_data.get("importance", "normal"))
+    _merge_list_dedup(existing.key_details, [_verify_verbatim(kd, chapter_content) for kd in ch_data.get("key_details", [])])
+    _merge_list_dedup(existing.key_dialogues, [_verify_verbatim(kd, chapter_content) for kd in ch_data.get("key_dialogues", [])])
+    existing.motivation = _append_text_unique(existing.motivation, ch_data.get("motivation", "")[:200], 400)
+    existing.arc = _append_text_unique(existing.arc, ch_data.get("arc", "")[:200], 400)
+    for field_name, limit in (
+        ("current_location", 100),
+        ("current_goal", 200),
+        ("current_emotion", 200),
+        ("recent_action", 200),
+        ("knowledge_state", 200),
+    ):
+        value = str(ch_data.get(field_name, "")).strip()
+        if value:
+            setattr(existing, field_name, value[:limit])
+    _merge_list_dedup(
+        existing.unresolved_conflicts,
+        [str(item)[:50] for item in _as_list(ch_data.get("unresolved_conflicts", [])) if item],
+    )
+    _merge_relationships(existing.relationships, ch_data.get("relationships", []))
+
+
+def _plot_thread_status(existing_status: str, new_status: str) -> str:
+    """稳定合并剧情线状态：已解决不被后续粗糙提取重新打开。"""
+    if existing_status == "resolved":
+        return "resolved"
+    if new_status == "resolved":
+        return "resolved"
+    if new_status == "active":
+        return "active"
+    if existing_status == "active":
+        return "active"
+    return new_status if new_status in ("active", "resolved", "dormant") else existing_status
+
+
+def _merge_plot_thread(existing: PlotThread, pt_data: dict, chapter_content: str) -> None:
+    existing.status = _plot_thread_status(existing.status, pt_data.get("status", "active"))
+    existing.description = _append_text_unique(existing.description, pt_data.get("description", "")[:300], 800)
+    for char in pt_data.get("involved_characters", []):
+        if char and char not in existing.involved_characters:
+            existing.involved_characters.append(char)
+    existing.importance = _higher_importance(existing.importance, pt_data.get("importance", "normal"))
+    if existing.opened_chapter == 0:
+        existing.opened_chapter = int(pt_data.get("opened_chapter", 0) or 0)
+    if pt_data.get("last_touched_chapter"):
+        existing.last_touched_chapter = max(existing.last_touched_chapter, int(pt_data.get("last_touched_chapter", 0) or 0))
+    existing.expected_payoff = _append_text_unique(existing.expected_payoff, pt_data.get("expected_payoff", "")[:100], 300)
+    existing.payoff_hint = _append_text_unique(existing.payoff_hint, pt_data.get("payoff_hint", "")[:100], 300)
+    _merge_list_dedup(existing.key_details, [_verify_verbatim(kd, chapter_content) for kd in pt_data.get("key_details", [])])
+    _merge_list_dedup(existing.foreshadowing_related, [fr[:50] for fr in pt_data.get("foreshadowing_related", [])])
 
 
 def _detect_duplicate_characters(
@@ -339,6 +610,17 @@ def _merge_character_group(
             base.motivation = f"{base.motivation}；{other.motivation}" if base.motivation else other.motivation
         if other.arc and other.arc not in (base.arc or ""):
             base.arc = f"{base.arc}；{other.arc}" if base.arc else other.arc
+        for field_name in (
+            "current_location",
+            "current_goal",
+            "current_emotion",
+            "recent_action",
+            "knowledge_state",
+        ):
+            value = getattr(other, field_name, "")
+            if value:
+                setattr(base, field_name, value)
+        _merge_list_dedup(base.unresolved_conflicts, other.unresolved_conflicts)
 
         for rel in other.relationships:
             existing = next((r for r in base.relationships if r.target == rel.target), None)
@@ -502,7 +784,13 @@ EXTRACT_PROMPT = """你是一个小说信息深度提取专家。请严格根据
       "key_details": ["【原文引用】从原文中直接复制关于该角色的重要描述片段（每段100字内）"],
       "key_dialogues": ["【原文引用】从原文中直接复制该角色说出的重要台词（每句100字内）"],
       "motivation": "该角色的核心动机/目标（100字内）",
-      "arc": "该角色的成长弧线/变化趋势（100字内）"
+      "arc": "该角色的成长弧线/变化趋势（100字内）",
+      "current_location": "该角色章节结尾时所在位置（50字内，不确定则空字符串）",
+      "current_goal": "该角色当前最明确的目标/意图（100字内，不确定则空字符串）",
+      "current_emotion": "该角色当前情绪、关系状态或心理状态（100字内，不确定则空字符串）",
+      "recent_action": "该角色最近一次关键行动或章节结尾动作（100字内，不确定则空字符串）",
+      "knowledge_state": "该角色当前已知的重要信息、误解或隐瞒内容（100字内，不确定则空字符串）",
+      "unresolved_conflicts": ["该角色身上仍未解决的冲突/问题（每条50字内）"]
     }
   ],
   "locations": [
@@ -531,7 +819,9 @@ EXTRACT_PROMPT = """你是一个小说信息深度提取专家。请严格根据
       "involved_characters": ["角色名"],
       "description": "【300字内】该线索的详细描述",
       "key_details": ["【原文引用】关于该剧情线的重要原文片段"],
-      "foreshadowing_related": ["该剧情线涉及的前期伏笔（50字内）"]
+      "foreshadowing_related": ["该剧情线涉及的前期伏笔（50字内）"],
+      "expected_payoff": "这条线索后续最可能/最应该回收的方向（100字内，不确定则空字符串）",
+      "payoff_hint": "适合在后续章节使用的推进或回收提示（100字内，不确定则空字符串）"
     }
   ],
   "key_worldbuilding": [
@@ -604,6 +894,7 @@ def extract_and_merge_world_bible(
     background_story: str = "",
     protagonist_bio: str = "",
     writing_demand: str = "",
+    xp_mode: bool = False,
 ) -> WorldBible:
     """
     分析章节内容，提取世界观信息并与现有世界书合并
@@ -643,6 +934,9 @@ def extract_and_merge_world_bible(
     prompt_prefix = ("\n".join(ctx_parts) + "\n\n") if ctx_parts else ""
 
     user_content = prompt_prefix + EXTRACT_PROMPT + content_sample
+    if xp_mode:
+        from utils.prompts import Prompts
+        user_content += f"\n\n{Prompts.XP_WORLD_BIBLE_GUIDE}"
     if global_user_prompt.strip():
         user_content += f"\n\n用户偏好参考: {global_user_prompt}"
 
@@ -689,38 +983,15 @@ def extract_and_merge_world_bible(
         break  # 成功解析后跳出重试循环
 
     # === 合并角色 ===
-    existing_names = {c.name for c in bible.characters}
     for ch_data in data.get("characters", []):
         name = ch_data.get("name", "").strip()
         if not name:
             continue
-        if name in existing_names:
-            for existing in bible.characters:
-                if existing.name == name:
-                    if ch_data.get("traits"):
-                        existing.traits = ch_data["traits"][:500]
-                    if ch_data.get("status") and ch_data["status"] in ("alive", "dead", "missing", "transformed"):
-                        existing.status = ch_data["status"]
-                    if ch_data.get("aliases"):
-                        for alias in ch_data["aliases"]:
-                            if alias and alias not in existing.aliases:
-                                existing.aliases.append(alias)
-                    new_imp = ch_data.get("importance", "normal")
-                    existing.importance = _higher_importance(existing.importance, new_imp)
-                    # 新字段
-                    _merge_list_dedup(existing.key_details, [_verify_verbatim(kd, chapter_content) for kd in ch_data.get("key_details", [])])
-                    _merge_list_dedup(existing.key_dialogues, [_verify_verbatim(kd, chapter_content) for kd in ch_data.get("key_dialogues", [])])
-                    if ch_data.get("motivation"):
-                        existing.motivation = ch_data["motivation"][:200]
-                    if ch_data.get("arc"):
-                        existing.arc = ch_data["arc"][:200]
-                    # 关系
-                    for r in ch_data.get("relationships", []):
-                        if not any(r.get("target") == rel.target for rel in existing.relationships):
-                            # 过滤 LLM 可能输出的额外字段，只保留 Relationship 定义的字段
-                            rel_fields = {k: v for k, v in r.items() if k in Relationship.__dataclass_fields__}
-                            existing.relationships.append(Relationship(**rel_fields))
-                    break
+        existing = _find_character_by_name_or_alias(
+            bible.characters, name, ch_data.get("aliases", [])
+        )
+        if existing:
+            _merge_character_entry(existing, ch_data, chapter_content)
         else:
             entry = CharacterEntry(
                 name=name,
@@ -733,12 +1004,15 @@ def extract_and_merge_world_bible(
                 key_dialogues=[_verify_verbatim(kd, chapter_content) for kd in ch_data.get("key_dialogues", [])],
                 motivation=ch_data.get("motivation", "")[:200],
                 arc=ch_data.get("arc", "")[:200],
+                current_location=ch_data.get("current_location", "")[:100],
+                current_goal=ch_data.get("current_goal", "")[:200],
+                current_emotion=ch_data.get("current_emotion", "")[:200],
+                recent_action=ch_data.get("recent_action", "")[:200],
+                knowledge_state=ch_data.get("knowledge_state", "")[:200],
+                unresolved_conflicts=[str(item)[:50] for item in _as_list(ch_data.get("unresolved_conflicts", [])) if item],
             )
-            for r_data in ch_data.get("relationships", []):
-                rel_fields = {k: v for k, v in r_data.items() if k in Relationship.__dataclass_fields__}
-                entry.relationships.append(Relationship(**rel_fields))
+            _merge_relationships(entry.relationships, ch_data.get("relationships", []))
             bible.characters.append(entry)
-            existing_names.add(name)
 
     # === 合并地点 ===
     existing_locs = {l.name for l in bible.locations}
@@ -788,26 +1062,16 @@ def extract_and_merge_world_bible(
             bible.timeline.append(entry)
 
     # === 合并剧情线 ===
-    existing_threads = {p.name for p in bible.active_plot_threads}
     for pt_data in data.get("plot_threads", []):
         name = pt_data.get("name", "").strip()
         if not name:
             continue
-        if name in existing_threads:
-            for existing in bible.active_plot_threads:
-                if existing.name == name:
-                    if pt_data.get("status") in ("active", "resolved", "dormant"):
-                        existing.status = pt_data["status"]
-                    if pt_data.get("description"):
-                        existing.description = pt_data["description"][:300]
-                    for char in pt_data.get("involved_characters", []):
-                        if char and char not in existing.involved_characters:
-                            existing.involved_characters.append(char)
-                    new_imp = pt_data.get("importance", "normal")
-                    existing.importance = _higher_importance(existing.importance, new_imp)
-                    _merge_list_dedup(existing.key_details, [_verify_verbatim(kd, chapter_content) for kd in pt_data.get("key_details", [])])
-                    _merge_list_dedup(existing.foreshadowing_related, [fr[:50] for fr in pt_data.get("foreshadowing_related", [])])
-                    break
+        existing = next(
+            (p for p in bible.active_plot_threads if _norm_key(p.name) == _norm_key(name)),
+            None,
+        )
+        if existing:
+            _merge_plot_thread(existing, pt_data, chapter_content)
         else:
             bible.active_plot_threads.append(PlotThread(
                 name=name,
@@ -817,8 +1081,11 @@ def extract_and_merge_world_bible(
                 description=pt_data.get("description", "")[:300],
                 key_details=[_verify_verbatim(kd, chapter_content) for kd in pt_data.get("key_details", [])],
                 foreshadowing_related=[fr[:50] for fr in pt_data.get("foreshadowing_related", [])],
+                opened_chapter=chapter_num,
+                last_touched_chapter=chapter_num,
+                expected_payoff=pt_data.get("expected_payoff", "")[:100],
+                payoff_hint=pt_data.get("payoff_hint", "")[:100],
             ))
-            existing_threads.add(name)
 
     # === 合并顶层字段：世界观设定、全局伏笔、关键对话 ===
     for item in data.get("key_worldbuilding", []):
