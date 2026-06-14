@@ -4085,17 +4085,15 @@ class DeepSeekChatGUI(QMainWindow):
                 self._stream_signals.finished.emit()
                 return
 
-            if new_chapter:
-                self._stream_signals.token.emit("\n🔍 正在提炼剧情记忆...\n")
-                summary = self._novel_manager.generate_summary(
-                    self._usage_logged_client("novel_summary"), content, chapter_num, chapter_title,
-                    global_user_prompt=self._client.global_user_prompt,
-                    xp_mode=xp_mode,
-                )
-                self._novel_manager.append_summary(
-                    title, chapter_num, chapter_title, summary
-                )
-                self._stream_signals.token.emit(f"📋 剧情摘要已同步至记忆库。\n\n")
+            self._stream_signals.token.emit("\n🔍 正在提炼剧情记忆...\n")
+            summary = self._novel_manager.generate_summary(
+                self._usage_logged_client("novel_summary"), content, chapter_num, chapter_title,
+                global_user_prompt=self._client.global_user_prompt,
+                xp_mode=xp_mode,
+            )
+            self._novel_manager.set_chapter_node_summary(title, chapter_num, saved_version, summary)
+            self._novel_manager.rebuild_plot_summary_from_tree(title)
+            self._stream_signals.token.emit(f"📋 剧情摘要已绑定至章节树。\n\n")
 
             if self._client._cancel_requested:
                 self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
@@ -4516,10 +4514,9 @@ class DeepSeekChatGUI(QMainWindow):
                 global_user_prompt=self._client.global_user_prompt,
                 xp_mode=xp_mode,
             )
-            self._novel_manager.append_summary(
-                book_title, chapter_num, chapter_title, summary
-            )
-            self._stream_signals.token.emit("📋 剧情摘要已同步至记忆库。\n")
+            self._novel_manager.set_chapter_node_summary(book_title, chapter_num, saved_version, summary)
+            self._novel_manager.rebuild_plot_summary_from_tree(book_title)
+            self._stream_signals.token.emit("📋 剧情摘要已绑定至章节树。\n")
 
             if self._client._cancel_requested:
                 self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
@@ -5161,7 +5158,7 @@ class DeepSeekChatGUI(QMainWindow):
                 chapter_title = os.path.splitext(fname)[0]
                 si.token.emit(f"  📖 [{idx}/{total}] 第{chapter_num}章「{chapter_title}」…\n")
 
-                # 加载前文摘要（每章重新加载，因为 plot_summary 在不断增加）
+                # 加载前文摘要（基于章节树活跃路径节点摘要）
                 story_context = ""
                 try:
                     summary = self._novel_manager.load_smart_summary(
@@ -5201,9 +5198,10 @@ class DeepSeekChatGUI(QMainWindow):
                     model=model, global_user_prompt=_global_prompt,
                     xp_mode=xp_mode,
                 )
-                self._novel_manager.append_summary(title, chapter_num, chapter_title, summary_text)
+                self._novel_manager.set_chapter_node_summary(title, chapter_num, saved_version, summary_text)
+                self._novel_manager.rebuild_plot_summary_from_tree(title)
 
-                si.token.emit(f"    ✅ 世界书已更新 | 摘要已保存\n")
+                si.token.emit(f"    ✅ 世界书已更新 | 摘要已绑定章节树\n")
 
             if self._client._cancel_requested:
                 si.token.emit(f"\n⏹️ 已取消（已处理 {total} 章中的部分章节）\n")
@@ -5790,6 +5788,20 @@ class DeepSeekChatGUI(QMainWindow):
                         self._book_title, chapter_num, chapter_title, content,
                         version=new_version,
                     )
+
+                    summary = self._novel_mgr.generate_summary(
+                        self._client.raw_client,
+                        content,
+                        chapter_num,
+                        chapter_title,
+                        model=self._client.model,
+                        global_user_prompt=global_prompt,
+                        xp_mode=xp_mode,
+                    )
+                    self._novel_mgr.set_chapter_node_summary(
+                        self._book_title, chapter_num, saved_version, summary
+                    )
+                    self._novel_mgr.rebuild_plot_summary_from_tree(self._book_title)
 
                     # 更新世界书
                     try:

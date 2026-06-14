@@ -1,3 +1,4 @@
+import re
 import threading
 
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -12,6 +13,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QInputDialog,
     QLabel,
+    QFileDialog,
     QMessageBox,
     QPushButton,
     QSplitter,
@@ -182,11 +184,13 @@ class ChapterTreeDialog(QDialog):
         polish_btn.clicked.connect(lambda: self._generate_variant("polish"))
         rewrite_btn = QPushButton("重写")
         rewrite_btn.clicked.connect(lambda: self._generate_variant("rewrite"))
+        export_btn = QPushButton("导出该章节")
+        export_btn.clicked.connect(self._export_current)
         insert_btn = QPushButton("插入中间章")
         insert_btn.clicked.connect(self._insert_middle_chapter)
         delete_btn = QPushButton("删除子树")
         delete_btn.clicked.connect(self._delete_current)
-        for btn in (switch_btn, edit_btn, polish_btn, rewrite_btn, insert_btn, delete_btn):
+        for btn in (switch_btn, edit_btn, polish_btn, rewrite_btn, export_btn, insert_btn, delete_btn):
             button_row.addWidget(btn)
         right_layout.addLayout(button_row)
         splitter.addWidget(right)
@@ -362,6 +366,9 @@ class ChapterTreeDialog(QDialog):
             f"创建: {node.get('created_at', '')}",
             f"中文字数: {count_cn(content)}",
             "",
+            "节点剧情摘要:",
+            node.get("summary", "").strip() or "(未生成)",
+            "",
             "生成参数:",
             f"  模型: {record.get('model', '')}",
             f"  temperature: {record.get('temperature', '')}",
@@ -429,6 +436,52 @@ class ChapterTreeDialog(QDialog):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             self._load_tree()
 
+    def _safe_export_name(self, text: str) -> str:
+        return re.sub(r'[\\/:*?"<>|]', "_", text).strip() or "未命名"
+
+    def _export_current(self) -> None:
+        node = self._selected_node()
+        if not node:
+            QMessageBox.warning(self, "未选择章节", "请先在左侧章节树中选择一个章节节点。")
+            return
+
+        content = self._novel_manager.read_chapter_node(self._book_title, node["id"]) or ""
+        if not content.strip():
+            QMessageBox.warning(self, "内容为空", "当前章节没有可导出的正文。")
+            return
+
+        chapter_num = int(node.get("chapter_num", 0) or 0)
+        version = int(node.get("version", 0) or 0)
+        chapter_title = node.get("title", "") or f"第{chapter_num}章"
+        safe_book = self._safe_export_name(self._book_title)
+        safe_title = self._safe_export_name(chapter_title)
+        default_name = f"{safe_book}_第{chapter_num}章_v{version}_{safe_title}.txt"
+        output_path, selected_filter = QFileDialog.getSaveFileName(
+            self,
+            "导出该章节",
+            default_name,
+            "纯文本 (*.txt);;Markdown (*.md)",
+        )
+        if not output_path:
+            return
+
+        selected_filter = selected_filter or ""
+        if "." not in output_path.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]:
+            output_path += ".md" if "Markdown" in selected_filter else ".txt"
+
+        header = f"第{chapter_num}章 {chapter_title}（v{version}）"
+        if output_path.lower().endswith(".md"):
+            text = f"# {header}\n\n{content.strip()}\n"
+        else:
+            text = f"{header}\n\n{content.strip()}\n"
+
+        try:
+            with open(output_path, "w", encoding="utf-8") as f:
+                f.write(text)
+            QMessageBox.information(self, "导出成功", f"章节已导出到：\n{output_path}")
+        except Exception as exc:
+            QMessageBox.critical(self, "导出失败", f"导出出错：{exc}")
+
     def _generate_variant(self, mode: str) -> None:
         node = self._selected_node()
         if not node or not self._client:
@@ -491,6 +544,17 @@ class ChapterTreeDialog(QDialog):
                 )
             version = self._novel_manager.get_next_version(self._book_title, chapter_num)
             self._novel_manager.save_chapter_version(self._book_title, chapter_num, title, content, version=version)
+            summary = self._novel_manager.generate_summary(
+                self._client.raw_client,
+                content,
+                chapter_num,
+                title,
+                model=self._client.model,
+                global_user_prompt=self._client.global_user_prompt,
+                xp_mode=self._novel_manager.load_meta(self._book_title).xp_mode,
+            )
+            self._novel_manager.set_chapter_node_summary(self._book_title, chapter_num, version, summary)
+            self._novel_manager.rebuild_plot_summary_from_tree(self._book_title)
             self._novel_manager.save_generation_record(
                 self._book_title,
                 chapter_num,

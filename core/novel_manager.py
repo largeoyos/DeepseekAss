@@ -396,7 +396,7 @@ class NovelManager:
                     "version": version,
                     "title": version_info.get("title", f"第{chapter_num}章"),
                     "file": version_info.get("file", ""),
-                    "summary": "",
+                    "summary": version_info.get("summary", ""),
                     "user_direction": "",
                     "generation_params": {},
                     "parent_id": parent_for_chapter,
@@ -439,6 +439,79 @@ class NovelManager:
         if not node:
             return None
         return self.read_chapter_version(title, int(node["chapter_num"]), int(node["version"]))
+
+    def set_chapter_node_summary(self, title: str, chapter_num: int, version: int, summary: str) -> None:
+        """将章节摘要绑定到指定章节树节点。"""
+        meta = self.ensure_chapter_tree(title)
+        node_id = self._node_id(chapter_num, version)
+        node = meta.chapter_nodes.get(node_id)
+        if not node:
+            return
+        node["summary"] = (summary or "").strip()
+        node["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+
+        key = str(chapter_num)
+        for version_info in meta.chapter_versions.get(key, {}).get("versions", []):
+            if int(version_info.get("v", 0)) == version:
+                version_info["summary"] = node["summary"]
+                break
+
+        meta.compressed_early_summary = ""
+        self._save_meta(title, meta)
+
+    def get_chapter_node_summary(self, title: str, chapter_num: int, version: int) -> str:
+        """读取指定章节树节点摘要，不存在则返回空字符串。"""
+        meta = self.ensure_chapter_tree(title)
+        node = meta.chapter_nodes.get(self._node_id(chapter_num, version))
+        if not node:
+            return ""
+        return (node.get("summary") or "").strip()
+
+    def _legacy_extract_chapter_summary(self, full_summary: str, chapter_num: int) -> str:
+        pattern = rf"第{chapter_num}章「.*?」摘要：(.*?)(?=\n第\d+章「|$)"
+        match = re.search(pattern, full_summary or "", re.DOTALL)
+        if match:
+            return match.group(1).strip()
+        return ""
+
+    def _active_summary_entries(self, title: str) -> list[dict]:
+        """返回活跃路径上的摘要条目，旧书缺失节点摘要时从 plot_summary.txt 回退。"""
+        meta = self.ensure_chapter_tree(title)
+        legacy_summary = ""
+        entries = []
+        for node in self.get_active_path_nodes(title):
+            chapter_num = int(node.get("chapter_num", 0) or 0)
+            version = int(node.get("version", 0) or 0)
+            summary = (node.get("summary") or "").strip()
+            if not summary:
+                if not legacy_summary:
+                    summary_path = self._summary_path(title)
+                    legacy_summary = self._read_encrypted_text(summary_path) or ""
+                summary = self._legacy_extract_chapter_summary(legacy_summary, chapter_num)
+            entries.append({
+                "chapter_num": chapter_num,
+                "version": version,
+                "title": node.get("title", f"第{chapter_num}章"),
+                "summary": summary,
+                "node_id": node.get("id", self._node_id(chapter_num, version)),
+            })
+        return entries
+
+    def build_active_path_summary(self, title: str) -> str:
+        """按当前活跃路径拼接章节节点摘要，作为剧情记忆权威来源。"""
+        entries = [e for e in self._active_summary_entries(title) if e.get("summary")]
+        if not entries:
+            return "故事刚刚开始。"
+        parts = ["# 完整前情提要（基于章节树活跃路径）\n"]
+        for entry in entries:
+            parts.append(
+                f"\n第{entry['chapter_num']}章「{entry['title']}」摘要：{entry['summary']}\n"
+            )
+        return "".join(parts).strip()
+
+    def rebuild_plot_summary_from_tree(self, title: str) -> None:
+        """从章节树活跃路径摘要生成兼容 plot_summary.txt。"""
+        self._write_encrypted_text(self._summary_path(title), self.build_active_path_summary(title) + "\n")
 
     def switch_active_node(self, title: str, node_id: str) -> bool:
         meta = self.ensure_chapter_tree(title)
@@ -783,7 +856,10 @@ class NovelManager:
     # ========== 摘要（剧情记忆）操作 ==========
 
     def load_summary(self, title: str) -> str:
-        """加载小说的全部前情提要"""
+        """加载小说前情提要。章节树节点摘要为主，plot_summary.txt 仅作旧数据回退。"""
+        tree_summary = self.build_active_path_summary(title)
+        if tree_summary and tree_summary != "故事刚刚开始。":
+            return tree_summary.strip()
         summary_path = self._summary_path(title)
         text = self._read_encrypted_text(summary_path)
         if text is not None:
@@ -797,10 +873,16 @@ class NovelManager:
         chapter_title: str,
         summary_text: str,
     ) -> None:
-        """追加一章的摘要到摘要文件（仅在生成新活跃版本时调用）"""
+        """兼容旧调用：把摘要写入当前活跃章节树节点，并刷新兼容摘要文件。"""
+        active_version = self.get_active_version(title, chapter_num)
+        if active_version is not None:
+            self.set_chapter_node_summary(title, chapter_num, int(active_version), summary_text)
+            self.rebuild_plot_summary_from_tree(title)
+            return
+
         summary_path = self._summary_path(title)
-        current = self.load_summary(title)
-        if current == "故事刚刚开始。":
+        current = self._read_encrypted_text(summary_path) or "故事刚刚开始。\n"
+        if current.strip() == "故事刚刚开始。":
             current = "故事刚刚开始。\n"
         current += f"\n第{chapter_num}章「{chapter_title}」摘要：{summary_text}\n"
         self._write_encrypted_text(summary_path, current)
@@ -808,56 +890,43 @@ class NovelManager:
     def rebuild_summary_from_active(self, client, title: str, model: str = "deepseek-v4-flash",
                                      global_user_prompt: str = "", xp_mode: bool = False) -> None:
         """
-        根据所有活跃章节重新生成完整 plot_summary.txt
-        当用户切换活跃版本后调用此方法重建摘要
+        根据当前章节树活跃路径重新生成节点摘要，并刷新兼容 plot_summary.txt。
         """
-        chapters = self.list_chapters(title)
-        if not chapters:
-            # 没有章节，重置摘要
+        nodes = self.get_active_path_nodes(title)
+        if not nodes:
             self._write_encrypted_text(self._summary_path(title), "故事刚刚开始。\n")
             return
 
         meta = self.load_meta(title)
         effective_xp_mode = xp_mode or meta.xp_mode
-        full_summary_parts = ["# 完整前情提要（基于活跃章节自动生成）\n"]
-        from utils.prompts import Prompts
-        summary_guide = Prompts.CONTINUITY_SUMMARY_GUIDE
-        xp_hint = ""
-        if effective_xp_mode:
-            xp_hint = f"\n\n{Prompts.XP_SUMMARY_GUIDE}"
-        for ch in chapters:
-            content = self.read_active_chapter(title, ch["num"])
+        for node in nodes:
+            chapter_num = int(node.get("chapter_num", 0) or 0)
+            version = int(node.get("version", 0) or 0)
+            chapter_title = node.get("title", f"第{chapter_num}章")
+            content = self.read_chapter_node(title, node["id"])
             if not content:
                 continue
-            try:
-                response = client.chat.completions.create(
-                    model=model,
-                    messages=[{
-                        "role": "user",
-                        "content": (
-                            f"请为以下小说片段（第{ch['num']}章「{ch['title']}」）"
-                            f"生成一段用于后续续写的结构化剧情记忆。\n\n{summary_guide}\n\n章节正文：\n{content}"
-                            + xp_hint
-                            + (f"\n\n用户偏好参考: {global_user_prompt}" if global_user_prompt.strip() else "")
-                        ),
-                    }],
-                    max_tokens=2000,
-                    temperature=0.3,
-                )
-                summary = response.choices[0].message.content or ""
-            except Exception as e:
-                summary = f"[摘要生成失败: {e}]"
-
-            full_summary_parts.append(
-                f"\n第{ch['num']}章「{ch['title']}」摘要：{summary}\n"
+            summary = self.generate_summary(
+                client,
+                content,
+                chapter_num,
+                chapter_title,
+                model=model,
+                global_user_prompt=global_user_prompt,
+                xp_mode=effective_xp_mode,
             )
+            self.set_chapter_node_summary(title, chapter_num, version, summary)
 
-        summary_path = self._summary_path(title)
-        self._write_encrypted_text(summary_path, "".join(full_summary_parts))
-
-        # 重建后清空压缩缓存，下次 load_smart_summary 会重新计算
+        self.rebuild_plot_summary_from_tree(title)
+        meta = self.load_meta(title)
         meta.compressed_early_summary = ""
         self._save_meta(title, meta)
+
+    def _summary_context_from_entries(self, entries: list[dict], limit: int = 5) -> str:
+        recent = [entry for entry in entries if entry.get("summary")][-limit:]
+        return "\n".join(
+            f"第{entry['chapter_num']}章：{entry['summary']}" for entry in recent
+        )
 
     def rebuild_world_bible_from_active(
         self,
@@ -876,26 +945,28 @@ class NovelManager:
         """
         from core.world_bible import WorldBible, extract_and_merge_world_bible
 
-        chapters = self.list_chapters(title)
-        if not chapters:
+        nodes = self.get_active_path_nodes(title)
+        if not nodes:
             self.save_world_bible(title, WorldBible())
             return
 
         bible = WorldBible()
-        story_context_parts = []
+        story_context_entries = []
         meta = self.load_meta(title)
-        for ch in chapters:
-            content = self.read_active_chapter(title, ch["num"])
+        for node in nodes:
+            chapter_num = int(node.get("chapter_num", 0) or 0)
+            version = int(node.get("version", 0) or 0)
+            content = self.read_chapter_node(title, node["id"])
             if not content:
                 continue
-            story_context = "\n".join(story_context_parts[-5:])
+            story_context = self._summary_context_from_entries(story_context_entries)
             bible = extract_and_merge_world_bible(
                 client,
                 content,
-                ch["num"],
+                chapter_num,
                 bible,
                 model,
-                chapter_version=ch.get("active_version", 0) or 0,
+                chapter_version=version,
                 global_user_prompt=global_user_prompt,
                 story_context=story_context,
                 background_story=meta.background_story,
@@ -903,20 +974,15 @@ class NovelManager:
                 writing_demand=meta.writing_demand,
                 xp_mode=xp_mode or meta.xp_mode,
             )
-            try:
-                summary = self.generate_summary(
-                    client,
-                    content,
-                    ch["num"],
-                    ch.get("title", f"第{ch['num']}章"),
-                    model=model,
-                    global_user_prompt=global_user_prompt,
-                    xp_mode=xp_mode or meta.xp_mode,
-                )
-                if summary:
-                    story_context_parts.append(f"第{ch['num']}章：{summary}")
-            except Exception:
-                story_context_parts.append(f"第{ch['num']}章：{content[:300]}")
+            summary = (node.get("summary") or "").strip()
+            if not summary:
+                summary = self._legacy_extract_chapter_summary(self.load_summary(title), chapter_num)
+            if not summary:
+                summary = content[:300]
+            story_context_entries.append({
+                "chapter_num": chapter_num,
+                "summary": summary,
+            })
 
         self.save_world_bible(title, bible)
 
@@ -950,35 +1016,26 @@ class NovelManager:
         Returns:
             选取/压缩后的前情提要文本
         """
-        full_summary = self.load_summary(title)
-        chapters = self.list_chapters(title)
+        entries = [entry for entry in self._active_summary_entries(title) if entry.get("summary")]
+        full_summary = self.build_active_path_summary(title)
 
         # 情况 1：没有章节或很少 → 直接返回完整内容
-        total = len(chapters)
+        total = len(entries)
         if total <= max_recent + 2:
             return full_summary
 
-        # 情况 2：长篇小说 → 智能截取
-        # 按章节编号排序
-        sorted_ch = sorted(chapters, key=lambda c: c["num"])
-        all_nums = [c["num"] for c in sorted_ch]
-
-        # 最近的 max_recent 章
-        recent_nums = set(all_nums[-max_recent:])
-        recent_parts = []
-        early_parts = []
-
-        # 解析摘要文件，按章节号归类
+        # 情况 2：长篇小说 → 按活跃路径截取
+        recent_entries = entries[-max_recent:]
+        early_entries = entries[:-max_recent]
         early_texts = []
         recent_texts = []
 
-        for ch in sorted_ch:
-            # 从摘要文本中提取对应章节的内容
-            ch_summary = self._extract_chapter_summary(full_summary, ch["num"])
-            if ch["num"] in recent_nums:
-                recent_texts.append(f"第{ch['num']}章「{ch['title']}」摘要：{ch_summary}")
-            else:
-                early_texts.append(f"第{ch['num']}章：{ch_summary}")
+        for entry in early_entries:
+            early_texts.append(f"第{entry['chapter_num']}章：{entry['summary']}")
+        for entry in recent_entries:
+            recent_texts.append(
+                f"第{entry['chapter_num']}章「{entry['title']}」摘要：{entry['summary']}"
+            )
 
         # 早期章节压缩
         compressed_early = ""
@@ -1035,17 +1092,25 @@ class NovelManager:
         result = "\n".join(parts)
         return result.strip() or full_summary
 
-    def _extract_chapter_summary(self, full_summary: str, chapter_num: int) -> str:
+    def _extract_chapter_summary(self, title: str, chapter_num: int) -> str:
         """
-        从完整的 plot_summary 文本中提取指定章节的摘要内容
-
-        匹配模式：第N章「xxx」摘要：...（直到下一个第M章或文件末尾）
+        从章节树活跃路径提取指定章节摘要；找不到时兼容旧 plot_summary 文本。
         """
-        pattern = rf"第{chapter_num}章「.*?」摘要：(.*?)(?=\n第\d+章「|$)"
-        match = re.search(pattern, full_summary, re.DOTALL)
-        if match:
-            return match.group(1).strip()
-        # 回退：找不到时返回空
+        try:
+            meta = self.ensure_chapter_tree(title)
+            for node_id in meta.active_path:
+                node = meta.chapter_nodes.get(node_id)
+                if node and int(node.get("chapter_num", 0) or 0) == chapter_num:
+                    summary = (node.get("summary") or "").strip()
+                    if summary:
+                        return summary
+                    break
+        except Exception:
+            pass
+        legacy_text = self._read_encrypted_text(self._summary_path(title)) or ""
+        legacy = self._legacy_extract_chapter_summary(legacy_text, chapter_num)
+        if legacy:
+            return legacy
         return "[摘要不可用]"
 
     def build_continuity_contract(
@@ -1061,7 +1126,7 @@ class NovelManager:
     ) -> str:
         """构造下一章生成前的连贯性契约，供 prompt 和逻辑审稿复用。"""
         parts = [f"【本章连贯性契约】\n目标章节：第{chapter_num}章「{chapter_title or f'第{chapter_num}章'}」"]
-        previous_summary = self._extract_chapter_summary(self.load_summary(title), chapter_num - 1)
+        previous_summary = self._extract_chapter_summary(title, chapter_num - 1)
         if previous_summary and previous_summary != "[摘要不可用]":
             parts.append(f"上章结尾/承接点：\n{previous_summary[:1200]}")
         try:
