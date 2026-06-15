@@ -1,5 +1,6 @@
 import re
 import threading
+import time
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QPainterPath, QPen
@@ -523,6 +524,22 @@ class ChapterTreeDialog(QDialog):
         if not ok or not requirement.strip():
             return
         self._details.setPlainText("正在生成新版本，请稍候...")
+        parent = self.parent()
+        if hasattr(parent, "_stream_chapter_completion") and hasattr(parent, "_client"):
+            chapter_num = int(node.get("chapter_num", 0) or 0)
+            title = node.get("title") or f"第{chapter_num}章"
+            parent._chapter_finalized = False
+            parent._generate_btn.setEnabled(False)
+            parent._cont_generate_btn.setEnabled(False)
+            parent._client.reset_cancel()
+            parent._stop_btn.setVisible(True)
+            parent._stop_btn.setEnabled(True)
+            parent._stop_btn.setText("⏹")
+            parent._mode_combo.setEnabled(False)
+            parent._streaming = True
+            parent._streaming_start_time = time.time()
+            parent._assistant_text_buffer = []
+            parent._append_user_message(f"🌳 章节树生成新版本：第 {chapter_num} 章「{title}」")
         threading.Thread(target=self._run_generation, args=(node, mode, requirement.strip()), daemon=True).start()
 
     def _run_generation(self, node: dict, mode: str, requirement: str) -> None:
@@ -548,32 +565,45 @@ class ChapterTreeDialog(QDialog):
                     f"请重写第 {chapter_num} 章「{title}」，不要输出解释。\n\n"
                     f"【前情提要】\n{summary}\n\n【重写要求】\n{requirement}\n\n"
                     f"【旧版本参考】\n{old_content[:4000]}"
-                )
-            messages.append({"role": "user", "content": user_prompt})
-            response = self._client.raw_client.chat.completions.create(
-                model=self._client.model,
-                messages=messages,
-                temperature=self._client.temperature,
-                top_p=self._client.top_p,
-                max_tokens=self._client.max_tokens,
-                frequency_penalty=self._client.frequency_penalty,
-                stream=False,
             )
-            content = response.choices[0].message.content or ""
+            messages.append({"role": "user", "content": user_prompt})
             parent = self.parent()
-            if hasattr(parent, "_log_token_usage"):
-                parent._log_token_usage(
+            if hasattr(parent, "_stream_chapter_completion"):
+                content, generation_stats, cancelled = parent._stream_chapter_completion(
                     operation=f"chapter_tree_{mode}",
-                    direction="send",
-                    content=user_prompt,
-                    usage=getattr(response, "usage", None),
+                    messages=messages,
+                    prompt_text=user_prompt,
+                    max_tokens=self._client.max_tokens,
                 )
-                parent._log_token_usage(
-                    operation=f"chapter_tree_{mode}",
-                    direction="receive",
-                    content=content,
-                    usage=getattr(response, "usage", None),
+                if cancelled:
+                    parent._stream_signals.token.emit("\n\n⏹️ 已取消\n")
+                    parent._stream_signals.finished.emit()
+                    self.generation_failed.emit("已取消生成。")
+                    return
+            else:
+                response = self._client.raw_client.chat.completions.create(
+                    model=self._client.model,
+                    messages=messages,
+                    temperature=self._client.temperature,
+                    top_p=self._client.top_p,
+                    max_tokens=self._client.max_tokens,
+                    frequency_penalty=self._client.frequency_penalty,
+                    stream=False,
                 )
+                content = response.choices[0].message.content or ""
+                if hasattr(parent, "_log_token_usage"):
+                    parent._log_token_usage(
+                        operation=f"chapter_tree_{mode}",
+                        direction="send",
+                        content=user_prompt,
+                        usage=getattr(response, "usage", None),
+                    )
+                    parent._log_token_usage(
+                        operation=f"chapter_tree_{mode}",
+                        direction="receive",
+                        content=content,
+                        usage=getattr(response, "usage", None),
+                    )
             version = self._novel_manager.get_next_version(self._book_title, chapter_num)
             self._novel_manager.save_chapter_version(self._book_title, chapter_num, title, content, version=version)
             summary = self._novel_manager.generate_summary(
@@ -610,7 +640,10 @@ class ChapterTreeDialog(QDialog):
         self._load_tree()
 
     def _on_generation_failed(self, message: str) -> None:
-        QMessageBox.critical(self, "生成失败", message)
+        if "已取消" in message:
+            QMessageBox.information(self, "已取消", message)
+        else:
+            QMessageBox.critical(self, "生成失败", message)
         self._load_tree()
 
     def _insert_middle_chapter(self) -> None:

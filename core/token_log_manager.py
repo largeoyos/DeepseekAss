@@ -24,6 +24,11 @@ class TokenLogEntry:
     completion_tokens: int | None = None
     total_tokens: int | None = None
     usage_status: str = "ok"
+    started_at: str | None = None
+    finished_at: str | None = None
+    duration_ms: int | None = None
+    char_count: int | None = None
+    hanzi_count: int | None = None
 
 
 class TokenLogManager:
@@ -81,7 +86,9 @@ class TokenLogManager:
         entries = []
         for raw in self._read():
             try:
-                entries.append(TokenLogEntry(**raw))
+                allowed = TokenLogEntry.__dataclass_fields__.keys()
+                normalized = {k: raw.get(k) for k in allowed if k in raw}
+                entries.append(TokenLogEntry(**normalized))
             except TypeError:
                 continue
         return entries
@@ -95,6 +102,11 @@ class TokenLogManager:
         model: str,
         content: str,
         usage: dict | None,
+        started_at: str | None = None,
+        finished_at: str | None = None,
+        duration_ms: int | None = None,
+        char_count: int | None = None,
+        hanzi_count: int | None = None,
     ) -> TokenLogEntry:
         preview = (content or "").strip().replace("\n", " ")
         if len(preview) > 60:
@@ -112,6 +124,11 @@ class TokenLogManager:
             completion_tokens=usage.get("completion_tokens") if usage else None,
             total_tokens=usage.get("total_tokens") if usage else None,
             usage_status=status,
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_ms=duration_ms,
+            char_count=char_count,
+            hanzi_count=hanzi_count,
         )
         rows = [asdict(entry)] + self._read()
         self._write(rows)

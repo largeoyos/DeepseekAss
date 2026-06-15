@@ -3014,6 +3014,11 @@ class DeepSeekChatGUI(QMainWindow):
         usage,
         model: str | None = None,
         strategy: str | None = None,
+        started_at: str | None = None,
+        finished_at: str | None = None,
+        duration_ms: int | None = None,
+        char_count: int | None = None,
+        hanzi_count: int | None = None,
     ) -> None:
         try:
             usage_dict = DeepSeekChatClient._usage_to_dict(usage)
@@ -3024,9 +3029,157 @@ class DeepSeekChatGUI(QMainWindow):
                 model=model or self._client.model,
                 content=content,
                 usage=usage_dict,
+                started_at=started_at,
+                finished_at=finished_at,
+                duration_ms=duration_ms,
+                char_count=char_count,
+                hanzi_count=hanzi_count,
             )
         except Exception:
             pass
+
+    def _count_hanzi(self, text: str) -> int:
+        return len(re.findall(r"[\u4e00-\u9fff]", text or ""))
+
+    def _usage_for_direction(self, usage: dict | None, direction: str) -> dict | None:
+        if not usage:
+            return None
+        if direction == "send":
+            return {
+                "prompt_tokens": usage.get("prompt_tokens"),
+                "completion_tokens": None,
+                "total_tokens": usage.get("prompt_tokens"),
+            }
+        return {
+            "prompt_tokens": None,
+            "completion_tokens": usage.get("completion_tokens"),
+            "total_tokens": usage.get("total_tokens"),
+        }
+
+    def _format_chapter_stats_block(self, stats: dict) -> str:
+        usage = stats.get("usage") or {}
+        prompt_tokens = usage.get("prompt_tokens")
+        completion_tokens = usage.get("completion_tokens")
+        total_tokens = usage.get("total_tokens")
+
+        def token_text(value) -> str:
+            return str(value) if value is not None else "未返回"
+
+        return (
+            "\n\n---\n"
+            "📊 生成统计\n"
+            f"- 发送时间：{stats['started_at']}\n"
+            f"- 返回完成：{stats['finished_at']}\n"
+            f"- 耗时：{stats['duration_ms'] / 1000:.1f} 秒\n"
+            f"- 发送 token：{token_text(prompt_tokens)} / 返回 token：{token_text(completion_tokens)} / 总 token：{token_text(total_tokens)}\n"
+            f"- 返回字符数：{stats['char_count']} / 汉字数：{stats['hanzi_count']}\n"
+            "---\n"
+        )
+
+    def _stream_chapter_completion(
+        self,
+        *,
+        operation: str,
+        messages: list[dict],
+        prompt_text: str,
+        max_tokens: int,
+        emit_tokens: bool = True,
+    ) -> tuple[str, dict, bool]:
+        started_at = time.strftime("%Y-%m-%d %H:%M:%S")
+        start_time = time.time()
+        usage_dict: dict | None = None
+        chunks: list[str] = []
+        stream = None
+
+        kwargs = {
+            "model": self._client.model,
+            "messages": messages,
+            "temperature": self._client.temperature,
+            "top_p": self._client.top_p,
+            "max_tokens": max_tokens,
+            "frequency_penalty": self._client.frequency_penalty,
+            "stream": True,
+        }
+        try:
+            try:
+                stream = self._client.raw_client.chat.completions.create(
+                    **kwargs,
+                    stream_options={"include_usage": True},
+                )
+            except Exception:
+                stream = self._client.raw_client.chat.completions.create(**kwargs)
+
+            for chunk in stream:
+                if self._client._cancel_requested:
+                    close = getattr(stream, "close", None)
+                    if callable(close):
+                        close()
+                    break
+                usage = getattr(chunk, "usage", None)
+                if usage is not None:
+                    usage_dict = DeepSeekChatClient._usage_to_dict(usage)
+                choices = getattr(chunk, "choices", []) or []
+                if not choices:
+                    continue
+                delta = getattr(choices[0], "delta", None)
+                token = getattr(delta, "content", "") if delta else ""
+                if token:
+                    chunks.append(token)
+                    if emit_tokens:
+                        self._stream_signals.token.emit(token)
+        finally:
+            finished_at = time.strftime("%Y-%m-%d %H:%M:%S")
+
+        content = "".join(chunks)
+        duration_ms = int((time.time() - start_time) * 1000)
+        stats = {
+            "started_at": started_at,
+            "finished_at": finished_at,
+            "duration_ms": duration_ms,
+            "char_count": len(content),
+            "hanzi_count": self._count_hanzi(content),
+            "usage": usage_dict,
+        }
+        cancelled = bool(self._client._cancel_requested)
+        if cancelled:
+            self._log_token_usage(
+                operation=operation,
+                direction="send",
+                content=prompt_text,
+                usage=self._usage_for_direction(usage_dict, "send"),
+                started_at=started_at,
+                finished_at=finished_at,
+                duration_ms=duration_ms,
+                char_count=len(prompt_text or ""),
+                hanzi_count=self._count_hanzi(prompt_text),
+            )
+            return content, stats, True
+
+        self._log_token_usage(
+            operation=operation,
+            direction="send",
+            content=prompt_text,
+            usage=self._usage_for_direction(usage_dict, "send"),
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_ms=duration_ms,
+            char_count=len(prompt_text or ""),
+            hanzi_count=self._count_hanzi(prompt_text),
+        )
+        self._log_token_usage(
+            operation=operation,
+            direction="receive",
+            content=content,
+            usage=self._usage_for_direction(usage_dict, "receive"),
+            started_at=started_at,
+            finished_at=finished_at,
+            duration_ms=duration_ms,
+            char_count=len(content),
+            hanzi_count=self._count_hanzi(content),
+        )
+        if emit_tokens:
+            self._stream_signals.token.emit(self._format_chapter_stats_block(stats))
+        return content, stats, False
 
     def _usage_logged_client(self, operation: str):
         return _UsageLoggingClientProxy(self._client.raw_client, self, operation)
@@ -4006,28 +4159,17 @@ class DeepSeekChatGUI(QMainWindow):
 
             self._stream_signals.token.emit(f"\n\n📝 正在创作第 {chapter_num} 章「{chapter_title}」...\n\n")
 
-            response = self._client.raw_client.chat.completions.create(
-                model=self._client.model,
+            content, generation_stats, cancelled = self._stream_chapter_completion(
+                operation="novel_chapter",
                 messages=messages,
-                temperature=self._client.temperature,
-                top_p=self._client.top_p,
+                prompt_text=user_prompt,
                 max_tokens=max(target_words * 2, self._client.max_tokens),
-                frequency_penalty=self._client.frequency_penalty,
-                stream=False,
             )
-            content = response.choices[0].message.content or ""
-            self._log_token_usage(
-                operation="novel_chapter",
-                direction="send",
-                content=user_prompt,
-                usage=getattr(response, "usage", None),
-            )
-            self._log_token_usage(
-                operation="novel_chapter",
-                direction="receive",
-                content=content,
-                usage=getattr(response, "usage", None),
-            )
+            if cancelled:
+                self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
+                self._stream_signals.finished.emit()
+                return
+
             content = self._audit_and_repair_chapter_content(
                 title=title,
                 chapter_num=chapter_num,
@@ -4042,9 +4184,6 @@ class DeepSeekChatGUI(QMainWindow):
                 self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
                 self._stream_signals.finished.emit()
                 return
-
-            self._stream_signals.token.emit(content)
-            self._stream_signals.token.emit("\n\n---\n")
 
             # 确定版本号
             existing_versions = self._novel_manager.get_chapter_versions(title, chapter_num)
@@ -4446,28 +4585,17 @@ class DeepSeekChatGUI(QMainWindow):
                 f"\n\n📝 正在续写第 {chapter_num} 章「{chapter_title}」...\n\n"
             )
 
-            response = self._client.raw_client.chat.completions.create(
-                model=self._client.model,
+            content, generation_stats, cancelled = self._stream_chapter_completion(
+                operation="continuation",
                 messages=messages,
-                temperature=self._client.temperature,
-                top_p=self._client.top_p,
+                prompt_text=user_prompt,
                 max_tokens=max(word_count * 2, self._client.max_tokens),
-                frequency_penalty=self._client.frequency_penalty,
-                stream=False,
             )
-            content = response.choices[0].message.content or ""
-            self._log_token_usage(
-                operation="continuation",
-                direction="send",
-                content=user_prompt,
-                usage=getattr(response, "usage", None),
-            )
-            self._log_token_usage(
-                operation="continuation",
-                direction="receive",
-                content=content,
-                usage=getattr(response, "usage", None),
-            )
+            if cancelled:
+                self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
+                self._stream_signals.finished.emit()
+                return
+
             content = self._audit_and_repair_chapter_content(
                 title=book_title,
                 chapter_num=chapter_num,
@@ -4482,9 +4610,6 @@ class DeepSeekChatGUI(QMainWindow):
                 self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
                 self._stream_signals.finished.emit()
                 return
-
-            self._stream_signals.token.emit(content)
-            self._stream_signals.token.emit("\n\n---\n")
 
             # 保存为章节
             file_path, saved_version = self._novel_manager.save_chapter_version(
@@ -5742,6 +5867,21 @@ class DeepSeekChatGUI(QMainWindow):
 
                 # 在主线程捕获 UI 值
                 parent = self.parent()
+                if hasattr(parent, "_client"):
+                    parent._chapter_finalized = False
+                    parent._generate_btn.setEnabled(False)
+                    parent._cont_generate_btn.setEnabled(False)
+                    parent._client.reset_cancel()
+                    parent._stop_btn.setVisible(True)
+                    parent._stop_btn.setEnabled(True)
+                    parent._stop_btn.setText("⏹")
+                    parent._mode_combo.setEnabled(False)
+                    parent._streaming = True
+                    parent._streaming_start_time = time.time()
+                    parent._assistant_text_buffer = []
+                    parent._append_user_message(
+                        f"🔁 重写第 {data['chapter_num']} 章「{data.get('title', '')}」"
+                    )
                 _bg = parent._background_edit.toPlainText().strip()
                 _bio = parent._protagonist_edit.toPlainText().strip()
                 _demand = parent._demand_edit.toPlainText().strip()
@@ -5843,34 +5983,25 @@ class DeepSeekChatGUI(QMainWindow):
                     user_parts.append(f"请直接输出第 {chapter_num} 章正文。字数不少于{target_words}字，通过丰富环境细节、增加对话交互和内心描写来充实内容。")
                     messages.append({"role": "user", "content": "\n".join(user_parts)})
 
-                    response = self._client.raw_client.chat.completions.create(
-                        model=self._client.model,
+                    prompt_text = messages[-1].get("content", "")
+                    content, generation_stats, cancelled = parent._stream_chapter_completion(
+                        operation="chapter_regenerate",
                         messages=messages,
-                        temperature=self._client.temperature,
-                        top_p=self._client.top_p,
-                        max_tokens=self._client.max_tokens,
-                        frequency_penalty=self._client.frequency_penalty,
-                        stream=False,
+                        prompt_text=prompt_text,
+                        max_tokens=max(target_words * 2, self._client.max_tokens),
                     )
-                    content = response.choices[0].message.content or ""
-                    parent._log_token_usage(
-                        operation="chapter_regenerate",
-                        direction="send",
-                        content=messages[-1].get("content", ""),
-                        usage=getattr(response, "usage", None),
-                    )
-                    parent._log_token_usage(
-                        operation="chapter_regenerate",
-                        direction="receive",
-                        content=content,
-                        usage=getattr(response, "usage", None),
-                    )
+                    if cancelled:
+                        parent._stream_signals.token.emit("\n\n⏹️ 已取消\n")
+                        parent._stream_signals.finished.emit()
+                        self._regenerate_error_signal.emit("已取消生成。")
+                        return
+
                     content = parent._audit_and_repair_chapter_content(
                         title=self._book_title,
                         chapter_num=chapter_num,
                         chapter_title=chapter_title,
                         content=content,
-                        context=messages[-1].get("content", ""),
+                        context=prompt_text,
                         xp_mode=xp_mode,
                         operation_prefix="chapter_regenerate",
                     )
@@ -5930,7 +6061,10 @@ class DeepSeekChatGUI(QMainWindow):
                     parent._refresh_chapter_info_display(self._book_title)
 
             def _on_regenerate_error(self, error_str: str) -> None:
-                QMessageBox.critical(self, "重新生成失败", f"API 调用出错：{error_str}")
+                if "已取消" in error_str:
+                    QMessageBox.information(self, "已取消", error_str)
+                else:
+                    QMessageBox.critical(self, "重新生成失败", f"API 调用出错：{error_str}")
                 self._generating = False
                 self._close_btn.setText("关闭")
                 self._close_btn.setEnabled(True)

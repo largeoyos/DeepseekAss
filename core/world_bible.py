@@ -47,6 +47,7 @@ class CharacterEntry:
     last_updated_chapter: int = 0                                # 最近更新来源章节
     last_updated_version: int = 0                                # 最近更新来源版本
     hidden: bool = False                                         # 是否从生成注入中隐藏
+    fact_sources: dict[str, list[dict]] = field(default_factory=dict)  # 字段级来源，兼容旧字段
 
 
 @dataclass
@@ -62,6 +63,7 @@ class LocationEntry:
     last_updated_chapter: int = 0
     last_updated_version: int = 0
     hidden: bool = False
+    fact_sources: dict[str, list[dict]] = field(default_factory=dict)
 
 
 @dataclass
@@ -91,6 +93,7 @@ class PlotThread:
     source_version: int = 0
     last_updated_version: int = 0
     hidden: bool = False
+    fact_sources: dict[str, list[dict]] = field(default_factory=dict)
 
 
 @dataclass
@@ -593,6 +596,68 @@ def _append_text_unique(current: str, new_text: str, limit: int = 800) -> str:
     return f"{current}\n{new_text}"[:limit]
 
 
+def _fact_source_record(value, chapter_num: int, chapter_version: int = 0) -> dict | None:
+    if value is None:
+        return None
+    if isinstance(value, (dict, list)):
+        source_value = value
+        empty = not bool(value)
+    else:
+        source_value = str(value).strip()
+        empty = not bool(source_value)
+    if empty:
+        return None
+    return {
+        "value": source_value,
+        "source_chapter": int(chapter_num or 0),
+        "source_version": int(chapter_version or 0),
+    }
+
+
+def _record_fact_source(obj, field_name: str, value, chapter_num: int, chapter_version: int = 0) -> None:
+    """记录字段级来源；不改变旧字段值，保证旧代码继续可用。"""
+    if not hasattr(obj, "fact_sources"):
+        return
+    if not chapter_num:
+        return
+    values = value if isinstance(value, list) else [value]
+    bucket = getattr(obj, "fact_sources", None)
+    if not isinstance(bucket, dict):
+        bucket = {}
+        setattr(obj, "fact_sources", bucket)
+    entries = bucket.setdefault(field_name, [])
+    for item in values:
+        record = _fact_source_record(item, chapter_num, chapter_version)
+        if not record:
+            continue
+        if not any(
+            existing.get("value") == record["value"]
+            and int(existing.get("source_chapter", 0) or 0) == record["source_chapter"]
+            and int(existing.get("source_version", 0) or 0) == record["source_version"]
+            for existing in entries
+            if isinstance(existing, dict)
+        ):
+            entries.append(record)
+
+
+def _merge_fact_sources(obj, incoming: dict | None) -> None:
+    if not hasattr(obj, "fact_sources") or not isinstance(incoming, dict):
+        return
+    bucket = getattr(obj, "fact_sources", None)
+    if not isinstance(bucket, dict):
+        bucket = {}
+        setattr(obj, "fact_sources", bucket)
+    for field_name, records in incoming.items():
+        if not isinstance(records, list):
+            continue
+        target = bucket.setdefault(str(field_name), [])
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            if record not in target:
+                target.append(dict(record))
+
+
 def _touch_source(obj, chapter_num: int, chapter_version: int = 0) -> None:
     if hasattr(obj, "source_chapter") and not getattr(obj, "source_chapter", 0):
         setattr(obj, "source_chapter", chapter_num)
@@ -713,21 +778,33 @@ def _merge_character_entry(
     chapter_version: int = 0,
 ) -> None:
     """稳定合并角色字段，不用新提取结果覆盖旧信息。"""
+    _merge_fact_sources(existing, ch_data.get("fact_sources"))
     name = ch_data.get("name", "").strip()
     if name and name != existing.name and name not in existing.aliases:
         existing.aliases.append(name)
+        _record_fact_source(existing, "aliases", name, chapter_num, chapter_version)
     for alias in ch_data.get("aliases", []):
         alias = str(alias).strip()
         if alias and alias != existing.name and alias not in existing.aliases:
             existing.aliases.append(alias)
+            _record_fact_source(existing, "aliases", alias, chapter_num, chapter_version)
     existing.traits = _append_text_unique(existing.traits, ch_data.get("traits", "")[:500], 1000)
+    _record_fact_source(existing, "traits", ch_data.get("traits", "")[:500], chapter_num, chapter_version)
     if ch_data.get("status") in ("dead", "missing", "transformed"):
         existing.status = ch_data["status"]
+        _record_fact_source(existing, "status", ch_data["status"], chapter_num, chapter_version)
     existing.importance = _higher_importance(existing.importance, ch_data.get("importance", "normal"))
-    _merge_list_dedup(existing.key_details, [_verify_verbatim(kd, chapter_content) for kd in ch_data.get("key_details", [])])
-    _merge_list_dedup(existing.key_dialogues, [_verify_verbatim(kd, chapter_content) for kd in ch_data.get("key_dialogues", [])])
+    _record_fact_source(existing, "importance", ch_data.get("importance", "normal"), chapter_num, chapter_version)
+    key_details = [_verify_verbatim(kd, chapter_content) for kd in ch_data.get("key_details", [])]
+    key_dialogues = [_verify_verbatim(kd, chapter_content) for kd in ch_data.get("key_dialogues", [])]
+    _merge_list_dedup(existing.key_details, key_details)
+    _merge_list_dedup(existing.key_dialogues, key_dialogues)
+    _record_fact_source(existing, "key_details", key_details, chapter_num, chapter_version)
+    _record_fact_source(existing, "key_dialogues", key_dialogues, chapter_num, chapter_version)
     existing.motivation = _append_text_unique(existing.motivation, ch_data.get("motivation", "")[:200], 400)
     existing.arc = _append_text_unique(existing.arc, ch_data.get("arc", "")[:200], 400)
+    _record_fact_source(existing, "motivation", ch_data.get("motivation", "")[:200], chapter_num, chapter_version)
+    _record_fact_source(existing, "arc", ch_data.get("arc", "")[:200], chapter_num, chapter_version)
     for field_name, limit in (
         ("current_location", 100),
         ("current_goal", 200),
@@ -738,11 +815,15 @@ def _merge_character_entry(
         value = str(ch_data.get(field_name, "")).strip()
         if value:
             setattr(existing, field_name, value[:limit])
+            _record_fact_source(existing, field_name, value[:limit], chapter_num, chapter_version)
+    conflicts = [str(item)[:50] for item in _as_list(ch_data.get("unresolved_conflicts", [])) if item]
     _merge_list_dedup(
         existing.unresolved_conflicts,
-        [str(item)[:50] for item in _as_list(ch_data.get("unresolved_conflicts", [])) if item],
+        conflicts,
     )
+    _record_fact_source(existing, "unresolved_conflicts", conflicts, chapter_num, chapter_version)
     _merge_relationships(existing.relationships, ch_data.get("relationships", []))
+    _record_fact_source(existing, "relationships", ch_data.get("relationships", []), chapter_num, chapter_version)
     if chapter_num:
         _touch_source(existing, chapter_num, chapter_version)
 
@@ -767,20 +848,33 @@ def _merge_plot_thread(
     chapter_num: int = 0,
     chapter_version: int = 0,
 ) -> None:
+    _merge_fact_sources(existing, pt_data.get("fact_sources"))
     existing.status = _plot_thread_status(existing.status, pt_data.get("status", "active"))
+    _record_fact_source(existing, "status", pt_data.get("status", "active"), chapter_num, chapter_version)
     existing.description = _append_text_unique(existing.description, pt_data.get("description", "")[:300], 800)
+    _record_fact_source(existing, "description", pt_data.get("description", "")[:300], chapter_num, chapter_version)
     for char in pt_data.get("involved_characters", []):
         if char and char not in existing.involved_characters:
             existing.involved_characters.append(char)
+            _record_fact_source(existing, "involved_characters", char, chapter_num, chapter_version)
     existing.importance = _higher_importance(existing.importance, pt_data.get("importance", "normal"))
+    _record_fact_source(existing, "importance", pt_data.get("importance", "normal"), chapter_num, chapter_version)
     if existing.opened_chapter == 0:
         existing.opened_chapter = int(pt_data.get("opened_chapter", 0) or 0)
+        _record_fact_source(existing, "opened_chapter", existing.opened_chapter, chapter_num, chapter_version)
     if pt_data.get("last_touched_chapter"):
         existing.last_touched_chapter = max(existing.last_touched_chapter, int(pt_data.get("last_touched_chapter", 0) or 0))
+        _record_fact_source(existing, "last_touched_chapter", existing.last_touched_chapter, chapter_num, chapter_version)
     existing.expected_payoff = _append_text_unique(existing.expected_payoff, pt_data.get("expected_payoff", "")[:100], 300)
     existing.payoff_hint = _append_text_unique(existing.payoff_hint, pt_data.get("payoff_hint", "")[:100], 300)
-    _merge_list_dedup(existing.key_details, [_verify_verbatim(kd, chapter_content) for kd in pt_data.get("key_details", [])])
-    _merge_list_dedup(existing.foreshadowing_related, [fr[:50] for fr in pt_data.get("foreshadowing_related", [])])
+    _record_fact_source(existing, "expected_payoff", pt_data.get("expected_payoff", "")[:100], chapter_num, chapter_version)
+    _record_fact_source(existing, "payoff_hint", pt_data.get("payoff_hint", "")[:100], chapter_num, chapter_version)
+    key_details = [_verify_verbatim(kd, chapter_content) for kd in pt_data.get("key_details", [])]
+    foreshadowing_related = [fr[:50] for fr in pt_data.get("foreshadowing_related", [])]
+    _merge_list_dedup(existing.key_details, key_details)
+    _merge_list_dedup(existing.foreshadowing_related, foreshadowing_related)
+    _record_fact_source(existing, "key_details", key_details, chapter_num, chapter_version)
+    _record_fact_source(existing, "foreshadowing_related", foreshadowing_related, chapter_num, chapter_version)
     if chapter_num:
         if existing.last_touched_chapter == 0:
             existing.last_touched_chapter = chapter_num
@@ -851,6 +945,7 @@ def _merge_character_group(
     base_idx, base = matched[0]
 
     for _, other in matched[1:]:
+        _merge_fact_sources(base, getattr(other, "fact_sources", {}))
         for alias in other.aliases:
             if alias not in base.aliases:
                 base.aliases.append(alias)
@@ -988,6 +1083,7 @@ def _merge_location_group(
     base_idx, base = matched[0]
 
     for _, other in matched[1:]:
+        _merge_fact_sources(base, getattr(other, "fact_sources", {}))
         if other.description and other.description not in base.description:
             base.description = f"{base.description}\n{other.description}" if base.description else other.description
         if other.significance and other.significance not in base.significance:
@@ -1407,6 +1503,13 @@ def merge_extracted_world_bible_data(
                 last_updated_version=chapter_version,
             )
             _merge_relationships(entry.relationships, ch_data.get("relationships", []))
+            _merge_fact_sources(entry, ch_data.get("fact_sources"))
+            for field_name in (
+                "name", "aliases", "traits", "status", "importance", "key_details", "key_dialogues",
+                "motivation", "arc", "current_location", "current_goal", "current_emotion",
+                "recent_action", "knowledge_state", "unresolved_conflicts", "relationships",
+            ):
+                _record_fact_source(entry, field_name, getattr(entry, field_name, None), chapter_num, chapter_version)
             bible.characters.append(entry)
 
     # === 合并地点 ===
@@ -1418,17 +1521,23 @@ def merge_extracted_world_bible_data(
         if name in existing_locs:
             for existing in bible.locations:
                 if existing.name == name:
+                    _merge_fact_sources(existing, loc_data.get("fact_sources"))
                     if loc_data.get("description"):
                         existing.description = loc_data["description"][:300]
+                        _record_fact_source(existing, "description", existing.description, chapter_num, chapter_version)
                     if loc_data.get("significance"):
                         existing.significance = loc_data["significance"][:200]
-                    _merge_list_dedup(existing.key_details, [_verify_verbatim(kd, chapter_content) for kd in loc_data.get("key_details", [])])
+                        _record_fact_source(existing, "significance", existing.significance, chapter_num, chapter_version)
+                    key_details = [_verify_verbatim(kd, chapter_content) for kd in loc_data.get("key_details", [])]
+                    _merge_list_dedup(existing.key_details, key_details)
+                    _record_fact_source(existing, "key_details", key_details, chapter_num, chapter_version)
                     if loc_data.get("atmosphere"):
                         existing.atmosphere = loc_data["atmosphere"][:200]
+                        _record_fact_source(existing, "atmosphere", existing.atmosphere, chapter_num, chapter_version)
                     _touch_source(existing, chapter_num, chapter_version)
                     break
         else:
-            bible.locations.append(LocationEntry(
+            entry = LocationEntry(
                 name=name,
                 description=loc_data.get("description", "")[:300],
                 significance=loc_data.get("significance", "")[:200],
@@ -1439,7 +1548,11 @@ def merge_extracted_world_bible_data(
                 source_version=chapter_version,
                 last_updated_chapter=chapter_num,
                 last_updated_version=chapter_version,
-            ))
+            )
+            _merge_fact_sources(entry, loc_data.get("fact_sources"))
+            for field_name in ("name", "description", "significance", "first_appearance", "key_details", "atmosphere"):
+                _record_fact_source(entry, field_name, getattr(entry, field_name, None), chapter_num, chapter_version)
+            bible.locations.append(entry)
             existing_locs.add(name)
 
     # === 合并规则 ===
@@ -1474,7 +1587,7 @@ def merge_extracted_world_bible_data(
         if existing:
             _merge_plot_thread(existing, pt_data, chapter_content, chapter_num, chapter_version)
         else:
-            bible.active_plot_threads.append(PlotThread(
+            entry = PlotThread(
                 name=name,
                 status=pt_data.get("status", "active"),
                 importance=pt_data.get("importance", "normal"),
@@ -1489,7 +1602,15 @@ def merge_extracted_world_bible_data(
                 source_chapter=chapter_num,
                 source_version=chapter_version,
                 last_updated_version=chapter_version,
-            ))
+            )
+            _merge_fact_sources(entry, pt_data.get("fact_sources"))
+            for field_name in (
+                "name", "status", "importance", "involved_characters", "description", "key_details",
+                "foreshadowing_related", "opened_chapter", "last_touched_chapter",
+                "expected_payoff", "payoff_hint",
+            ):
+                _record_fact_source(entry, field_name, getattr(entry, field_name, None), chapter_num, chapter_version)
+            bible.active_plot_threads.append(entry)
 
     # === 合并顶层字段：世界观设定、全局伏笔、关键对话 ===
     for item in data.get("key_worldbuilding", []):

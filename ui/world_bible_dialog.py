@@ -332,6 +332,46 @@ class WorldBibleDialog(QDialog):
         row.addStretch()
         layout.addLayout(row)
 
+    def _field_label(self, key: str) -> str:
+        labels = {
+            "name": "名称", "aliases": "别名", "traits": "角色特征", "relationships": "关系",
+            "status": "状态", "importance": "重要性", "first_appearance": "首次出现",
+            "key_details": "关键细节", "key_dialogues": "关键台词", "motivation": "动机",
+            "arc": "成长弧线", "current_location": "当前位置", "current_goal": "当前目标",
+            "current_emotion": "当前情绪", "recent_action": "近期行动", "knowledge_state": "已知信息",
+            "unresolved_conflicts": "未解决冲突", "description": "描述", "significance": "作用",
+            "atmosphere": "氛围", "involved_characters": "相关角色", "foreshadowing_related": "关联伏笔",
+            "opened_chapter": "开启章", "last_touched_chapter": "最近触达章",
+            "expected_payoff": "预期回收", "payoff_hint": "回收提示",
+        }
+        return labels.get(key, key)
+
+    def _add_fact_sources_block(self, layout: QVBoxLayout, data: dict) -> None:
+        sources = data.get("fact_sources")
+        if not isinstance(sources, dict) or not sources:
+            return
+        rows = []
+        for field_name, records in sources.items():
+            if not isinstance(records, list) or not records:
+                continue
+            chunks = []
+            for record in records[-4:]:
+                if not isinstance(record, dict):
+                    continue
+                chapter = record.get("source_chapter") or 0
+                version = record.get("source_version") or 0
+                value = self._clean_display_text(record.get("value", ""))
+                if len(value) > 34:
+                    value = value[:34] + "..."
+                source = f"第{chapter}章" if chapter else "来源未知"
+                if version:
+                    source += f" v{version}"
+                chunks.append(f"{source}：{value}" if value else source)
+            if chunks:
+                rows.append(f"{self._field_label(str(field_name))}｜" + "；".join(chunks))
+        if rows:
+            self._add_list_block(layout, "字段来源", rows)
+
     def _render_entry_body(self, layout: QVBoxLayout, entry: dict) -> None:
         data = entry.get("data", {}) or {}
         kind = entry.get("kind", "")
@@ -384,6 +424,7 @@ class WorldBibleDialog(QDialog):
                 desc = rel.get("description", "")
                 text = " / ".join(part for part in [target, rel_type, desc] if part)
                 self._add_text_block(layout, "", text)
+        self._add_fact_sources_block(layout, data)
 
     def _render_location_card(self, layout: QVBoxLayout, data: dict) -> None:
         self._add_meta_row(layout, data, [
@@ -395,6 +436,7 @@ class WorldBibleDialog(QDialog):
         self._add_text_block(layout, "作用", data.get("significance"))
         self._add_list_block(layout, "原文细节", data.get("key_details"), quote=True)
         self._add_text_block(layout, "氛围", data.get("atmosphere"), quote=self._is_quote_text(data.get("atmosphere")))
+        self._add_fact_sources_block(layout, data)
 
     def _render_plot_thread_card(self, layout: QVBoxLayout, data: dict) -> None:
         self._add_meta_row(layout, data, [
@@ -408,6 +450,7 @@ class WorldBibleDialog(QDialog):
         self._add_tags_block(layout, "关联伏笔", data.get("foreshadowing_related"))
         self._add_text_block(layout, "预期回收", data.get("expected_payoff"))
         self._add_text_block(layout, "回收提示", data.get("payoff_hint"))
+        self._add_fact_sources_block(layout, data)
 
     def _render_worldbuilding_card(self, layout: QVBoxLayout, data: dict) -> None:
         self._add_meta_row(layout, data, [

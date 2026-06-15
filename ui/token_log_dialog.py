@@ -44,9 +44,10 @@ class TokenLogDialog(QDialog):
         tools.addWidget(clear_btn)
         layout.addLayout(tools)
 
-        self._table = QTableWidget(0, 8)
+        self._table = QTableWidget(0, 11)
         self._table.setHorizontalHeaderLabels([
-            "时间", "方向", "操作", "模式", "模型", "内容预览", "Prompt", "Completion / Total"
+            "时间", "方向", "操作", "模式", "模型", "内容预览", "Prompt", "Completion / Total",
+            "耗时", "字符", "汉字"
         ])
         self._table.horizontalHeader().setStretchLastSection(True)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
@@ -89,6 +90,9 @@ class TokenLogDialog(QDialog):
                 if entry.usage_status != "ok"
                 else f"{entry.completion_tokens or 0} / {entry.total_tokens or 0}"
             )
+            duration = "" if entry.duration_ms is None else f"{entry.duration_ms / 1000:.1f}s"
+            char_count = "" if entry.char_count is None else str(entry.char_count)
+            hanzi_count = "" if entry.hanzi_count is None else str(entry.hanzi_count)
             values = [
                 entry.timestamp,
                 "发送" if entry.direction == "send" else "接收",
@@ -98,10 +102,13 @@ class TokenLogDialog(QDialog):
                 entry.content_preview,
                 prompt,
                 comp_total,
+                duration,
+                char_count,
+                hanzi_count,
             ]
             for col, value in enumerate(values):
                 item = QTableWidgetItem(value)
-                if col in (6, 7):
+                if col in (6, 7, 8, 9, 10):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self._table.setItem(row, col, item)
         self._table.resizeColumnsToContents()
