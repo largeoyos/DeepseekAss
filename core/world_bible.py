@@ -101,6 +101,7 @@ class WorldBible:
     timeline: list[TimelineEntry] = field(default_factory=list)
     active_plot_threads: list[PlotThread] = field(default_factory=list)
     last_updated_chapter: int = 0
+    chapter_world_entries: dict[str, dict] = field(default_factory=dict)  # {"ch0001_v001": raw extracted JSON}
     key_worldbuilding_passages: list[dict] = field(default_factory=list)  # [{chapter, passage, topic}]
     global_foreshadowing: list[dict] = field(default_factory=list)        # [{hint, relates_to, status, introduced_chapter, last_touched_chapter, next_step, reveal_rule}]
     global_key_dialogues: list[dict] = field(default_factory=list)        # [{speaker, dialogue, context}]
@@ -129,6 +130,7 @@ def _from_dict(cls, data: dict):
             timeline=[TimelineEntry(**_filter_fields(TimelineEntry, t)) for t in data.get("timeline", [])],
             active_plot_threads=[PlotThread(**_filter_fields(PlotThread, p)) for p in data.get("active_plot_threads", [])],
             last_updated_chapter=data.get("last_updated_chapter", 0),
+            chapter_world_entries=dict(data.get("chapter_world_entries", {})),
             key_worldbuilding_passages=list(data.get("key_worldbuilding_passages", [])),
             global_foreshadowing=list(data.get("global_foreshadowing", [])),
             global_key_dialogues=list(data.get("global_key_dialogues", [])),
@@ -286,6 +288,7 @@ def format_relevant_world_bible_for_prompt(
     max_characters: int = 8,
     max_locations: int = 5,
     max_threads: int = 6,
+    active_chapters: set[int] | None = None,
 ) -> str:
     """
     根据本章标题/剧情走向检索相关世界书条目。
@@ -294,6 +297,22 @@ def format_relevant_world_bible_for_prompt(
     地点、活跃剧情线和待回收伏笔。没有命中时退回重要性排序。
     """
     query = _norm_key(query_text)
+    active_chapters = {int(ch) for ch in (active_chapters or set()) if int(ch or 0) > 0}
+
+    def in_active_scope(data: dict) -> bool:
+        if not active_chapters:
+            return True
+        chapter_values = {
+            data.get("last_updated_chapter"),
+            data.get("source_chapter"),
+            data.get("first_appearance"),
+            data.get("last_touched_chapter"),
+            data.get("introduced_chapter"),
+            data.get("opened_chapter"),
+            data.get("chapter"),
+        }
+        entry_chapters = {int(value) for value in chapter_values if str(value).isdigit()}
+        return bool(entry_chapters & active_chapters)
 
     def score_text(*values: str) -> int:
         score = 0
@@ -349,11 +368,21 @@ def format_relevant_world_bible_for_prompt(
             + (2 if p.last_touched_chapter and p.last_touched_chapter >= bible.last_updated_chapter - 3 else 0)
         )
 
-    visible_characters = [c for c in bible.characters if not getattr(c, "hidden", False)]
-    visible_locations = [l for l in bible.locations if not getattr(l, "hidden", False)]
-    visible_threads = [p for p in bible.active_plot_threads if not getattr(p, "hidden", False)]
-    visible_passages = [p for p in bible.key_worldbuilding_passages if not p.get("hidden")]
+    visible_characters = [
+        c for c in bible.characters
+        if not getattr(c, "hidden", False) and in_active_scope(c.__dict__)
+    ]
+    visible_locations = [
+        l for l in bible.locations
+        if not getattr(l, "hidden", False) and in_active_scope(l.__dict__)
+    ]
+    visible_threads = [
+        p for p in bible.active_plot_threads
+        if not getattr(p, "hidden", False) and in_active_scope(p.__dict__)
+    ]
+    visible_passages = [p for p in bible.key_worldbuilding_passages if not p.get("hidden") and in_active_scope(p)]
     visible_foreshadowing = [f for f in bible.global_foreshadowing if not f.get("hidden")]
+    visible_foreshadowing = [f for f in visible_foreshadowing if in_active_scope(f)]
 
     char_ranked = sorted(visible_characters, key=lambda c: (char_score(c), c.last_updated_chapter, c.first_appearance), reverse=True)
     loc_ranked = sorted(visible_locations, key=lambda l: (loc_score(l), l.last_updated_chapter, l.first_appearance), reverse=True)
@@ -998,7 +1027,7 @@ def dedup_world_bible_locations(
 
 
 def audit_world_bible_consistency(bible: WorldBible) -> list[dict]:
-    """规则型世界书一致性检查。用于更新后提示风险，不阻断写作。"""
+    """规则型世界书一致性/健康检查。用于更新后提示风险，不阻断写作。"""
     warnings: list[dict] = []
 
     def add(severity: str, issue_type: str, message: str, related: list[str] | None = None) -> None:
@@ -1009,9 +1038,94 @@ def audit_world_bible_consistency(bible: WorldBible) -> list[dict]:
             "related": related or [],
         })
 
+    def has_source(data: dict) -> bool:
+        return bool(
+            data.get("source_chapter")
+            or data.get("source_version")
+            or data.get("last_updated_chapter")
+            or data.get("last_updated_version")
+            or data.get("first_appearance")
+            or data.get("chapter")
+            or data.get("introduced_chapter")
+            or data.get("opened_chapter")
+        )
+
+    def source_chapter(data: dict) -> int:
+        for key in (
+            "last_updated_chapter",
+            "source_chapter",
+            "first_appearance",
+            "last_touched_chapter",
+            "introduced_chapter",
+            "opened_chapter",
+            "chapter",
+        ):
+            try:
+                value = int(data.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                value = 0
+            if value > 0:
+                return value
+        return 0
+
+    def source_version(data: dict) -> int:
+        for key in ("last_updated_version", "source_version", "version"):
+            try:
+                value = int(data.get(key, 0) or 0)
+            except (TypeError, ValueError):
+                value = 0
+            if value > 0:
+                return value
+        return 0
+
+    def has_chapter_snapshot(chapter: int, version: int = 0) -> bool:
+        if chapter <= 0:
+            return False
+        entries = getattr(bible, "chapter_world_entries", {}) or {}
+        if version:
+            return f"ch{chapter:04d}_v{version:03d}" in entries
+        prefix = f"ch{chapter:04d}_v"
+        return any(str(key).startswith(prefix) for key in entries)
+
+    def check_source_health(kind: str, title: str, data: dict) -> None:
+        if not has_source(data):
+            add("info", "缺少来源", f"{kind}「{title}」缺少来源章节/版本，后续按章节追溯会不准确。", [title])
+            return
+        chapter = source_chapter(data)
+        version = source_version(data)
+        if chapter and not has_chapter_snapshot(chapter, version):
+            version_text = f" v{version}" if version else ""
+            add("info", "快照缺失", f"{kind}「{title}」指向第{chapter}章{version_text}，但没有对应章节世界书快照。", [title, f"第{chapter}章"])
+
+    category_counts = {
+        "角色": len(bible.characters),
+        "地点": len(bible.locations),
+        "规则": len(bible.rules),
+        "时间线": len(bible.timeline),
+        "剧情线": len(bible.active_plot_threads),
+        "设定": len(bible.key_worldbuilding_passages),
+        "伏笔": len(bible.global_foreshadowing),
+        "关键对话": len(bible.global_key_dialogues),
+    }
+    if not any(category_counts.values()):
+        add("info", "世界书为空", "世界书还没有任何结构化条目，生成时只能依赖剧情摘要或正文上下文。")
+    else:
+        for label, count in category_counts.items():
+            if count == 0:
+                add("info", "栏目为空", f"{label}栏目暂时没有条目。")
+
     # 同名/同别名角色碰撞
     seen_chars: dict[str, str] = {}
     for ch in bible.characters:
+        check_source_health("角色", ch.name or "未命名角色", asdict(ch))
+        if ch.importance == "major" and not any([
+            ch.current_goal,
+            ch.current_location,
+            ch.current_emotion,
+            ch.recent_action,
+            ch.knowledge_state,
+        ]):
+            add("info", "角色状态缺失", f"重要角色「{ch.name}」缺少当前目标/位置/情绪/近期行动等关键状态。", [ch.name])
         keys = _character_keys(ch)
         for key in keys:
             if key in seen_chars and seen_chars[key] != ch.name:
@@ -1033,6 +1147,11 @@ def audit_world_bible_consistency(bible: WorldBible) -> list[dict]:
     # 地点重复/矛盾风险
     seen_locs: dict[str, str] = {}
     for loc in bible.locations:
+        check_source_health("地点", loc.name or "未命名地点", asdict(loc))
+        if not loc.description:
+            add("info", "地点描述缺失", f"地点「{loc.name}」缺少描述。", [loc.name])
+        if not loc.key_details:
+            add("info", "地点细节缺失", f"地点「{loc.name}」缺少原文关键细节，后续复用时容易失真。", [loc.name])
         key = _norm_key(loc.name)
         if key in seen_locs and seen_locs[key] != loc.name:
             add("minor", "地点重复", f"「{seen_locs[key]}」与「{loc.name}」名称高度相似，可能需要合并。", [seen_locs[key], loc.name])
@@ -1042,6 +1161,7 @@ def audit_world_bible_consistency(bible: WorldBible) -> list[dict]:
     last_chapter = 0
     seen_events: set[str] = set()
     for entry in bible.timeline:
+        check_source_health("时间线", entry.event[:40] or "未命名事件", asdict(entry))
         if entry.chapter and entry.chapter < last_chapter:
             add("major", "时间线倒错", f"时间线中第{entry.chapter}章事件出现在第{last_chapter}章事件之后。", [entry.event[:40]])
         last_chapter = max(last_chapter, entry.chapter)
@@ -1052,14 +1172,23 @@ def audit_world_bible_consistency(bible: WorldBible) -> list[dict]:
 
     current_chapter = bible.last_updated_chapter or max([t.chapter for t in bible.timeline] or [0])
     for thread in bible.active_plot_threads:
+        check_source_health("剧情线", thread.name or "未命名剧情线", asdict(thread))
         if thread.status == "active" and thread.last_touched_chapter:
             idle = current_chapter - thread.last_touched_chapter
             if idle >= 8:
                 add("minor", "剧情线久未推进", f"剧情线「{thread.name}」已 {idle} 章未触达，建议推进、转入 dormant 或收束。", [thread.name])
+        elif thread.status == "active":
+            add("info", "剧情线触达缺失", f"活跃剧情线「{thread.name}」没有最近触达章节。", [thread.name])
         if thread.status == "resolved" and thread.payoff_hint:
             add("minor", "剧情线状态", f"剧情线「{thread.name}」已 resolved 但仍保留回收提示，可能需要清理。", [thread.name])
 
+    for item in bible.key_worldbuilding_passages:
+        title = item.get("topic") or item.get("passage", "")[:40] or "未命名设定"
+        check_source_health("设定", title, item)
+
     for item in bible.global_foreshadowing:
+        title = item.get("hint", "")[:60] or "未命名伏笔"
+        check_source_health("伏笔", title, item)
         status = item.get("status", "open")
         if status in ("resolved", "已回收"):
             continue
@@ -1069,6 +1198,10 @@ def audit_world_bible_consistency(bible: WorldBible) -> list[dict]:
         if status in ("open", "noticed", "advanced") and not item.get("next_step"):
             add("minor", "伏笔缺少推进", f"伏笔「{item.get('hint', '')[:60]}」没有 next_step，后续容易遗忘。", [item.get("hint", "")])
 
+    for item in bible.global_key_dialogues:
+        title = item.get("speaker") or item.get("dialogue", "")[:40] or "未命名对话"
+        check_source_health("关键对话", title, item)
+
     rule_seen: set[str] = set()
     for rule in bible.rules:
         key = _norm_key(rule[:120])
@@ -1076,7 +1209,9 @@ def audit_world_bible_consistency(bible: WorldBible) -> list[dict]:
             add("minor", "规则重复", f"世界观规则可能重复：{rule[:80]}", [rule[:40]])
         rule_seen.add(key)
 
-    return warnings[:20]
+    order = {"major": 0, "minor": 1, "info": 2}
+    warnings.sort(key=lambda item: order.get(item.get("severity", "info"), 3))
+    return warnings[:40]
 
 
 EXTRACT_PROMPT = """你是一个小说信息深度提取专家。请严格根据以下章节内容，深度提取其中的角色、地点、世界观规则、事件和剧情线索。
@@ -1208,6 +1343,198 @@ def _repair_truncated_json(text: str) -> str:
     return text
 
 
+def _chapter_world_entry_key(chapter_num: int, chapter_version: int = 0) -> str:
+    return f"ch{int(chapter_num):04d}_v{int(chapter_version or 0):03d}"
+
+
+def merge_extracted_world_bible_data(
+    existing_bible: WorldBible | None,
+    data: dict,
+    *,
+    chapter_content: str = "",
+    chapter_num: int = 0,
+    chapter_version: int = 0,
+    client=None,
+    model: str = "deepseek-v4-flash",
+    global_user_prompt: str = "",
+    store_chapter_entry: bool = False,
+    run_dedup: bool = True,
+) -> WorldBible:
+    """将已提取出的章节世界书 JSON 合并进 WorldBible。"""
+    bible = existing_bible or WorldBible()
+    if not isinstance(data, dict):
+        data = {}
+
+    if store_chapter_entry and chapter_num:
+        key = _chapter_world_entry_key(chapter_num, chapter_version)
+        bible.chapter_world_entries[key] = {
+            "chapter": int(chapter_num),
+            "version": int(chapter_version or 0),
+            "data": data,
+        }
+
+    # === 合并角色 ===
+    for ch_data in data.get("characters", []):
+        name = ch_data.get("name", "").strip()
+        if not name:
+            continue
+        existing = _find_character_by_name_or_alias(
+            bible.characters, name, ch_data.get("aliases", [])
+        )
+        if existing:
+            _merge_character_entry(existing, ch_data, chapter_content, chapter_num, chapter_version)
+        else:
+            entry = CharacterEntry(
+                name=name,
+                aliases=ch_data.get("aliases", []),
+                traits=ch_data.get("traits", "")[:500],
+                status=ch_data.get("status", "alive"),
+                importance=ch_data.get("importance", "normal"),
+                first_appearance=chapter_num,
+                key_details=[_verify_verbatim(kd, chapter_content) for kd in ch_data.get("key_details", [])],
+                key_dialogues=[_verify_verbatim(kd, chapter_content) for kd in ch_data.get("key_dialogues", [])],
+                motivation=ch_data.get("motivation", "")[:200],
+                arc=ch_data.get("arc", "")[:200],
+                current_location=ch_data.get("current_location", "")[:100],
+                current_goal=ch_data.get("current_goal", "")[:200],
+                current_emotion=ch_data.get("current_emotion", "")[:200],
+                recent_action=ch_data.get("recent_action", "")[:200],
+                knowledge_state=ch_data.get("knowledge_state", "")[:200],
+                unresolved_conflicts=[str(item)[:50] for item in _as_list(ch_data.get("unresolved_conflicts", [])) if item],
+                source_chapter=chapter_num,
+                source_version=chapter_version,
+                last_updated_chapter=chapter_num,
+                last_updated_version=chapter_version,
+            )
+            _merge_relationships(entry.relationships, ch_data.get("relationships", []))
+            bible.characters.append(entry)
+
+    # === 合并地点 ===
+    existing_locs = {l.name for l in bible.locations}
+    for loc_data in data.get("locations", []):
+        name = loc_data.get("name", "").strip()
+        if not name:
+            continue
+        if name in existing_locs:
+            for existing in bible.locations:
+                if existing.name == name:
+                    if loc_data.get("description"):
+                        existing.description = loc_data["description"][:300]
+                    if loc_data.get("significance"):
+                        existing.significance = loc_data["significance"][:200]
+                    _merge_list_dedup(existing.key_details, [_verify_verbatim(kd, chapter_content) for kd in loc_data.get("key_details", [])])
+                    if loc_data.get("atmosphere"):
+                        existing.atmosphere = loc_data["atmosphere"][:200]
+                    _touch_source(existing, chapter_num, chapter_version)
+                    break
+        else:
+            bible.locations.append(LocationEntry(
+                name=name,
+                description=loc_data.get("description", "")[:300],
+                significance=loc_data.get("significance", "")[:200],
+                first_appearance=chapter_num,
+                key_details=[_verify_verbatim(kd, chapter_content) for kd in loc_data.get("key_details", [])],
+                atmosphere=loc_data.get("atmosphere", "")[:200],
+                source_chapter=chapter_num,
+                source_version=chapter_version,
+                last_updated_chapter=chapter_num,
+                last_updated_version=chapter_version,
+            ))
+            existing_locs.add(name)
+
+    # === 合并规则 ===
+    for rule in data.get("rules", []):
+        r = str(rule).strip()
+        if r and r not in bible.rules:
+            bible.rules.append(r)
+
+    # === 合并时间线 ===
+    for t_data in data.get("timeline", []):
+        event = t_data.get("event", "").strip()
+        if event:
+            entry = TimelineEntry(
+                chapter=chapter_num,
+                event=event[:200],
+                significance=t_data.get("significance", "")[:200],
+                key_passages=[_verify_verbatim(kp, chapter_content) for kp in t_data.get("key_passages", [])],
+                foreshadowing_hints=[fh[:50] for fh in t_data.get("foreshadowing_hints", [])],
+                source_version=chapter_version,
+            )
+            bible.timeline.append(entry)
+
+    # === 合并剧情线 ===
+    for pt_data in data.get("plot_threads", []):
+        name = pt_data.get("name", "").strip()
+        if not name:
+            continue
+        existing = next(
+            (p for p in bible.active_plot_threads if _norm_key(p.name) == _norm_key(name)),
+            None,
+        )
+        if existing:
+            _merge_plot_thread(existing, pt_data, chapter_content, chapter_num, chapter_version)
+        else:
+            bible.active_plot_threads.append(PlotThread(
+                name=name,
+                status=pt_data.get("status", "active"),
+                importance=pt_data.get("importance", "normal"),
+                involved_characters=pt_data.get("involved_characters", []),
+                description=pt_data.get("description", "")[:300],
+                key_details=[_verify_verbatim(kd, chapter_content) for kd in pt_data.get("key_details", [])],
+                foreshadowing_related=[fr[:50] for fr in pt_data.get("foreshadowing_related", [])],
+                opened_chapter=chapter_num,
+                last_touched_chapter=chapter_num,
+                expected_payoff=pt_data.get("expected_payoff", "")[:100],
+                payoff_hint=pt_data.get("payoff_hint", "")[:100],
+                source_chapter=chapter_num,
+                source_version=chapter_version,
+                last_updated_version=chapter_version,
+            ))
+
+    # === 合并顶层字段：世界观设定、全局伏笔、关键对话 ===
+    for item in data.get("key_worldbuilding", []):
+        topic = item.get("topic", "").strip()
+        passage = _verify_verbatim(item.get("passage", "").strip(), chapter_content)
+        if topic and passage:
+            if not any(ex.get("topic") == topic for ex in bible.key_worldbuilding_passages):
+                bible.key_worldbuilding_passages.append({
+                    "chapter": chapter_num,
+                    "version": chapter_version,
+                    "topic": topic,
+                    "passage": passage[:300],
+                })
+
+    for item in data.get("global_key_dialogues", []):
+        dialogue = _verify_verbatim(item.get("dialogue", "").strip(), chapter_content)
+        if dialogue:
+            if not any(d.get("dialogue") == dialogue for d in bible.global_key_dialogues):
+                bible.global_key_dialogues.append({
+                    "speaker": item.get("speaker", "").strip(),
+                    "dialogue": dialogue,
+                    "context": item.get("context", "")[:30],
+                    "chapter": chapter_num,
+                    "version": chapter_version,
+                })
+
+    for item in data.get("global_foreshadowing", []):
+        _merge_foreshadowing(bible.global_foreshadowing, item, chapter_num, chapter_version)
+
+    if run_dedup and client is not None:
+        try:
+            bible = dedup_world_bible_characters(bible, client, model, global_user_prompt)
+        except Exception:
+            pass
+        try:
+            bible = dedup_world_bible_locations(bible, client, model, global_user_prompt)
+        except Exception:
+            pass
+
+    if chapter_num:
+        bible.last_updated_chapter = chapter_num
+    bible.consistency_warnings = audit_world_bible_consistency(bible)
+    return bible
+
+
 def extract_and_merge_world_bible(
     client,
     chapter_content: str,
@@ -1308,162 +1635,15 @@ def extract_and_merge_world_bible(
             )
         break  # 成功解析后跳出重试循环
 
-    # === 合并角色 ===
-    for ch_data in data.get("characters", []):
-        name = ch_data.get("name", "").strip()
-        if not name:
-            continue
-        existing = _find_character_by_name_or_alias(
-            bible.characters, name, ch_data.get("aliases", [])
-        )
-        if existing:
-            _merge_character_entry(existing, ch_data, chapter_content, chapter_num, chapter_version)
-        else:
-            entry = CharacterEntry(
-                name=name,
-                aliases=ch_data.get("aliases", []),
-                traits=ch_data.get("traits", "")[:500],
-                status=ch_data.get("status", "alive"),
-                importance=ch_data.get("importance", "normal"),
-                first_appearance=chapter_num,
-                key_details=[_verify_verbatim(kd, chapter_content) for kd in ch_data.get("key_details", [])],
-                key_dialogues=[_verify_verbatim(kd, chapter_content) for kd in ch_data.get("key_dialogues", [])],
-                motivation=ch_data.get("motivation", "")[:200],
-                arc=ch_data.get("arc", "")[:200],
-                current_location=ch_data.get("current_location", "")[:100],
-                current_goal=ch_data.get("current_goal", "")[:200],
-                current_emotion=ch_data.get("current_emotion", "")[:200],
-                recent_action=ch_data.get("recent_action", "")[:200],
-                knowledge_state=ch_data.get("knowledge_state", "")[:200],
-                unresolved_conflicts=[str(item)[:50] for item in _as_list(ch_data.get("unresolved_conflicts", [])) if item],
-                source_chapter=chapter_num,
-                source_version=chapter_version,
-                last_updated_chapter=chapter_num,
-                last_updated_version=chapter_version,
-            )
-            _merge_relationships(entry.relationships, ch_data.get("relationships", []))
-            bible.characters.append(entry)
-
-    # === 合并地点 ===
-    existing_locs = {l.name for l in bible.locations}
-    for loc_data in data.get("locations", []):
-        name = loc_data.get("name", "").strip()
-        if not name:
-            continue
-        if name in existing_locs:
-            for existing in bible.locations:
-                if existing.name == name:
-                    if loc_data.get("description"):
-                        existing.description = loc_data["description"][:300]
-                    if loc_data.get("significance"):
-                        existing.significance = loc_data["significance"][:200]
-                    _merge_list_dedup(existing.key_details, [_verify_verbatim(kd, chapter_content) for kd in loc_data.get("key_details", [])])
-                    if loc_data.get("atmosphere"):
-                        existing.atmosphere = loc_data["atmosphere"][:200]
-                    _touch_source(existing, chapter_num, chapter_version)
-                    break
-        else:
-            bible.locations.append(LocationEntry(
-                name=name,
-                description=loc_data.get("description", "")[:300],
-                significance=loc_data.get("significance", "")[:200],
-                first_appearance=chapter_num,
-                key_details=[_verify_verbatim(kd, chapter_content) for kd in loc_data.get("key_details", [])],
-                atmosphere=loc_data.get("atmosphere", "")[:200],
-                source_chapter=chapter_num,
-                source_version=chapter_version,
-                last_updated_chapter=chapter_num,
-                last_updated_version=chapter_version,
-            ))
-            existing_locs.add(name)
-
-    # === 合并规则 ===
-    for rule in data.get("rules", []):
-        r = rule.strip()
-        if r and r not in bible.rules:
-            bible.rules.append(r)
-
-    # === 合并时间线 ===
-    for t_data in data.get("timeline", []):
-        event = t_data.get("event", "").strip()
-        if event:
-            entry = TimelineEntry(
-                chapter=chapter_num,
-                event=event[:200],
-                significance=t_data.get("significance", "")[:200],
-                key_passages=[_verify_verbatim(kp, chapter_content) for kp in t_data.get("key_passages", [])],
-                foreshadowing_hints=[fh[:50] for fh in t_data.get("foreshadowing_hints", [])],
-                source_version=chapter_version,
-            )
-            bible.timeline.append(entry)
-
-    # === 合并剧情线 ===
-    for pt_data in data.get("plot_threads", []):
-        name = pt_data.get("name", "").strip()
-        if not name:
-            continue
-        existing = next(
-            (p for p in bible.active_plot_threads if _norm_key(p.name) == _norm_key(name)),
-            None,
-        )
-        if existing:
-            _merge_plot_thread(existing, pt_data, chapter_content, chapter_num, chapter_version)
-        else:
-            bible.active_plot_threads.append(PlotThread(
-                name=name,
-                status=pt_data.get("status", "active"),
-                importance=pt_data.get("importance", "normal"),
-                involved_characters=pt_data.get("involved_characters", []),
-                description=pt_data.get("description", "")[:300],
-                key_details=[_verify_verbatim(kd, chapter_content) for kd in pt_data.get("key_details", [])],
-                foreshadowing_related=[fr[:50] for fr in pt_data.get("foreshadowing_related", [])],
-                opened_chapter=chapter_num,
-                last_touched_chapter=chapter_num,
-                expected_payoff=pt_data.get("expected_payoff", "")[:100],
-                payoff_hint=pt_data.get("payoff_hint", "")[:100],
-                source_chapter=chapter_num,
-                source_version=chapter_version,
-                last_updated_version=chapter_version,
-            ))
-
-    # === 合并顶层字段：世界观设定、全局伏笔、关键对话 ===
-    for item in data.get("key_worldbuilding", []):
-        topic = item.get("topic", "").strip()
-        passage = _verify_verbatim(item.get("passage", "").strip(), chapter_content)
-        if topic and passage:
-            if not any(ex.get("topic") == topic for ex in bible.key_worldbuilding_passages):
-                bible.key_worldbuilding_passages.append({
-                    "chapter": chapter_num,
-                    "version": chapter_version,
-                    "topic": topic,
-                    "passage": passage[:300],
-                })
-
-    for item in data.get("global_key_dialogues", []):
-        dialogue = _verify_verbatim(item.get("dialogue", "").strip(), chapter_content)
-        if dialogue:
-            if not any(d.get("dialogue") == dialogue for d in bible.global_key_dialogues):
-                bible.global_key_dialogues.append({
-                    "speaker": item.get("speaker", "").strip(),
-                    "dialogue": dialogue,
-                    "context": item.get("context", "")[:30],
-                    "chapter": chapter_num,
-                    "version": chapter_version,
-                })
-
-    for item in data.get("global_foreshadowing", []):
-        _merge_foreshadowing(bible.global_foreshadowing, item, chapter_num, chapter_version)
-
-    # 合并完成后去重重复角色和地点（仅拼接，不压缩）
-    try:
-        bible = dedup_world_bible_characters(bible, client, model, global_user_prompt)
-    except Exception:
-        pass
-    try:
-        bible = dedup_world_bible_locations(bible, client, model, global_user_prompt)
-    except Exception:
-        pass
-
-    bible.last_updated_chapter = chapter_num
-    bible.consistency_warnings = audit_world_bible_consistency(bible)
-    return bible
+    return merge_extracted_world_bible_data(
+        bible,
+        data,
+        chapter_content=chapter_content,
+        chapter_num=chapter_num,
+        chapter_version=chapter_version,
+        client=client,
+        model=model,
+        global_user_prompt=global_user_prompt,
+        store_chapter_entry=True,
+        run_dedup=True,
+    )

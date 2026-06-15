@@ -116,6 +116,7 @@ class ChapterTreeDialog(QDialog):
         self._selected_node_id: str | None = None
         self._node_items: dict[str, ChapterNodeItem] = {}
         self._zoom_factor = 1.0
+        self._rebuild_success_message = "剧情记忆和世界书已按活跃路径同步。"
         self.setWindowTitle(f"章节树管理 - {book_title}")
         self.resize(980, 640)
         self.generation_done.connect(self._on_generation_done)
@@ -190,7 +191,10 @@ class ChapterTreeDialog(QDialog):
         insert_btn.clicked.connect(self._insert_middle_chapter)
         delete_btn = QPushButton("删除子树")
         delete_btn.clicked.connect(self._delete_current)
-        for btn in (switch_btn, edit_btn, polish_btn, rewrite_btn, export_btn, insert_btn, delete_btn):
+        force_wb_btn = QPushButton("从正文重新提取世界书")
+        force_wb_btn.setToolTip("修复或刷新世界书时使用；会重新读取当前活跃路径正文并调用模型提取")
+        force_wb_btn.clicked.connect(self._force_extract_world_bible)
+        for btn in (switch_btn, edit_btn, polish_btn, rewrite_btn, export_btn, insert_btn, delete_btn, force_wb_btn):
             button_row.addWidget(btn)
         right_layout.addLayout(button_row)
         splitter.addWidget(right)
@@ -391,25 +395,22 @@ class ChapterTreeDialog(QDialog):
             self._load_tree()
             reply = QMessageBox.question(
                 self,
-                "重建剧情记忆与世界书",
-                "已切换活跃路径。是否根据当前活跃路径重建剧情摘要和世界书？\n"
-                "（推荐：选「是」以清理旧分支残留设定）",
+                "同步剧情记忆与世界书",
+                "已切换活跃路径。是否按当前活跃路径同步剧情记忆与世界书？\n"
+                "剧情摘要会直接拼接活跃章节节点 summary；世界书会优先合并已保存的章节世界书快照。\n"
+                "缺少快照的旧章节才会重新从正文提取。",
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             )
             if reply == QMessageBox.StandardButton.Yes and self._client:
-                self._details.setPlainText("正在重建剧情摘要和世界书，请稍候...")
+                self._rebuild_success_message = "剧情记忆和世界书已按活跃路径同步。"
+                self._details.setPlainText("正在按活跃路径同步剧情记忆和世界书，请稍候...")
                 threading.Thread(target=self._run_rebuild_memory, daemon=True).start()
             else:
                 QMessageBox.information(self, "完成", "已切换活跃路径。")
 
     def _run_rebuild_memory(self) -> None:
         try:
-            self._novel_manager.rebuild_summary_from_active(
-                self._client.raw_client,
-                self._book_title,
-                model=self._client.model,
-                global_user_prompt=self._client.global_user_prompt,
-            )
+            self._novel_manager.rebuild_plot_summary_from_tree(self._book_title)
             self._novel_manager.rebuild_world_bible_from_active(
                 self._client.raw_client,
                 self._book_title,
@@ -422,11 +423,42 @@ class ChapterTreeDialog(QDialog):
 
     def _on_rebuild_done(self) -> None:
         self._load_tree()
-        QMessageBox.information(self, "完成", "剧情摘要和世界书已重建。")
+        QMessageBox.information(self, "完成", self._rebuild_success_message)
 
     def _on_rebuild_failed(self, error: str) -> None:
-        QMessageBox.warning(self, "重建失败", error)
+        QMessageBox.warning(self, "同步失败", error)
         self._load_tree()
+
+    def _force_extract_world_bible(self) -> None:
+        if not self._client:
+            QMessageBox.warning(self, "无法提取", "当前没有可用的模型客户端。")
+            return
+        reply = QMessageBox.question(
+            self,
+            "重新从正文提取世界书",
+            "将读取当前活跃路径上的章节正文，重新调用模型提取世界书。\n"
+            "这个操作用于修复或刷新世界书，耗时和消耗会高于普通同步。\n\n继续吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._rebuild_success_message = "世界书已从当前活跃章节正文重新提取。"
+        self._details.setPlainText("正在从活跃章节正文重新提取世界书，请稍候...")
+        threading.Thread(target=self._run_force_extract_world_bible, daemon=True).start()
+
+    def _run_force_extract_world_bible(self) -> None:
+        try:
+            self._novel_manager.rebuild_world_bible_from_active(
+                self._client.raw_client,
+                self._book_title,
+                model=self._client.model,
+                global_user_prompt=self._client.global_user_prompt,
+                force_extract=True,
+            )
+            self.rebuild_done.emit()
+        except Exception as exc:
+            self.rebuild_failed.emit(str(exc))
 
     def _edit_current(self) -> None:
         node = self._selected_node()

@@ -935,45 +935,66 @@ class NovelManager:
         model: str = "deepseek-v4-flash",
         global_user_prompt: str = "",
         xp_mode: bool = False,
+        force_extract: bool = False,
     ) -> None:
         """
-        根据所有活跃章节重新生成 world_bible.json。
+        根据所有活跃章节同步 world_bible.json。
 
-        当用户切换章节活跃版本或重写章节后，旧版本提取出的角色状态、
-        剧情线和伏笔可能仍残留在世界书里。重建时只读取当前活跃版本，
-        让世界书重新对齐真正参与续写的正文。
+        默认优先合并章节生成/导入时保存的世界书快照，不重新读正文调用模型。
+        旧章节缺少快照时才回退到正文提取。force_extract=True 时强制从正文重抽。
         """
-        from core.world_bible import WorldBible, extract_and_merge_world_bible
+        from core.world_bible import (
+            WorldBible,
+            _chapter_world_entry_key,
+            extract_and_merge_world_bible,
+            merge_extracted_world_bible_data,
+        )
 
         nodes = self.get_active_path_nodes(title)
         if not nodes:
             self.save_world_bible(title, WorldBible())
             return
 
+        existing_bible = self.load_world_bible(title)
         bible = WorldBible()
         story_context_entries = []
         meta = self.load_meta(title)
         for node in nodes:
             chapter_num = int(node.get("chapter_num", 0) or 0)
             version = int(node.get("version", 0) or 0)
-            content = self.read_chapter_node(title, node["id"])
-            if not content:
-                continue
             story_context = self._summary_context_from_entries(story_context_entries)
-            bible = extract_and_merge_world_bible(
-                client,
-                content,
-                chapter_num,
-                bible,
-                model,
-                chapter_version=version,
-                global_user_prompt=global_user_prompt,
-                story_context=story_context,
-                background_story=meta.background_story,
-                protagonist_bio=meta.protagonist_bio,
-                writing_demand=meta.writing_demand,
-                xp_mode=xp_mode or meta.xp_mode,
-            )
+            entry = None
+            if not force_extract:
+                entry = getattr(existing_bible, "chapter_world_entries", {}).get(
+                    _chapter_world_entry_key(chapter_num, version)
+                )
+            if not force_extract and isinstance(entry, dict) and isinstance(entry.get("data"), dict):
+                bible = merge_extracted_world_bible_data(
+                    bible,
+                    entry["data"],
+                    chapter_num=chapter_num,
+                    chapter_version=version,
+                    store_chapter_entry=True,
+                    run_dedup=False,
+                )
+            else:
+                content = self.read_chapter_node(title, node["id"])
+                if not content:
+                    continue
+                bible = extract_and_merge_world_bible(
+                    client,
+                    content,
+                    chapter_num,
+                    bible,
+                    model,
+                    chapter_version=version,
+                    global_user_prompt=global_user_prompt,
+                    story_context=story_context,
+                    background_story=meta.background_story,
+                    protagonist_bio=meta.protagonist_bio,
+                    writing_demand=meta.writing_demand,
+                    xp_mode=xp_mode or meta.xp_mode,
+                )
             summary = (node.get("summary") or "").strip()
             if not summary:
                 summary = self._legacy_extract_chapter_summary(self.load_summary(title), chapter_num)

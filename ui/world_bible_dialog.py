@@ -6,7 +6,9 @@
 import json
 import os
 import re
+from dataclasses import asdict
 
+from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QDialog,
     QVBoxLayout,
@@ -21,13 +23,19 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QComboBox,
     QDialogButtonBox,
+    QListWidget,
+    QListWidgetItem,
+    QSplitter,
+    QWidget,
+    QScrollArea,
+    QFrame,
 )
 
 
 class WorldBibleDialog(QDialog):
     """世界书查看/编辑对话框"""
 
-    def __init__(self, parent, world_bible, save_callback=None):
+    def __init__(self, parent, world_bible, save_callback=None, active_chapters: set[int] | None = None):
         """
         Args:
             parent: 父窗口
@@ -37,6 +45,7 @@ class WorldBibleDialog(QDialog):
         super().__init__(parent)
         self._bible = world_bible
         self._save_callback = save_callback
+        self._active_chapters = active_chapters or set()
         self._saved = False
         self.setWindowTitle("📖 世界书 - 已建立的设定与世界观")
         self.resize(800, 600)
@@ -62,13 +71,12 @@ class WorldBibleDialog(QDialog):
             QTabBar::tab:hover:!selected { background-color: #4a4a4a; }
         """)
 
-        self._char_edit = self._make_tab("角色", self._format_characters())
-        self._loc_edit = self._make_tab("地点", self._format_locations())
-        self._rule_edit = self._make_tab("规则", "\n".join(self._bible.rules))
-        self._timeline_edit = self._make_tab("时间线", self._format_timeline())
-        self._plot_edit = self._make_tab("剧情线", self._format_plot_threads())
-        self._worldbuilding_edit = self._make_tab("设定与伏笔", self._format_worldbuilding())
-        self._warning_edit = self._make_tab("冲突提醒", self._format_consistency_warnings())
+        self._card_tabs: dict[str, QVBoxLayout] = {}
+        for kind in ("角色", "地点", "规则", "时间线", "剧情线", "设定", "伏笔", "关键对话", "冲突提醒"):
+            self._tabs.addTab(self._build_kind_cards_tab(kind), kind)
+
+        self._advanced_edit = self._make_tab("高级 JSON", json.dumps(asdict(self._bible), ensure_ascii=False, indent=2))
+        self._refresh_kind_cards()
 
         layout.addWidget(self._tabs)
 
@@ -115,6 +123,824 @@ class WorldBibleDialog(QDialog):
         """)
         self._tabs.addTab(edit, title)
         return edit
+
+    def _build_kind_cards_tab(self, kind: str) -> QWidget:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        container = QWidget()
+        layout = QVBoxLayout(container)
+        layout.setContentsMargins(10, 10, 10, 10)
+        layout.setSpacing(8)
+        scroll.setWidget(container)
+        self._card_tabs[kind] = layout
+        return scroll
+
+    def _kind_card_entries(self, kind: str) -> list[dict]:
+        entries = [entry for entry in self._card_entries() if entry["kind"] == kind]
+        if kind == "规则":
+            entries = []
+            for idx, rule in enumerate(self._bible.rules):
+                entries.append({
+                    "kind": kind,
+                    "index": idx,
+                    "title": f"规则 {idx + 1}",
+                    "subtitle": rule,
+                    "source": "全局规则",
+                    "data": {"rule": rule},
+                    "hidden": False,
+                    "resolved": False,
+                })
+        elif kind == "时间线":
+            entries = []
+            for idx, item in enumerate(self._bible.timeline):
+                data = asdict(item)
+                entries.append({
+                    "kind": kind,
+                    "index": idx,
+                    "title": f"第{item.chapter}章",
+                    "subtitle": item.event,
+                    "source": self._card_source_label(data),
+                    "data": data,
+                    "hidden": False,
+                    "resolved": False,
+                })
+        elif kind == "关键对话":
+            entries = []
+            for idx, item in enumerate(self._bible.global_key_dialogues):
+                entries.append({
+                    "kind": kind,
+                    "index": idx,
+                    "title": item.get("speaker") or f"对话 {idx + 1}",
+                    "subtitle": item.get("dialogue", "")[:80],
+                    "source": self._card_source_label(item),
+                    "data": item,
+                    "hidden": bool(item.get("hidden")),
+                    "resolved": False,
+                })
+        elif kind == "冲突提醒":
+            entries = []
+            for idx, item in enumerate(self._bible.consistency_warnings):
+                severity_text = {"major": "严重", "minor": "一般", "info": "提示"}.get(
+                    item.get("severity", ""), item.get("severity", "")
+                )
+                entries.append({
+                    "kind": kind,
+                    "index": idx,
+                    "title": item.get("type") or item.get("severity") or f"提醒 {idx + 1}",
+                    "subtitle": item.get("message", "")[:100],
+                    "source": severity_text,
+                    "data": item,
+                    "hidden": False,
+                    "resolved": False,
+                })
+        return entries
+
+    def _refresh_kind_cards(self) -> None:
+        for kind, layout in self._card_tabs.items():
+            while layout.count():
+                item = layout.takeAt(0)
+                widget = item.widget()
+                if widget:
+                    widget.deleteLater()
+            entries = self._kind_card_entries(kind)
+            if not entries:
+                empty_text = "未发现明显冲突/提醒" if kind == "冲突提醒" else "暂无条目"
+                empty = QLabel(empty_text)
+                empty.setStyleSheet("color: #888; padding: 12px;")
+                layout.addWidget(empty)
+                layout.addStretch()
+                continue
+            for entry in entries:
+                layout.addWidget(self._make_entry_card(entry))
+            layout.addStretch()
+
+    def _make_entry_card(self, entry: dict) -> QFrame:
+        card = QFrame()
+        card.setFrameShape(QFrame.Shape.StyledPanel)
+        card.setStyleSheet("""
+            QFrame { background-color: #252526; border: 1px solid #444; border-radius: 6px; }
+            QLabel { color: #dcdcdc; border: none; }
+        """)
+        layout = QVBoxLayout(card)
+        layout.setSpacing(8)
+        head = QHBoxLayout()
+        title = QLabel(f"{entry['title']}")
+        title.setStyleSheet("font-weight: bold; color: #ffffff;")
+        kind_badge = self._make_badge(entry["kind"], "#3a4f68", "#cfe8ff")
+        source = QLabel(entry.get("source", ""))
+        source.setStyleSheet("color: #9cdcfe;")
+        source.setWordWrap(True)
+        status_badges = []
+        if entry.get("hidden"):
+            status_badges.append(self._make_badge("隐藏", "#4f3a3a", "#ffd6d6"))
+        if entry.get("resolved"):
+            status_badges.append(self._make_badge("已解决", "#34513a", "#d8f5dc"))
+        edit_btn = QPushButton("编辑")
+        edit_btn.clicked.connect(lambda _=False, k=entry["kind"], i=entry["index"]: self._edit_card(k, i))
+        delete_btn = QPushButton("×")
+        delete_btn.setToolTip("删除条目")
+        delete_btn.clicked.connect(lambda _=False, k=entry["kind"], i=entry["index"]: self._delete_card(k, i))
+        head.addWidget(title, stretch=1)
+        head.addWidget(kind_badge)
+        for badge in status_badges:
+            head.addWidget(badge)
+        head.addWidget(source)
+        head.addWidget(edit_btn)
+        head.addWidget(delete_btn)
+        layout.addLayout(head)
+        self._render_entry_body(layout, entry)
+        return card
+
+    def _make_badge(self, text: str, bg: str = "#3c3c3c", fg: str = "#e0e0e0") -> QLabel:
+        badge = QLabel(text)
+        badge.setStyleSheet(
+            f"background-color: {bg}; color: {fg}; border: 1px solid rgba(255,255,255,0.08); "
+            "border-radius: 4px; padding: 2px 7px; font-size: 12px;"
+        )
+        return badge
+
+    def _clean_display_text(self, value) -> str:
+        text = str(value or "").strip()
+        return re.sub(r"^【原文引用】\s*", "", text)
+
+    def _is_quote_text(self, value) -> bool:
+        return str(value or "").strip().startswith("【原文引用】")
+
+    def _truthy_value(self, value) -> bool:
+        if value is None:
+            return False
+        if isinstance(value, bool):
+            return True
+        if isinstance(value, (list, tuple, set, dict)):
+            return bool(value)
+        return bool(str(value).strip())
+
+    def _add_section_label(self, layout: QVBoxLayout, text: str) -> None:
+        label = QLabel(text)
+        label.setStyleSheet("color: #c8c8c8; font-weight: bold; padding-top: 4px;")
+        layout.addWidget(label)
+
+    def _add_text_block(self, layout: QVBoxLayout, label: str, value, *, quote: bool = False) -> None:
+        if not self._truthy_value(value):
+            return
+        if label:
+            self._add_section_label(layout, label)
+        text = self._clean_display_text(value)
+        block = QLabel(text)
+        block.setWordWrap(True)
+        if quote or self._is_quote_text(value):
+            block.setStyleSheet(
+                "background-color: #1f2a30; color: #d7ecf7; border-left: 3px solid #4fa3d1; "
+                "border-radius: 4px; padding: 7px 9px; line-height: 1.45;"
+            )
+        else:
+            block.setStyleSheet(
+                "background-color: #1f1f1f; color: #dddddd; border: 1px solid #383838; "
+                "border-radius: 4px; padding: 7px 9px; line-height: 1.45;"
+            )
+        layout.addWidget(block)
+
+    def _add_meta_row(self, layout: QVBoxLayout, data: dict, fields: list[tuple[str, str]]) -> None:
+        row = QHBoxLayout()
+        added = False
+        for key, label in fields:
+            value = data.get(key)
+            if not self._truthy_value(value):
+                continue
+            row.addWidget(self._make_badge(f"{label}：{value}", "#303030", "#d0d0d0"))
+            added = True
+        if added:
+            row.addStretch()
+            layout.addLayout(row)
+
+    def _add_list_block(self, layout: QVBoxLayout, label: str, values, *, quote: bool = False) -> None:
+        values = [v for v in (values or []) if self._truthy_value(v)]
+        if not values:
+            return
+        self._add_section_label(layout, label)
+        for value in values:
+            self._add_text_block(layout, "", value, quote=quote or self._is_quote_text(value))
+
+    def _add_tags_block(self, layout: QVBoxLayout, label: str, values) -> None:
+        values = [str(v).strip() for v in (values or []) if str(v or "").strip()]
+        if not values:
+            return
+        self._add_section_label(layout, label)
+        row = QHBoxLayout()
+        for value in values[:12]:
+            row.addWidget(self._make_badge(value, "#2f3b2f", "#dff0df"))
+        row.addStretch()
+        layout.addLayout(row)
+
+    def _render_entry_body(self, layout: QVBoxLayout, entry: dict) -> None:
+        data = entry.get("data", {}) or {}
+        kind = entry.get("kind", "")
+        if kind == "角色":
+            self._render_character_card(layout, data)
+        elif kind == "地点":
+            self._render_location_card(layout, data)
+        elif kind == "剧情线":
+            self._render_plot_thread_card(layout, data)
+        elif kind == "设定":
+            self._render_worldbuilding_card(layout, data)
+        elif kind == "伏笔":
+            self._render_foreshadowing_card(layout, data)
+        elif kind == "时间线":
+            self._render_timeline_card(layout, data)
+        elif kind == "关键对话":
+            self._render_dialogue_card(layout, data)
+        elif kind == "规则":
+            self._add_text_block(layout, "规则内容", data.get("rule"))
+        elif kind == "冲突提醒":
+            self._render_warning_card(layout, data)
+        else:
+            self._render_generic_card(layout, data)
+
+    def _render_character_card(self, layout: QVBoxLayout, data: dict) -> None:
+        self._add_meta_row(layout, data, [
+            ("status", "状态"), ("importance", "重要性"), ("first_appearance", "首次出现"),
+            ("source_chapter", "来源章"), ("source_version", "来源版本"),
+            ("last_updated_chapter", "最近更新章"), ("last_updated_version", "最近版本"),
+        ])
+        self._add_text_block(layout, "角色特征", data.get("traits"))
+        self._add_text_block(layout, "动机", data.get("motivation"))
+        self._add_text_block(layout, "成长弧线", data.get("arc"))
+        self._add_meta_row(layout, data, [
+            ("current_location", "当前位置"), ("current_goal", "当前目标"),
+            ("current_emotion", "当前情绪"), ("recent_action", "近期行动"),
+        ])
+        self._add_text_block(layout, "已知信息", data.get("knowledge_state"))
+        self._add_list_block(layout, "关键细节", data.get("key_details"), quote=True)
+        self._add_list_block(layout, "关键台词", data.get("key_dialogues"), quote=True)
+        self._add_list_block(layout, "未解决冲突", data.get("unresolved_conflicts"))
+        relationships = data.get("relationships") or []
+        if relationships:
+            self._add_section_label(layout, "关系")
+            for rel in relationships:
+                if not isinstance(rel, dict):
+                    continue
+                target = rel.get("target", "")
+                rel_type = rel.get("type", "")
+                desc = rel.get("description", "")
+                text = " / ".join(part for part in [target, rel_type, desc] if part)
+                self._add_text_block(layout, "", text)
+
+    def _render_location_card(self, layout: QVBoxLayout, data: dict) -> None:
+        self._add_meta_row(layout, data, [
+            ("first_appearance", "首次出现"), ("source_chapter", "来源章"),
+            ("source_version", "来源版本"), ("last_updated_chapter", "最近更新章"),
+            ("last_updated_version", "最近版本"),
+        ])
+        self._add_text_block(layout, "描述", data.get("description"))
+        self._add_text_block(layout, "作用", data.get("significance"))
+        self._add_list_block(layout, "原文细节", data.get("key_details"), quote=True)
+        self._add_text_block(layout, "氛围", data.get("atmosphere"), quote=self._is_quote_text(data.get("atmosphere")))
+
+    def _render_plot_thread_card(self, layout: QVBoxLayout, data: dict) -> None:
+        self._add_meta_row(layout, data, [
+            ("status", "状态"), ("importance", "重要性"), ("opened_chapter", "开启章"),
+            ("last_touched_chapter", "最近触达章"), ("source_chapter", "来源章"),
+            ("source_version", "来源版本"), ("last_updated_version", "最近版本"),
+        ])
+        self._add_tags_block(layout, "相关角色", data.get("involved_characters"))
+        self._add_text_block(layout, "描述", data.get("description"))
+        self._add_list_block(layout, "关键细节", data.get("key_details"), quote=True)
+        self._add_tags_block(layout, "关联伏笔", data.get("foreshadowing_related"))
+        self._add_text_block(layout, "预期回收", data.get("expected_payoff"))
+        self._add_text_block(layout, "回收提示", data.get("payoff_hint"))
+
+    def _render_worldbuilding_card(self, layout: QVBoxLayout, data: dict) -> None:
+        self._add_meta_row(layout, data, [
+            ("chapter", "章节"), ("version", "版本"), ("source_chapter", "来源章"),
+            ("source_version", "来源版本"), ("last_updated_chapter", "最近更新章"),
+        ])
+        self._add_text_block(layout, "主题", data.get("topic"))
+        self._add_text_block(layout, "设定内容", data.get("passage"), quote=self._is_quote_text(data.get("passage")))
+        self._add_text_block(layout, "说明", data.get("description"))
+
+    def _render_foreshadowing_card(self, layout: QVBoxLayout, data: dict) -> None:
+        self._add_meta_row(layout, data, [
+            ("status", "状态"), ("introduced_chapter", "埋入章"),
+            ("last_touched_chapter", "最近触达章"), ("source_chapter", "来源章"),
+            ("source_version", "来源版本"),
+        ])
+        self._add_text_block(layout, "伏笔", data.get("hint"), quote=self._is_quote_text(data.get("hint")))
+        self._add_text_block(layout, "关联对象", data.get("relates_to"))
+        self._add_text_block(layout, "下一步", data.get("next_step"))
+        self._add_text_block(layout, "回收规则", data.get("reveal_rule"))
+
+    def _render_timeline_card(self, layout: QVBoxLayout, data: dict) -> None:
+        self._add_meta_row(layout, data, [("chapter", "章节"), ("source_version", "来源版本")])
+        self._add_text_block(layout, "事件", data.get("event"))
+        self._add_text_block(layout, "意义", data.get("significance"))
+        self._add_list_block(layout, "关键原文", data.get("key_passages"), quote=True)
+        self._add_list_block(layout, "埋下伏笔", data.get("foreshadowing_hints"))
+
+    def _render_dialogue_card(self, layout: QVBoxLayout, data: dict) -> None:
+        self._add_meta_row(layout, data, [
+            ("chapter", "章节"), ("version", "版本"), ("source_chapter", "来源章"),
+            ("source_version", "来源版本"),
+        ])
+        self._add_text_block(layout, "说话人", data.get("speaker"))
+        self._add_text_block(layout, "台词", data.get("dialogue"), quote=True)
+        self._add_text_block(layout, "语境", data.get("context"))
+
+    def _render_warning_card(self, layout: QVBoxLayout, data: dict) -> None:
+        severity = data.get("severity", "minor")
+        severity_label = {"major": "严重", "minor": "一般", "info": "提示"}.get(severity, severity)
+        color = {"major": "#6f3131", "minor": "#66552a", "info": "#2f4e68"}.get(severity, "#3c3c3c")
+        row = QHBoxLayout()
+        row.addWidget(self._make_badge(severity_label, color, "#ffffff"))
+        if data.get("type"):
+            row.addWidget(self._make_badge(data.get("type"), "#303030", "#dcdcdc"))
+        row.addStretch()
+        layout.addLayout(row)
+        self._add_text_block(layout, "说明", data.get("message"))
+        self._add_tags_block(layout, "相关对象", data.get("related"))
+
+    def _render_generic_card(self, layout: QVBoxLayout, data: dict) -> None:
+        field_labels = {
+            "name": "名称", "description": "描述", "significance": "作用", "first_appearance": "首次出现",
+            "key_details": "关键细节", "atmosphere": "氛围", "source_chapter": "来源章",
+            "source_version": "来源版本", "hidden": "是否隐藏",
+        }
+        for key, value in data.items():
+            if not self._truthy_value(value):
+                continue
+            label = field_labels.get(key, key)
+            if isinstance(value, list):
+                self._add_list_block(layout, label, value)
+            else:
+                self._add_text_block(layout, label, value)
+
+    def _format_card_plain_text(self, kind: str, data: dict) -> str:
+        labels = {
+            "name": "名称", "aliases": "别名", "traits": "角色特征", "relationships": "关系",
+            "status": "状态", "importance": "重要性", "first_appearance": "首次出现",
+            "notes": "备注", "key_details": "关键细节", "key_dialogues": "关键台词",
+            "motivation": "动机", "arc": "成长弧线", "current_location": "当前位置",
+            "current_goal": "当前目标", "current_emotion": "当前情绪", "recent_action": "近期行动",
+            "knowledge_state": "已知信息", "unresolved_conflicts": "未解决冲突",
+            "description": "描述", "significance": "作用", "atmosphere": "氛围",
+            "event": "事件", "key_passages": "关键原文", "foreshadowing_hints": "埋下伏笔",
+            "involved_characters": "相关角色", "foreshadowing_related": "关联伏笔",
+            "opened_chapter": "开启章", "last_touched_chapter": "最近触达章",
+            "expected_payoff": "预期回收", "payoff_hint": "回收提示", "topic": "主题",
+            "passage": "设定内容", "hint": "伏笔", "relates_to": "关联对象",
+            "next_step": "下一步", "reveal_rule": "回收规则", "speaker": "说话人",
+            "dialogue": "台词", "context": "语境", "rule": "规则内容",
+            "severity": "严重度", "type": "类型", "message": "说明", "related": "相关对象",
+            "chapter": "章节", "version": "版本", "source_chapter": "来源章",
+            "source_version": "来源版本", "last_updated_chapter": "最近更新章",
+            "last_updated_version": "最近版本", "hidden": "是否隐藏",
+        }
+        lines = [f"# {kind}"]
+        for key, value in data.items():
+            if not self._truthy_value(value):
+                continue
+            label = labels.get(key)
+            if not label:
+                continue
+            if isinstance(value, list):
+                lines.append(f"\n【{label}】")
+                for item in value:
+                    if isinstance(item, dict):
+                        item_text = " / ".join(
+                            f"{labels.get(k, k)}：{self._clean_display_text(v)}"
+                            for k, v in item.items() if self._truthy_value(v)
+                        )
+                    else:
+                        item_text = self._clean_display_text(item)
+                    if item_text:
+                        lines.append(f"- {item_text}")
+            else:
+                lines.append(f"\n【{label}】\n{self._clean_display_text(value)}")
+        return "\n".join(lines)
+
+    def _build_card_tab(self) -> QWidget:
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+
+        filter_row = QHBoxLayout()
+        filter_row.addWidget(QLabel("类型"))
+        self._card_type_combo = QComboBox()
+        self._card_type_combo.addItems(["全部", "角色", "地点", "剧情线", "设定", "伏笔"])
+        self._card_type_combo.currentIndexChanged.connect(self._refresh_card_list)
+        filter_row.addWidget(self._card_type_combo)
+
+        filter_row.addWidget(QLabel("状态"))
+        self._card_status_combo = QComboBox()
+        self._card_status_combo.addItems(["全部", "当前活跃路径", "显示项", "隐藏项", "已解决伏笔/剧情线"])
+        self._card_status_combo.currentIndexChanged.connect(self._refresh_card_list)
+        filter_row.addWidget(self._card_status_combo)
+
+        filter_row.addWidget(QLabel("来源章节"))
+        self._card_chapter_filter = QLineEdit()
+        self._card_chapter_filter.setPlaceholderText("如 3，留空为全部")
+        self._card_chapter_filter.textChanged.connect(self._refresh_card_list)
+        filter_row.addWidget(self._card_chapter_filter)
+
+        refresh_btn = QPushButton("刷新")
+        refresh_btn.clicked.connect(self._on_refresh_cards)
+        filter_row.addWidget(refresh_btn)
+        filter_row.addStretch()
+        layout.addLayout(filter_row)
+
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._card_list = QListWidget()
+        self._card_list.currentItemChanged.connect(self._on_card_selected)
+        splitter.addWidget(self._card_list)
+
+        right = QWidget()
+        right_layout = QVBoxLayout(right)
+        self._card_detail = QTextEdit()
+        self._card_detail.setReadOnly(True)
+        self._card_detail.setStyleSheet("""
+            QTextEdit {
+                background-color: #252526; color: #dcdcdc;
+                border: 1px solid #444; font-size: 13px;
+                font-family: Consolas, "Microsoft YaHei UI", monospace;
+            }
+        """)
+        right_layout.addWidget(self._card_detail, stretch=1)
+        action_row = QHBoxLayout()
+        edit_btn = QPushButton("编辑 JSON")
+        edit_btn.clicked.connect(self._on_edit_card_json)
+        delete_btn = QPushButton("删除条目")
+        delete_btn.clicked.connect(self._on_delete_card)
+        action_row.addStretch()
+        action_row.addWidget(edit_btn)
+        action_row.addWidget(delete_btn)
+        right_layout.addLayout(action_row)
+        splitter.addWidget(right)
+        splitter.setSizes([280, 500])
+        layout.addWidget(splitter, stretch=1)
+
+        self._refresh_card_list()
+        return widget
+
+    def _card_source_label(self, data: dict, *, fallback_chapter_key: str = "chapter") -> str:
+        chapter = (
+            data.get("last_updated_chapter")
+            or data.get("source_chapter")
+            or data.get("first_appearance")
+            or data.get("last_touched_chapter")
+            or data.get("introduced_chapter")
+            or data.get(fallback_chapter_key)
+            or 0
+        )
+        version = data.get("last_updated_version") or data.get("source_version") or data.get("version") or 0
+        snapshot = self._card_snapshot_label(self._safe_int(chapter), self._safe_int(version))
+        if chapter and version:
+            return f"第{chapter}章 v{version}{snapshot}"
+        if chapter:
+            return f"第{chapter}章{snapshot}"
+        return "来源未知"
+
+    def _card_snapshot_label(self, chapter: int, version: int = 0) -> str:
+        if chapter <= 0:
+            return ""
+        entries = getattr(self._bible, "chapter_world_entries", {}) or {}
+        exact_key = f"ch{chapter:04d}_v{version:03d}"
+        has_snapshot = exact_key in entries
+        if not has_snapshot and not version:
+            prefix = f"ch{chapter:04d}_v"
+            has_snapshot = any(str(key).startswith(prefix) for key in entries)
+        return "；快照：已保存" if has_snapshot else "；快照：缺失"
+
+    def _safe_int(self, value) -> int:
+        try:
+            return int(value or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _card_entries(self) -> list[dict]:
+        entries = []
+        for idx, item in enumerate(self._bible.characters):
+            data = asdict(item)
+            entries.append({
+                "kind": "角色",
+                "index": idx,
+                "title": item.name or f"角色 {idx + 1}",
+                "subtitle": item.traits[:80],
+                "source": self._card_source_label(data),
+                "hidden": bool(getattr(item, "hidden", False)),
+                "resolved": False,
+                "data": data,
+            })
+        for idx, item in enumerate(self._bible.locations):
+            data = asdict(item)
+            entries.append({
+                "kind": "地点",
+                "index": idx,
+                "title": item.name or f"地点 {idx + 1}",
+                "subtitle": item.description[:80],
+                "source": self._card_source_label(data),
+                "hidden": bool(getattr(item, "hidden", False)),
+                "resolved": False,
+                "data": data,
+            })
+        for idx, item in enumerate(self._bible.active_plot_threads):
+            data = asdict(item)
+            entries.append({
+                "kind": "剧情线",
+                "index": idx,
+                "title": item.name or f"剧情线 {idx + 1}",
+                "subtitle": item.description[:80],
+                "source": self._card_source_label(data),
+                "hidden": bool(getattr(item, "hidden", False)),
+                "resolved": item.status == "resolved",
+                "data": data,
+            })
+        for idx, item in enumerate(self._bible.key_worldbuilding_passages):
+            data = dict(item)
+            entries.append({
+                "kind": "设定",
+                "index": idx,
+                "title": data.get("topic") or f"设定 {idx + 1}",
+                "subtitle": data.get("passage", "")[:80],
+                "source": self._card_source_label(data),
+                "hidden": bool(data.get("hidden")),
+                "resolved": False,
+                "data": data,
+            })
+        for idx, item in enumerate(self._bible.global_foreshadowing):
+            data = dict(item)
+            status = data.get("status", "open")
+            entries.append({
+                "kind": "伏笔",
+                "index": idx,
+                "title": data.get("hint") or f"伏笔 {idx + 1}",
+                "subtitle": data.get("relates_to", "") or data.get("next_step", "")[:80],
+                "source": self._card_source_label(data),
+                "hidden": bool(data.get("hidden")),
+                "resolved": status in {"resolved", "已回收"},
+                "data": data,
+            })
+        return entries
+
+    def _passes_card_filter(self, entry: dict) -> bool:
+        kind_filter = self._card_type_combo.currentText() if hasattr(self, "_card_type_combo") else "全部"
+        if kind_filter != "全部" and entry["kind"] != kind_filter:
+            return False
+
+        data = entry.get("data", {})
+        chapter_values = {
+            data.get("source_chapter"),
+            data.get("last_updated_chapter"),
+            data.get("first_appearance"),
+            data.get("chapter"),
+            data.get("opened_chapter"),
+            data.get("last_touched_chapter"),
+            data.get("introduced_chapter"),
+        }
+        entry_chapters = {int(v) for v in chapter_values if str(v).isdigit()}
+
+        status_filter = self._card_status_combo.currentText() if hasattr(self, "_card_status_combo") else "全部"
+        if status_filter == "当前活跃路径" and not (entry_chapters & self._active_chapters):
+            return False
+        if status_filter == "显示项" and entry.get("hidden"):
+            return False
+        if status_filter == "隐藏项" and not entry.get("hidden"):
+            return False
+        if status_filter == "已解决伏笔/剧情线" and not entry.get("resolved"):
+            return False
+
+        chapter_text = self._card_chapter_filter.text().strip() if hasattr(self, "_card_chapter_filter") else ""
+        if chapter_text:
+            try:
+                chapter = int(chapter_text)
+            except ValueError:
+                return True
+            if chapter not in entry_chapters:
+                return False
+        return True
+
+    def _refresh_card_list(self) -> None:
+        if not hasattr(self, "_card_list"):
+            return
+        current_key = self._current_card_key()
+        self._card_list.blockSignals(True)
+        self._card_list.clear()
+        selected_row = 0
+        row = 0
+        for entry in self._card_entries():
+            if not self._passes_card_filter(entry):
+                continue
+            flags = []
+            if entry.get("hidden"):
+                flags.append("隐藏")
+            if entry.get("resolved"):
+                flags.append("已解决")
+            flag_text = f" [{' / '.join(flags)}]" if flags else ""
+            subtitle = f"\n{entry['subtitle']}" if entry.get("subtitle") else ""
+            item = QListWidgetItem(f"{entry['kind']} · {entry['title']}{flag_text}\n{entry['source']}{subtitle}")
+            item.setData(Qt.ItemDataRole.UserRole, {"kind": entry["kind"], "index": entry["index"]})
+            self._card_list.addItem(item)
+            if current_key == (entry["kind"], entry["index"]):
+                selected_row = row
+            row += 1
+        self._card_list.blockSignals(False)
+        if self._card_list.count():
+            self._card_list.setCurrentRow(min(selected_row, self._card_list.count() - 1))
+        else:
+            self._card_detail.setPlainText("没有符合筛选条件的世界书条目。")
+
+    def _current_card_key(self) -> tuple[str, int] | None:
+        if not hasattr(self, "_card_list"):
+            return None
+        item = self._card_list.currentItem()
+        if not item:
+            return None
+        data = item.data(Qt.ItemDataRole.UserRole) or {}
+        return (data.get("kind"), int(data.get("index", -1)))
+
+    def _get_card_data(self, kind: str, index: int):
+        if kind == "角色" and 0 <= index < len(self._bible.characters):
+            return self._bible.characters[index]
+        if kind == "地点" and 0 <= index < len(self._bible.locations):
+            return self._bible.locations[index]
+        if kind == "规则" and 0 <= index < len(self._bible.rules):
+            return {"rule": self._bible.rules[index]}
+        if kind == "时间线" and 0 <= index < len(self._bible.timeline):
+            return self._bible.timeline[index]
+        if kind == "剧情线" and 0 <= index < len(self._bible.active_plot_threads):
+            return self._bible.active_plot_threads[index]
+        if kind == "设定" and 0 <= index < len(self._bible.key_worldbuilding_passages):
+            return self._bible.key_worldbuilding_passages[index]
+        if kind == "伏笔" and 0 <= index < len(self._bible.global_foreshadowing):
+            return self._bible.global_foreshadowing[index]
+        if kind == "关键对话" and 0 <= index < len(self._bible.global_key_dialogues):
+            return self._bible.global_key_dialogues[index]
+        if kind == "冲突提醒" and 0 <= index < len(self._bible.consistency_warnings):
+            return self._bible.consistency_warnings[index]
+        return None
+
+    def _on_card_selected(self, current=None, previous=None) -> None:
+        key = self._current_card_key()
+        if not key:
+            self._card_detail.setPlainText("请选择一个世界书条目。")
+            return
+        kind, index = key
+        obj = self._get_card_data(kind, index)
+        if obj is None:
+            self._card_detail.setPlainText("条目不存在，可能已被删除。")
+            return
+        payload = dict(obj) if isinstance(obj, dict) else asdict(obj)
+        self._card_detail.setPlainText(self._format_card_plain_text(kind, payload))
+
+    def _on_refresh_cards(self) -> None:
+        try:
+            self._sync_from_editors()
+        except Exception as exc:
+            QMessageBox.warning(self, "解析失败", f"请先修正高级文本页内容：{exc}")
+            return
+        self._audit_and_refresh()
+
+    def _replace_card_data(self, kind: str, index: int, payload: dict) -> None:
+        if kind == "角色":
+            from core.world_bible import CharacterEntry, Relationship
+            rels = [Relationship(**r) for r in payload.get("relationships", []) if isinstance(r, dict)]
+            data = {k: v for k, v in payload.items() if k in CharacterEntry.__dataclass_fields__ and k != "relationships"}
+            self._bible.characters[index] = CharacterEntry(relationships=rels, **data)
+        elif kind == "地点":
+            from core.world_bible import LocationEntry
+            data = {k: v for k, v in payload.items() if k in LocationEntry.__dataclass_fields__}
+            self._bible.locations[index] = LocationEntry(**data)
+        elif kind == "规则":
+            self._bible.rules[index] = str(payload.get("rule", "")).strip()
+        elif kind == "时间线":
+            from core.world_bible import TimelineEntry
+            data = {k: v for k, v in payload.items() if k in TimelineEntry.__dataclass_fields__}
+            self._bible.timeline[index] = TimelineEntry(**data)
+        elif kind == "剧情线":
+            from core.world_bible import PlotThread
+            data = {k: v for k, v in payload.items() if k in PlotThread.__dataclass_fields__}
+            self._bible.active_plot_threads[index] = PlotThread(**data)
+        elif kind == "设定":
+            self._bible.key_worldbuilding_passages[index] = payload
+        elif kind == "伏笔":
+            self._bible.global_foreshadowing[index] = payload
+        elif kind == "关键对话":
+            self._bible.global_key_dialogues[index] = payload
+        elif kind == "冲突提醒":
+            self._bible.consistency_warnings[index] = payload
+
+    def _edit_card(self, kind: str, index: int) -> None:
+        obj = self._get_card_data(kind, index)
+        if obj is None:
+            QMessageBox.warning(self, "条目不存在", "该条目可能已被删除。")
+            return
+        payload = dict(obj) if isinstance(obj, dict) else asdict(obj)
+        text = json.dumps(payload, ensure_ascii=False, indent=2)
+        new_text, ok = QInputDialog.getMultiLineText(self, f"编辑{kind}", "JSON：", text)
+        if not ok:
+            return
+        try:
+            new_payload = json.loads(new_text)
+            if not isinstance(new_payload, dict):
+                raise ValueError("必须是 JSON 对象")
+            self._replace_card_data(kind, index, new_payload)
+            self._audit_and_refresh()
+        except Exception as exc:
+            QMessageBox.critical(self, "JSON 格式错误", str(exc))
+
+    def _delete_card(self, kind: str, index: int) -> None:
+        reply = QMessageBox.question(self, "确认删除", f"删除这个{kind}条目？")
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        if kind == "角色" and 0 <= index < len(self._bible.characters):
+            del self._bible.characters[index]
+        elif kind == "地点" and 0 <= index < len(self._bible.locations):
+            del self._bible.locations[index]
+        elif kind == "规则" and 0 <= index < len(self._bible.rules):
+            del self._bible.rules[index]
+        elif kind == "时间线" and 0 <= index < len(self._bible.timeline):
+            del self._bible.timeline[index]
+        elif kind == "剧情线" and 0 <= index < len(self._bible.active_plot_threads):
+            del self._bible.active_plot_threads[index]
+        elif kind == "设定" and 0 <= index < len(self._bible.key_worldbuilding_passages):
+            del self._bible.key_worldbuilding_passages[index]
+        elif kind == "伏笔" and 0 <= index < len(self._bible.global_foreshadowing):
+            del self._bible.global_foreshadowing[index]
+        elif kind == "关键对话" and 0 <= index < len(self._bible.global_key_dialogues):
+            del self._bible.global_key_dialogues[index]
+        elif kind == "冲突提醒" and 0 <= index < len(self._bible.consistency_warnings):
+            del self._bible.consistency_warnings[index]
+        self._audit_and_refresh()
+
+    def _on_edit_card_json(self) -> None:
+        key = self._current_card_key()
+        if not key:
+            QMessageBox.warning(self, "未选择条目", "请先选择一个世界书条目。")
+            return
+        kind, index = key
+        obj = self._get_card_data(kind, index)
+        if obj is None:
+            QMessageBox.warning(self, "条目不存在", "该条目已不存在。")
+            return
+        payload = dict(obj) if isinstance(obj, dict) else asdict(obj)
+
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"编辑{kind} JSON")
+        dialog.resize(700, 560)
+        layout = QVBoxLayout(dialog)
+        edit = QTextEdit(dialog)
+        edit.setPlainText(json.dumps(payload, ensure_ascii=False, indent=2))
+        edit.setStyleSheet("font-family: Consolas, monospace; font-size: 13px;")
+        layout.addWidget(edit)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel,
+            dialog,
+        )
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        try:
+            new_payload = json.loads(edit.toPlainText())
+            if not isinstance(new_payload, dict):
+                raise ValueError("JSON 根节点必须是对象")
+            self._replace_card_data(kind, index, new_payload)
+        except Exception as exc:
+            QMessageBox.critical(self, "JSON 无效", f"无法保存：{exc}")
+            return
+        self._audit_and_refresh()
+        QMessageBox.information(self, "已保存", "条目已更新。")
+
+    def _on_delete_card(self) -> None:
+        key = self._current_card_key()
+        if not key:
+            QMessageBox.warning(self, "未选择条目", "请先选择一个世界书条目。")
+            return
+        kind, index = key
+        obj = self._get_card_data(kind, index)
+        if obj is None:
+            QMessageBox.warning(self, "条目不存在", "该条目已不存在。")
+            return
+        title = obj.get("topic") or obj.get("hint") if isinstance(obj, dict) else getattr(obj, "name", "")
+        reply = QMessageBox.question(
+            self,
+            "确认删除",
+            f"确定删除{kind}「{title or index + 1}」？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        if kind == "角色":
+            del self._bible.characters[index]
+        elif kind == "地点":
+            del self._bible.locations[index]
+        elif kind == "剧情线":
+            del self._bible.active_plot_threads[index]
+        elif kind == "设定":
+            del self._bible.key_worldbuilding_passages[index]
+        elif kind == "伏笔":
+            del self._bible.global_foreshadowing[index]
+        self._audit_and_refresh()
+        QMessageBox.information(self, "已删除", "条目已删除。")
 
     def _format_characters(self) -> str:
         lines = ["# 角色列表", "格式：角色名 | 重要性 | 性格/外貌/能力 | 状态 | 首登场章\n"]
@@ -299,16 +1125,17 @@ class WorldBibleDialog(QDialog):
         return result
 
     def _format_consistency_warnings(self) -> str:
-        lines = ["# 世界书冲突提醒\n"]
+        lines = ["# 世界书健康检查\n"]
         warnings = getattr(self._bible, "consistency_warnings", []) or []
         if not warnings:
-            return "(暂无冲突提醒)"
+            return "未发现明显冲突/提醒。"
         for item in warnings:
             severity = item.get("severity", "minor")
+            severity_label = {"major": "严重", "minor": "一般", "info": "提示"}.get(severity, severity)
             issue_type = item.get("type", "冲突")
             message = item.get("message", "")
             related = "、".join(str(x) for x in item.get("related", []) if x)
-            line = f"- [{severity}] {issue_type}：{message}"
+            line = f"- [{severity_label}] {issue_type}：{message}"
             if related:
                 line += f" | 相关：{related}"
             lines.append(line)
@@ -685,32 +1512,16 @@ class WorldBibleDialog(QDialog):
                 seen.add(text)
 
     def _sync_from_editors(self) -> None:
-        char_text = self._char_edit.toPlainText().strip()
-        if char_text and "尚未提取到" not in char_text:
-            self._bible.characters = self._parse_characters_from_text(char_text)
-
-        loc_text = self._loc_edit.toPlainText().strip()
-        if loc_text and "尚未提取到" not in loc_text:
-            self._bible.locations = self._parse_locations_from_text(loc_text)
-
-        rule_text = self._rule_edit.toPlainText().strip()
-        if rule_text and "尚未提取到" not in rule_text:
-            self._bible.rules = [r.strip() for r in rule_text.split("\n") if r.strip() and not r.startswith("#")]
-
-        timeline_text = self._timeline_edit.toPlainText().strip()
-        if timeline_text and "尚未提取到" not in timeline_text:
-            self._bible.timeline = self._parse_timeline_from_text(timeline_text)
-
-        plot_text = self._plot_edit.toPlainText().strip()
-        if plot_text and "尚未提取到" not in plot_text:
-            self._bible.active_plot_threads = self._parse_plot_threads_from_text(plot_text)
-
-        wb_text = self._worldbuilding_edit.toPlainText().strip()
-        if wb_text and "尚未提取到" not in wb_text:
-            passages, foreshadowing, dialogues = self._parse_worldbuilding_from_text(wb_text)
-            self._bible.key_worldbuilding_passages = passages
-            self._bible.global_foreshadowing = foreshadowing
-            self._bible.global_key_dialogues = dialogues
+        raw = self._advanced_edit.toPlainText().strip()
+        if not raw:
+            return
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return
+        if isinstance(data, dict) and data != asdict(self._bible):
+            from core.world_bible import dict_to_world_bible
+            self._bible = dict_to_world_bible(data)
 
     def _audit_and_refresh(self) -> None:
         try:
@@ -718,13 +1529,10 @@ class WorldBibleDialog(QDialog):
             self._bible.consistency_warnings = audit_world_bible_consistency(self._bible)
         except Exception:
             pass
-        self._char_edit.setPlainText(self._format_characters())
-        self._loc_edit.setPlainText(self._format_locations())
-        self._rule_edit.setPlainText("\n".join(self._bible.rules) if self._bible.rules else "(尚未提取到世界规则)")
-        self._timeline_edit.setPlainText(self._format_timeline())
-        self._plot_edit.setPlainText(self._format_plot_threads())
-        self._worldbuilding_edit.setPlainText(self._format_worldbuilding())
-        self._warning_edit.setPlainText(self._format_consistency_warnings())
+        self._advanced_edit.setPlainText(json.dumps(asdict(self._bible), ensure_ascii=False, indent=2))
+        self._refresh_kind_cards()
+        if hasattr(self, "_card_list"):
+            self._refresh_card_list()
 
     def _on_merge_characters(self) -> None:
         try:
@@ -990,43 +1798,11 @@ class WorldBibleDialog(QDialog):
     def _on_save(self):
         """保存所有标签页的修改回 WorldBible"""
         try:
-            # 角色
-            char_text = self._char_edit.toPlainText().strip()
-            if char_text and "尚未提取到" not in char_text:
-                self._bible.characters = self._parse_characters_from_text(char_text)
-
-            # 地点
-            loc_text = self._loc_edit.toPlainText().strip()
-            if loc_text and "尚未提取到" not in loc_text:
-                self._bible.locations = self._parse_locations_from_text(loc_text)
-
-            # 规则
-            rule_text = self._rule_edit.toPlainText().strip()
-            if rule_text and "尚未提取到" not in rule_text:
-                self._bible.rules = [r.strip() for r in rule_text.split("\n") if r.strip() and not r.startswith("#")]
-
-            # 时间线
-            timeline_text = self._timeline_edit.toPlainText().strip()
-            if timeline_text and "尚未提取到" not in timeline_text:
-                self._bible.timeline = self._parse_timeline_from_text(timeline_text)
-
-            # 剧情线
-            plot_text = self._plot_edit.toPlainText().strip()
-            if plot_text and "尚未提取到" not in plot_text:
-                self._bible.active_plot_threads = self._parse_plot_threads_from_text(plot_text)
-
-            # 设定与伏笔
-            wb_text = self._worldbuilding_edit.toPlainText().strip()
-            if wb_text and "尚未提取到" not in wb_text:
-                passages, foreshadowing, dialogues = self._parse_worldbuilding_from_text(wb_text)
-                self._bible.key_worldbuilding_passages = passages
-                self._bible.global_foreshadowing = foreshadowing
-                self._bible.global_key_dialogues = dialogues
+            self._sync_from_editors()
 
             try:
                 from core.world_bible import audit_world_bible_consistency
                 self._bible.consistency_warnings = audit_world_bible_consistency(self._bible)
-                self._warning_edit.setPlainText(self._format_consistency_warnings())
             except Exception:
                 pass
 

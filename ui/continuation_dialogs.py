@@ -480,7 +480,7 @@ class ContinuationAnalysisDialog(QDialog):
         return "\n".join(parts)
 
     def _on_suggest(self):
-        wc = self.parent()._continue_word_count.value() if hasattr(self.parent(), '_continue_word_count') else 10000
+        wc = self.parent()._continue_word_count.value() if hasattr(self.parent(), '_continue_word_count') else 40000
         plot = self._build_plot_context()
         self._suggest_callback(
             self._settings.get("background_story", ""),
@@ -490,7 +490,7 @@ class ContinuationAnalysisDialog(QDialog):
         )
 
     def _on_specify(self):
-        wc = self.parent()._continue_word_count.value() if hasattr(self.parent(), '_continue_word_count') else 10000
+        wc = self.parent()._continue_word_count.value() if hasattr(self.parent(), '_continue_word_count') else 40000
         plot = self._build_plot_context()
         self._specify_callback(
             self._settings.get("background_story", ""),

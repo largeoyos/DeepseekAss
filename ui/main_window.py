@@ -1675,7 +1675,7 @@ class DeepSeekChatGUI(QMainWindow):
         word_label.setFixedWidth(36)
         self._chapter_word_count = QSpinBox()
         self._chapter_word_count.setRange(100, 100000)
-        self._chapter_word_count.setValue(10000)
+        self._chapter_word_count.setValue(40000)
         self._chapter_word_count.setSingleStep(500)
         self._chapter_word_count.setSuffix(" 字")
         word_row.addWidget(word_label)
@@ -2009,7 +2009,7 @@ class DeepSeekChatGUI(QMainWindow):
         word_label.setFixedWidth(36)
         self._continue_word_count = QSpinBox()
         self._continue_word_count.setRange(100, 100000)
-        self._continue_word_count.setValue(10000)
+        self._continue_word_count.setValue(40000)
         self._continue_word_count.setSingleStep(500)
         self._continue_word_count.setSuffix(" 字")
         word_row.addWidget(word_label)
@@ -3874,6 +3874,10 @@ class DeepSeekChatGUI(QMainWindow):
                 world_bible_text = format_relevant_world_bible_for_prompt(
                     bible,
                     f"{chapter_title}\n{plot_content}\n{demand}",
+                    active_chapters={
+                        int(node.get("chapter_num", 0) or 0)
+                        for node in self._novel_manager.get_active_path_nodes(title)
+                    },
                 )
         except Exception:
             pass
@@ -3976,7 +3980,7 @@ class DeepSeekChatGUI(QMainWindow):
         return content
 
     def _run_chapter_generation(self, title: str, chapter_title: str,
-                                 plot_content: str = "", target_words: int = 2000) -> None:
+                                 plot_content: str = "", target_words: int = 40000) -> None:
         """后台线程：生成章节 + 版本保存 + 摘要"""
         try:
             chapter_num = self._novel_manager.get_next_chapter_num(title)
@@ -4355,6 +4359,10 @@ class DeepSeekChatGUI(QMainWindow):
                     wb_text = format_relevant_world_bible_for_prompt(
                         bible,
                         f"{chapter_title}\n{requirement}\n{plot}\n{source_text[-2000:]}",
+                        active_chapters={
+                            int(node.get("chapter_num", 0) or 0)
+                            for node in self._novel_manager.get_active_path_nodes(book_title)
+                        },
                     )
                     if wb_text.strip():
                         user_parts.append(f"【世界书（已建立设定库）】\n{wb_text}\n")
@@ -4809,7 +4817,15 @@ class DeepSeekChatGUI(QMainWindow):
             QMessageBox.warning(self, "提示", "请先选择或创建一本小说。")
             return
         bible = self._novel_manager.load_world_bible(title)
-        dlg = WorldBibleDialog(self, bible)
+        try:
+            active_chapters = {
+                int(node.get("chapter_num", 0) or 0)
+                for node in self._novel_manager.get_active_path_nodes(title)
+                if int(node.get("chapter_num", 0) or 0) > 0
+            }
+        except Exception:
+            active_chapters = set()
+        dlg = WorldBibleDialog(self, bible, active_chapters=active_chapters)
         if dlg.exec() == QDialog.DialogCode.Accepted:
             self._novel_manager.save_world_bible(title, dlg.get_bible())
             QMessageBox.information(self, "提示", "世界书已保存。")
@@ -4960,60 +4976,96 @@ class DeepSeekChatGUI(QMainWindow):
         )
 
     def _start_analysis_with_sections(self, title: str, source_text: str, sections: list, client) -> None:
-        """后台线程：使用已确认的段落直接进行世界观提取（跳过 AI 分段）"""
+        """后台线程：单篇导入按确认分段保存为章节，并逐章绑定摘要与世界书来源。"""
         xp_mode = self._cont_xp_mode_check.isChecked()
 
         def _run():
             try:
-                from utils.summarize import extract_world_bible_from_segments, generate_novel_settings_from_world_bible
-                from core.world_bible import WorldBible, CharacterEntry, LocationEntry, TimelineEntry, PlotThread
+                from dataclasses import asdict
+                from utils.summarize import generate_novel_settings_from_world_bible
+                from core.world_bible import WorldBible, extract_and_merge_world_bible
 
                 si = self._stream_signals
                 _global_prompt = self._client.global_user_prompt
 
                 si.token.emit(f"\n✅ 已确认 {len(sections)} 个段落\n")
-                si.token.emit(f"\n⏳ 第一步：逐段提取世界观信息…\n")
-                world_data = extract_world_bible_from_segments(
-                    client,
-                    sections,
-                    self._client.model,
-                    global_user_prompt=_global_prompt,
-                    xp_mode=xp_mode,
-                )
+                si.token.emit("\n⏳ 第一步：创建小说，并按确认分段保存为章节节点…\n")
+                self._novel_manager.create_book(title)
+                world_bible = WorldBible()
+                meta = self._novel_manager.load_meta(title)
+                for idx, (section_title, content) in enumerate(sections, 1):
+                    if self._client._cancel_requested:
+                        si.token.emit(f"\n⏹️ 已取消（已处理 {idx - 1}/{len(sections)} 个章节节点）\n")
+                        si.finished.emit()
+                        return
+                    chapter_num = idx
+                    chapter_title = (section_title or f"导入段落 {idx}").strip()
+                    chapter_content = (content or "").strip()
+                    if not chapter_content:
+                        continue
+                    _, saved_version = self._novel_manager.save_chapter_version(
+                        title, chapter_num, chapter_title, chapter_content,
+                    )
+                    si.token.emit(f"  📖 [{idx}/{len(sections)}] 已保存第{chapter_num}章「{chapter_title}」v{saved_version}\n")
 
-                chars = len(world_data.get("characters", []))
-                locs = len(world_data.get("locations", []))
-                rules = len(world_data.get("rules", []))
-                wb_count = len(world_data.get("key_worldbuilding", []))
-                fs_count = len(world_data.get("global_foreshadowing", []))
+                    story_context = ""
+                    try:
+                        current_summary = self._novel_manager.load_smart_summary(
+                            title, client, next_chapter_num=chapter_num,
+                            model=self._client.model, global_user_prompt=_global_prompt,
+                        )
+                        if current_summary and "故事刚刚开始" not in current_summary:
+                            story_context = current_summary
+                    except Exception:
+                        pass
+
+                    summary_text = self._novel_manager.generate_summary(
+                        client, chapter_content, chapter_num, chapter_title,
+                        model=self._client.model,
+                        global_user_prompt=_global_prompt,
+                        xp_mode=xp_mode,
+                    )
+                    self._novel_manager.set_chapter_node_summary(
+                        title, chapter_num, saved_version, summary_text
+                    )
+                    self._novel_manager.rebuild_plot_summary_from_tree(title)
+
+                    world_bible = extract_and_merge_world_bible(
+                        client, chapter_content, chapter_num, world_bible,
+                        self._client.model,
+                        chapter_version=saved_version,
+                        global_user_prompt=_global_prompt,
+                        story_context=story_context,
+                        background_story=meta.background_story,
+                        protagonist_bio=meta.protagonist_bio,
+                        writing_demand=meta.writing_demand,
+                        xp_mode=xp_mode,
+                    )
+                    self._novel_manager.save_world_bible(title, world_bible)
+                    si.token.emit("    ✅ 摘要已绑定章节树，世界书来源已绑定到本章\n")
+
+                chars = len(world_bible.characters)
+                locs = len(world_bible.locations)
+                rules = len(world_bible.rules)
+                wb_count = len(world_bible.key_worldbuilding_passages)
+                fs_count = len(world_bible.global_foreshadowing)
                 si.token.emit(
-                    f"  ✅ 提取到: {chars}角色 / {locs}地点 / {rules}规则"
+                    f"\n  ✅ 累积世界书: {chars}角色 / {locs}地点 / {rules}规则"
                     + (f" / {wb_count}关键设定 / {fs_count}伏笔" if wb_count or fs_count else "")
                     + "\n"
                 )
 
-                si.token.emit(f"\n⏳ 第二步：创建小说并保存数据…\n")
-                self._novel_manager.create_book(title)
-
-                bible = WorldBible(
-                    characters=[CharacterEntry(**c) for c in world_data.get("characters", [])],
-                    locations=[LocationEntry(**l) for l in world_data.get("locations", [])],
-                    rules=list(world_data.get("rules", [])),
-                    timeline=[TimelineEntry(**t) for t in world_data.get("timeline", [])],
-                    active_plot_threads=[PlotThread(**p) for p in world_data.get("plot_threads", [])],
-                    last_updated_chapter=0,
-                    key_worldbuilding_passages=list(world_data.get("key_worldbuilding", [])),
-                    global_foreshadowing=list(world_data.get("global_foreshadowing", [])),
-                    global_key_dialogues=list(world_data.get("global_key_dialogues", [])),
-                )
-                self._novel_manager.save_world_bible(title, bible)
-
-                if self._client._cancel_requested:
-                    si.token.emit("\n⏹️ 已取消\n")
-                    si.finished.emit()
-                    return
-
-                si.token.emit(f"⏳ 第三步：生成小说设定…\n")
+                si.token.emit("\n⏳ 第二步：从世界书生成小说设定…\n")
+                world_data = {
+                    "characters": [asdict(c) for c in world_bible.characters],
+                    "locations": [asdict(l) for l in world_bible.locations],
+                    "rules": list(world_bible.rules),
+                    "plot_threads": [asdict(p) for p in world_bible.active_plot_threads],
+                    "timeline": [asdict(t) for t in world_bible.timeline],
+                    "key_worldbuilding": list(world_bible.key_worldbuilding_passages),
+                    "global_foreshadowing": list(world_bible.global_foreshadowing),
+                    "global_key_dialogues": list(world_bible.global_key_dialogues),
+                }
                 settings = generate_novel_settings_from_world_bible(
                     client,
                     world_data,
@@ -5034,10 +5086,12 @@ class DeepSeekChatGUI(QMainWindow):
                 si.token.emit(
                     f"\n{'='*50}\n"
                     f"✅ 分析完成！「{title}」创建成功\n"
-                    f"  • {len(sections)} 个语义段落\n"
+                    f"  • 单篇原文已按 {len(sections)} 个确认分段保存为章节节点\n"
+                    f"  • 每个章节节点已绑定摘要，可在章节树管理中查看\n"
+                    f"  • 世界书来源已按对应章节号和版本绑定\n"
                     f"  • 世界书 {chars}角色 + {locs}地点 + {rules}规则\n"
                     f"  • 小说设定已生成并加载到面板\n"
-                    f"  • 现在可以点击「🚀 生成下一章」开始续写\n"
+                    f"  • 现在可以从第{self._novel_manager.get_next_chapter_num(title)}章开始续写\n"
                     f"{'='*50}\n"
                 )
                 si.finished.emit()
@@ -5458,6 +5512,7 @@ class DeepSeekChatGUI(QMainWindow):
                 self._book_title = book_title
                 self._client = client
                 self._generating = False
+                self._rebuild_success_message = "剧情记忆和世界书已按活跃路径同步。"
                 self.setWindowTitle(f"章节管理 - {book_title}")
                 self.resize(500, 400)
                 self.setModal(True)
@@ -5495,6 +5550,11 @@ class DeepSeekChatGUI(QMainWindow):
                 regenerate_btn = QPushButton("🔁 重新生成")
                 regenerate_btn.clicked.connect(self._on_regenerate)
                 btn_row.addWidget(regenerate_btn)
+
+                force_wb_btn = QPushButton("从正文重提世界书")
+                force_wb_btn.setToolTip("修复或刷新世界书时使用；会重新读取当前活跃版本正文并调用模型提取")
+                force_wb_btn.clicked.connect(self._on_force_extract_world_bible)
+                btn_row.addWidget(force_wb_btn)
 
                 delete_btn = QPushButton("🗑 删除此版本")
                 delete_btn.setStyleSheet("QPushButton { background-color: #8b0000; }")
@@ -5583,9 +5643,10 @@ class DeepSeekChatGUI(QMainWindow):
                     self._book_title, data["chapter_num"], data["version"]
                 )
                 reply = QMessageBox.question(
-                    self, "重建剧情记忆与世界书",
-                    "已切换活跃版本。是否需要根据所有活跃章节重新生成剧情摘要和世界书？\n"
-                    "（推荐：选「是」以确保后续章节连贯，并清理旧版本残留设定）",
+                    self, "同步剧情记忆与世界书",
+                    "已切换活跃版本。是否按当前活跃路径同步剧情记忆与世界书？\n"
+                    "剧情摘要会直接拼接活跃章节节点 summary；世界书会优先合并已保存的章节世界书快照。\n"
+                    "缺少快照的旧章节才会重新从正文提取。",
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 )
 
@@ -5599,16 +5660,14 @@ class DeepSeekChatGUI(QMainWindow):
                     parent._refresh_chapter_info_display(self._book_title)
 
                 if reply == QMessageBox.StandardButton.Yes and hasattr(self.parent(), "_client"):
-                    self._close_btn.setText("⏳ 重建记忆中...")
+                    self._rebuild_success_message = "剧情记忆和世界书已按活跃路径同步。"
+                    self._close_btn.setText("⏳ 同步记忆中...")
                     self._close_btn.setEnabled(False)
                     threading.Thread(target=self._do_rebuild_summary, daemon=True).start()
 
             def _do_rebuild_summary(self):
                 try:
-                    self._novel_mgr.rebuild_summary_from_active(
-                        self._client.raw_client, self._book_title,
-                        global_user_prompt=self._client.global_user_prompt
-                    )
+                    self._novel_mgr.rebuild_plot_summary_from_tree(self._book_title)
                     self._novel_mgr.rebuild_world_bible_from_active(
                         self._client.raw_client, self._book_title,
                         model=self._client.model,
@@ -5619,7 +5678,7 @@ class DeepSeekChatGUI(QMainWindow):
                     self._rebuild_error_signal.emit(str(e))
 
             def _on_rebuild_done(self):
-                QMessageBox.information(self, "成功", "剧情摘要和世界书已重新生成。")
+                QMessageBox.information(self, "成功", self._rebuild_success_message)
                 self._close_btn.setText("关闭")
                 self._close_btn.setEnabled(True)
                 self._load_chapters()
@@ -5628,9 +5687,38 @@ class DeepSeekChatGUI(QMainWindow):
                     parent._refresh_chapter_info_display(self._book_title)
 
             def _on_rebuild_error(self, error_str: str):
-                QMessageBox.warning(self, "摘要生成失败", error_str)
+                QMessageBox.warning(self, "同步失败", error_str)
                 self._close_btn.setText("关闭")
                 self._close_btn.setEnabled(True)
+
+            def _on_force_extract_world_bible(self):
+                reply = QMessageBox.question(
+                    self,
+                    "重新从正文提取世界书",
+                    "将读取当前活跃路径上的章节正文，重新调用模型提取世界书。\n"
+                    "这个操作用于修复或刷新世界书，耗时和消耗会高于普通同步。\n\n继续吗？",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+                self._rebuild_success_message = "世界书已从当前活跃章节正文重新提取。"
+                self._close_btn.setText("⏳ 重提世界书中...")
+                self._close_btn.setEnabled(False)
+                threading.Thread(target=self._do_force_extract_world_bible, daemon=True).start()
+
+            def _do_force_extract_world_bible(self):
+                try:
+                    self._novel_mgr.rebuild_world_bible_from_active(
+                        self._client.raw_client,
+                        self._book_title,
+                        model=self._client.model,
+                        global_user_prompt=self._client.global_user_prompt,
+                        force_extract=True,
+                    )
+                    self._rebuild_done_signal.emit()
+                except Exception as e:
+                    self._rebuild_error_signal.emit(str(e))
 
             def _on_regenerate(self):
                 data = self._get_selected_data()
@@ -5702,6 +5790,10 @@ class DeepSeekChatGUI(QMainWindow):
                             wb_text = format_relevant_world_bible_for_prompt(
                                 bible,
                                 f"{chapter_title}\n{req}\n{plot}",
+                                active_chapters={
+                                    int(node.get("chapter_num", 0) or 0)
+                                    for node in self._novel_mgr.get_active_path_nodes(self._book_title)
+                                },
                             )
                             if wb_text.strip():
                                 messages.append({"role": "system", "content": f"【世界书（已建立设定库）】\n{wb_text}"})
