@@ -27,7 +27,6 @@ class NovelStrategy(BaseStrategy):
         # 题材与风格基调
         self._genre: str = ""
         self._style_tone: str = ""
-        self._xp_mode: bool = False
 
     # ========== 小说参数 getter/setter ==========
 
@@ -98,14 +97,6 @@ class NovelStrategy(BaseStrategy):
         self._style_tone = value
 
     @property
-    def xp_mode(self) -> bool:
-        return self._xp_mode
-
-    @xp_mode.setter
-    def xp_mode(self, value: bool) -> None:
-        self._xp_mode = bool(value)
-
-    @property
     def genre_style_text(self) -> str:
         """组装【风格设定】文本，供注入 prompt"""
         parts = []
@@ -115,11 +106,10 @@ class NovelStrategy(BaseStrategy):
         tone = get_tone_by_key(self._style_tone)
         if tone and tone.style_instruction:
             parts.append(f"写作基调（{tone.display_name}）：{tone.style_instruction}")
-        if self._xp_mode:
-            parts.append(Prompts.XP_MODE_SYSTEM)
         return "\n".join(parts)
 
-    # ========== 策略接口 ==========
+    @property
+    def recommended_model(self) -> str:
 
     def get_name(self) -> str:
         return "小说写作"

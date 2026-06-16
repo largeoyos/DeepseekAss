@@ -37,6 +37,7 @@ DEFAULT_EXCLUDES = {
     "plans",
     "venv",
     ".venv",
+    ".venv-build",
     "env",
     ".env",
 }

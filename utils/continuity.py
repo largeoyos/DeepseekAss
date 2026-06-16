@@ -27,7 +27,6 @@ def audit_chapter_continuity(
     chapter_title: str,
     model: str,
     global_user_prompt: str = "",
-    xp_mode: bool = False,
 ) -> dict:
     """低温度检查章节与上下文是否存在逻辑矛盾。失败时返回无问题，避免阻塞生成。"""
     parts = [
@@ -37,8 +36,6 @@ def audit_chapter_continuity(
     ]
     if global_user_prompt.strip():
         parts.append(f"【用户偏好提示】\n{global_user_prompt}\n")
-    if xp_mode:
-        parts.append(f"{Prompts.XP_MODE_SYSTEM}\n")
 
     try:
         response = client.chat.completions.create(
@@ -73,7 +70,6 @@ def repair_chapter_continuity(
     model: str,
     temperature: float = 0.4,
     global_user_prompt: str = "",
-    xp_mode: bool = False,
 ) -> str:
     """按审稿意见做最小必要修补。失败或输出异常时返回空字符串。"""
     issues = audit_result.get("issues", [])
@@ -88,8 +84,6 @@ def repair_chapter_continuity(
     ]
     if global_user_prompt.strip():
         parts.append(f"【用户偏好提示】\n{global_user_prompt}\n")
-    if xp_mode:
-        parts.append(f"{Prompts.XP_MODE_SYSTEM}\n")
 
     try:
         response = client.chat.completions.create(
