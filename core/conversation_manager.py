@@ -23,6 +23,7 @@ class ConversationMeta:
     created_at: str = ""
     updated_at: str = ""
     message_count: int = 0
+    chat_type: str = ""
 
 
 class ConversationManager:
@@ -87,6 +88,7 @@ class ConversationManager:
                     created_at=data.get("created_at", ""),
                     updated_at=data.get("updated_at", ""),
                     message_count=len(data.get("messages", [])),
+                    chat_type=data.get("chat_type", ""),
                 ))
             except (json.JSONDecodeError, KeyError, Exception):
                 continue
@@ -104,6 +106,13 @@ class ConversationManager:
         story_background: str = "",
         strategy: str = "",
         reply_mode: str = "",
+        chat_type: str = "",
+        participant_character_ids: list[str] | None = None,
+        primary_character_id: str = "",
+        timeline_id: str = "",
+        timeline: list[dict] | None = None,
+        character_book_snapshot: dict | None = None,
+        schema_version: int = 1,
     ) -> str:
         """
         保存对话记录到 JSON 文件
@@ -147,6 +156,13 @@ class ConversationManager:
             "character_description": character_description,
             "story_background": story_background,
             "messages": messages,
+            "chat_type": chat_type,
+            "participant_character_ids": participant_character_ids or [],
+            "primary_character_id": primary_character_id,
+            "timeline_id": timeline_id,
+            "timeline": timeline or [],
+            "character_book_snapshot": character_book_snapshot or {},
+            "schema_version": schema_version,
         }
 
         safe_id = conversation_id.replace("/", "-").replace("\\", "-").replace(":", "：")

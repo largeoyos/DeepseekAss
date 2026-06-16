@@ -40,6 +40,9 @@ from PyQt6.QtWidgets import (
     QRadioButton,
     QButtonGroup,
     QFileDialog,
+    QListWidget,
+    QListWidgetItem,
+    QAbstractItemView,
 )
 from PyQt6.QtGui import QColor, QIcon
 from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -50,6 +53,15 @@ from config import Config
 from core.chat_client import DeepSeekChatClient
 from core.novel_manager import NovelManager
 from core.conversation_manager import ConversationManager
+from core.character_book import (
+    CharacterBookManager,
+    CharacterProfile,
+    dict_to_timeline,
+    timeline_to_dict,
+    character_book_to_dict,
+    find_profile,
+    extract_and_merge_character_book,
+)
 from core.settings_manager import SettingsManager
 from core.token_log_manager import TokenLogManager
 from strategies import (
@@ -66,6 +78,7 @@ from utils.export import (
     FORMAT_LABELS,
 )
 from ui.world_bible_dialog import WorldBibleDialog
+from ui.character_book_dialog import CharacterBookDialog, CharacterProfileDialog
 from ui.presets import PRESETS, CUSTOM_LABEL
 from ui.settings_dialog import SettingsDialog
 from ui.token_log_dialog import TokenLogDialog
@@ -577,6 +590,11 @@ class DeepSeekChatGUI(QMainWindow):
             root_dir=os.path.join(user_dir, "conversations"),
             crypto=self._auth, enc_key=self._enc_key,
         )
+        self._character_book_manager = CharacterBookManager(
+            root_dir=user_dir,
+            crypto=self._auth,
+            enc_key=self._enc_key,
+        )
         self._settings_manager = SettingsManager(
             root_dir=user_dir,
             crypto=self._auth,
@@ -592,6 +610,11 @@ class DeepSeekChatGUI(QMainWindow):
         self._model_options = self._build_model_options()
         self._current_conversation_id: str | None = None
         self._current_conversation_title: str = ""
+        self._current_chat_type: str = "private"
+        self._participant_character_ids: list[str] = []
+        self._primary_character_id: str = ""
+        self._chat_timeline = []
+        self._last_chat_user_input: str = ""
 
         # Step 2: 获取 API Key（加密存储或弹窗输入）
         api_key, base_url = self._load_encrypted_config()
@@ -1430,36 +1453,51 @@ class DeepSeekChatGUI(QMainWindow):
 
     def _build_role_play_panel(self) -> QGroupBox:
         """构建角色扮演专属面板"""
-        panel = QGroupBox("🎭 角色扮演 · 角色设定")
+        panel = QGroupBox("🎭 角色档案 / 会话")
         layout = QVBoxLayout(panel)
         layout.setSpacing(4)
         layout.setContentsMargins(8, 4, 8, 4)
 
-        # ── 角色描述 ──
-        char_label = QLabel("👤 角色描述")
-        layout.addWidget(char_label)
-        self._role_char_edit = QTextEdit()
-        self._role_char_edit.setPlaceholderText(
-            "描述要扮演的角色：姓名、性格、外貌、身份、语言风格...\n"
-            "例如：一位傲娇的中世纪骑士，身材高大，说话简短有力..."
-        )
-        self._role_char_edit.setMaximumHeight(100)
-        self._role_char_edit.setMinimumHeight(70)
-        self._role_char_edit.textChanged.connect(self._on_role_char_changed)
-        layout.addWidget(self._role_char_edit)
+        layout.addWidget(QLabel("👥 选择角色（私聊选 1 个，群聊可选多个）"))
+        self._character_list = QListWidget()
+        self._character_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        self._character_list.setMinimumHeight(120)
+        layout.addWidget(self._character_list)
 
-        # ── 故事背景 ──
-        bg_label = QLabel("🌍 故事背景")
-        layout.addWidget(bg_label)
+        char_btn_row = QHBoxLayout()
+        new_char_btn = QPushButton("新建")
+        edit_char_btn = QPushButton("编辑")
+        book_btn = QPushButton("人物书")
+        new_char_btn.clicked.connect(self._on_new_character_profile)
+        edit_char_btn.clicked.connect(self._on_edit_character_profile)
+        book_btn.clicked.connect(self._on_character_book)
+        char_btn_row.addWidget(new_char_btn)
+        char_btn_row.addWidget(edit_char_btn)
+        char_btn_row.addWidget(book_btn)
+        layout.addLayout(char_btn_row)
+
+        chat_btn_row = QHBoxLayout()
+        private_btn = QPushButton("新建私聊")
+        group_btn = QPushButton("新建群聊")
+        timeline_btn = QPushButton("时间线")
+        private_btn.clicked.connect(self._on_new_private_chat)
+        group_btn.clicked.connect(self._on_new_group_chat)
+        timeline_btn.clicked.connect(self._on_chat_timeline)
+        chat_btn_row.addWidget(private_btn)
+        chat_btn_row.addWidget(group_btn)
+        chat_btn_row.addWidget(timeline_btn)
+        layout.addLayout(chat_btn_row)
+
+        self._role_session_label = QLabel("当前会话：未绑定角色")
+        self._role_session_label.setWordWrap(True)
+        self._role_session_label.setStyleSheet("color: #9cdcfe; font-size: 12px;")
+        layout.addWidget(self._role_session_label)
+
+        # Hidden legacy editors: old conversation loading still writes into these fields.
+        self._role_char_edit = QTextEdit()
         self._role_bg_edit = QTextEdit()
-        self._role_bg_edit.setPlaceholderText(
-            "描述故事发生的世界、时代、情境...\n"
-            "例如：中世纪欧洲，魔法存在，正值十字军东征时期..."
-        )
-        self._role_bg_edit.setMaximumHeight(100)
-        self._role_bg_edit.setMinimumHeight(70)
-        self._role_bg_edit.textChanged.connect(self._on_role_bg_changed)
-        layout.addWidget(self._role_bg_edit)
+        self._role_char_edit.hide()
+        self._role_bg_edit.hide()
 
         # ── 回复方式 ──
         mode_label = QLabel("💬 回复方式")
@@ -1502,6 +1540,7 @@ class DeepSeekChatGUI(QMainWindow):
         apply_btn.clicked.connect(self._on_apply_role_settings)
         layout.addWidget(apply_btn)
 
+        self._refresh_character_list()
         layout.addStretch()
         return panel
 
@@ -2895,6 +2934,9 @@ class DeepSeekChatGUI(QMainWindow):
         is_chat_mode = is_role_play
         self._btn_group.setVisible(is_chat_mode)
         self._history_group.setVisible(is_chat_mode)
+        if is_role_play:
+            self._refresh_character_list()
+            self._sync_role_strategy()
 
         # 只在进入小说/续写模式时刷新书架
         if is_novel or is_continuation:
@@ -2976,9 +3018,12 @@ class DeepSeekChatGUI(QMainWindow):
 
     def _on_clear(self) -> None:
         self._client.clear_context()
-        self._display.setHtml(INITIAL_HTML)
+        self._reset_display()
         self._current_conversation_id = None
         self._current_conversation_title = ""
+
+    def _reset_display(self) -> None:
+        self._display.setHtml(INITIAL_HTML)
 
     def _current_book_for_status(self) -> str:
         try:
@@ -3202,6 +3247,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._enc_key = new_key
         self._novel_manager._enc_key = new_key
         self._conversation_manager._enc_key = new_key
+        self._character_book_manager._enc_key = new_key
         self._settings_manager._enc_key = new_key
         self._token_log_manager._enc_key = new_key
 
@@ -3217,6 +3263,154 @@ class DeepSeekChatGUI(QMainWindow):
         self._refresh_top_status()
 
     # ========== 🎭 角色扮演面板事件 ==========
+
+    def _load_character_book(self):
+        return self._character_book_manager.load()
+
+    def _save_character_book(self, book) -> None:
+        self._character_book_manager.save(book)
+        self._refresh_character_list()
+        self._sync_role_strategy()
+
+    def _refresh_character_list(self) -> None:
+        if not hasattr(self, "_character_list"):
+            return
+        selected = set(self._participant_character_ids)
+        self._character_list.blockSignals(True)
+        self._character_list.clear()
+        for profile in self._load_character_book().profiles:
+            item = QListWidgetItem(profile.name or "未命名角色")
+            item.setData(Qt.ItemDataRole.UserRole, profile.character_id)
+            self._character_list.addItem(item)
+            item.setSelected(profile.character_id in selected)
+        self._character_list.blockSignals(False)
+
+    def _selected_character_ids(self) -> list[str]:
+        if not hasattr(self, "_character_list"):
+            return []
+        return [
+            item.data(Qt.ItemDataRole.UserRole)
+            for item in self._character_list.selectedItems()
+            if item.data(Qt.ItemDataRole.UserRole)
+        ]
+
+    def _character_names(self, character_ids: list[str]) -> list[str]:
+        book = self._load_character_book()
+        names = []
+        for cid in character_ids:
+            profile = find_profile(book, cid)
+            if profile:
+                names.append(profile.name)
+        return names
+
+    def _sync_role_strategy(self) -> None:
+        if not isinstance(self._client.strategy, RolePlayStrategy):
+            return
+        strategy = self._client.strategy
+        strategy.character_book = self._load_character_book()
+        strategy.participant_character_ids = list(self._participant_character_ids)
+        strategy.primary_character_id = self._primary_character_id
+        strategy.chat_type = self._current_chat_type
+        strategy.timeline = list(self._chat_timeline)
+        strategy.reply_mode = (
+            RolePlayStrategy.REPLY_MODE_NARRATOR
+            if self._radio_narrator.isChecked()
+            else RolePlayStrategy.REPLY_MODE_CHARACTER
+        )
+        self._client.update_system_prompt()
+        self._update_role_session_label()
+
+    def _update_role_session_label(self) -> None:
+        if not hasattr(self, "_role_session_label"):
+            return
+        names = self._character_names(self._participant_character_ids)
+        chat_type = "群聊" if self._current_chat_type == "group" else "私聊"
+        if names:
+            self._role_session_label.setText(
+                f"当前会话：{chat_type} | 角色：{'、'.join(names)} | 时间线 {len(self._chat_timeline)} 条"
+            )
+        else:
+            self._role_session_label.setText("当前会话：未绑定角色")
+
+    def _on_new_character_profile(self) -> None:
+        dlg = CharacterProfileDialog(self)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        profile = dlg.get_profile()
+        if not profile.name:
+            QMessageBox.warning(self, "缺少名称", "角色名称不能为空。")
+            return
+        self._character_book_manager.create_profile(profile)
+        self._refresh_character_list()
+
+    def _on_edit_character_profile(self) -> None:
+        ids = self._selected_character_ids()
+        if not ids:
+            QMessageBox.warning(self, "未选择角色", "请先选择一个角色。")
+            return
+        book = self._load_character_book()
+        profile = find_profile(book, ids[0])
+        if not profile:
+            return
+        dlg = CharacterProfileDialog(self, profile)
+        if dlg.exec() != QDialog.DialogCode.Accepted:
+            return
+        updated = dlg.get_profile()
+        if not updated.name:
+            QMessageBox.warning(self, "缺少名称", "角色名称不能为空。")
+            return
+        self._character_book_manager.update_profile(updated)
+        self._refresh_character_list()
+
+    def _on_character_book(self) -> None:
+        book = self._load_character_book()
+        dlg = CharacterBookDialog(self, book, save_callback=self._save_character_book)
+        dlg.exec()
+        self._save_character_book(dlg.get_book())
+
+    def _start_character_chat(self, chat_type: str) -> None:
+        ids = self._selected_character_ids()
+        if chat_type == "private" and len(ids) != 1:
+            QMessageBox.warning(self, "私聊角色", "私聊需要且只能选择一个角色。")
+            return
+        if chat_type == "group" and len(ids) < 2:
+            QMessageBox.warning(self, "群聊角色", "群聊至少选择两个角色。")
+            return
+        self._current_chat_type = chat_type
+        self._participant_character_ids = ids
+        self._primary_character_id = ids[0] if ids else ""
+        self._chat_timeline = []
+        self._current_conversation_id = None
+        self._current_conversation_title = ""
+        self._sync_role_strategy()
+        self._client.clear_context(keep_system=True)
+        self._reset_display()
+        names = "、".join(self._character_names(ids))
+        self._append_user_message(f"已创建{'群聊' if chat_type == 'group' else '私聊'}：{names}")
+
+    def _on_new_private_chat(self) -> None:
+        self._start_character_chat("private")
+
+    def _on_new_group_chat(self) -> None:
+        self._start_character_chat("group")
+
+    def _on_chat_timeline(self) -> None:
+        if not self._chat_timeline:
+            QMessageBox.information(self, "当前时间线", "当前对话还没有时间线事件。")
+            return
+        text = "\n".join(
+            f"第{item.turn_index}轮：{item.event}\n参与：{'、'.join(item.participants)}\n影响：{item.impact}\n"
+            for item in self._chat_timeline
+        )
+        dlg = QDialog(self)
+        dlg.setWindowTitle("当前对话时间线")
+        dlg.resize(620, 480)
+        layout = QVBoxLayout(dlg)
+        edit = QTextEdit()
+        edit.setReadOnly(True)
+        edit.setPlainText(text)
+        layout.addWidget(edit)
+        dlg.exec()
 
     def _on_role_char_changed(self) -> None:
         if isinstance(self._client.strategy, RolePlayStrategy):
@@ -3237,28 +3431,24 @@ class DeepSeekChatGUI(QMainWindow):
             self._client.update_system_prompt()
 
     def _on_apply_role_settings(self) -> None:
-        """将角色描述、故事背景、回复方式写入 system prompt，不重置对话"""
+        """将当前角色档案、人物书、时间线和回复方式写入 system prompt。"""
         if not isinstance(self._client.strategy, RolePlayStrategy):
             return
-        self._client.strategy.character_description = self._role_char_edit.toPlainText()
-        self._client.strategy.story_background = self._role_bg_edit.toPlainText()
-        self._client.strategy.reply_mode = (
-            RolePlayStrategy.REPLY_MODE_NARRATOR
-            if self._radio_narrator.isChecked()
-            else RolePlayStrategy.REPLY_MODE_CHARACTER
-        )
-        self._client.update_system_prompt()
-        char = self._client.strategy.character_description.strip()
-        bg = self._client.strategy.story_background.strip()
+        if not self._participant_character_ids:
+            ids = self._selected_character_ids()
+            if ids:
+                self._participant_character_ids = ids
+                self._primary_character_id = ids[0]
+        self._sync_role_strategy()
         is_narrator = self._client.strategy.reply_mode == RolePlayStrategy.REPLY_MODE_NARRATOR
         mode_text = "旁白描述（第三人称）" if is_narrator else "角色回答（第一人称）"
-        notice_parts = [f"🎭 **角色设定已更新。**\n", f"**回复方式：** {mode_text}\n"]
-        if char:
-            notice_parts.append(f"**角色描述：** {char[:80]}{'…' if len(char) > 80 else ''}\n")
-        if bg:
-            notice_parts.append(f"**故事背景：** {bg[:80]}{'…' if len(bg) > 80 else ''}\n")
-        if not char and not bg:
-            notice_parts.append("（未填写角色描述或故事背景，使用默认角色扮演模式）\n")
+        names = "、".join(self._character_names(self._participant_character_ids)) or "未选择角色"
+        notice_parts = [
+            "🎭 **角色档案设定已更新。**\n",
+            f"**回复方式：** {mode_text}\n",
+            f"**参与角色：** {names}\n",
+            f"**时间线事件：** {len(self._chat_timeline)} 条\n",
+        ]
         notice_parts.append("\n对话历史已保留，可以继续对话。")
 
         # 在现有显示底部追加通知，不清屏
@@ -4721,6 +4911,8 @@ class DeepSeekChatGUI(QMainWindow):
         user_input = self._input_box.toPlainText().strip()
         if not user_input:
             return
+        if isinstance(self._client.strategy, RolePlayStrategy):
+            self._sync_role_strategy()
 
         self._input_box.clear()
         self._append_user_message(user_input)
@@ -4733,6 +4925,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._streaming = True
         self._streaming_start_time = time.time()
         self._assistant_text_buffer = []
+        self._last_chat_user_input = user_input
 
         threading.Thread(
             target=self._run_stream,
@@ -4768,9 +4961,43 @@ class DeepSeekChatGUI(QMainWindow):
                 content=assistant_content,
                 usage=usage,
             )
+            if isinstance(self._client.strategy, RolePlayStrategy):
+                self._sync_character_book_after_chat(user_input, assistant_content)
             self._stream_signals.finished.emit()
         except Exception as e:
             self._stream_signals.error.emit(str(e))
+
+    def _sync_character_book_after_chat(self, user_input: str, assistant_content: str) -> None:
+        if not self._participant_character_ids or not assistant_content.strip():
+            return
+        try:
+            messages = [
+                m for m in self._client.export_messages()
+                if m.get("role") in ("user", "assistant")
+            ]
+            turn_index = max(1, len(messages) // 2)
+            book = self._load_character_book()
+            updated_book, new_events = extract_and_merge_character_book(
+                self._usage_logged_client("character_book_update"),
+                self._client.model,
+                book,
+                self._participant_character_ids,
+                user_input,
+                assistant_content,
+                self._chat_timeline,
+                turn_index,
+                global_user_prompt=self._client.global_user_prompt,
+            )
+            self._character_book_manager.save(updated_book)
+            if new_events:
+                self._chat_timeline.extend(new_events)
+                if isinstance(self._client.strategy, RolePlayStrategy):
+                    self._client.strategy.character_book = updated_book
+                    self._client.strategy.timeline = list(self._chat_timeline)
+                    self._client.update_system_prompt()
+            self._stream_signals.token.emit(f"\n\n📘 人物书已同步，新增时间线 {len(new_events)} 条。\n")
+        except Exception as e:
+            self._stream_signals.token.emit(f"\n\n⚠️ 人物书同步失败，已保留本轮对话：{e}\n")
 
     def _on_stream_token(self, token: str) -> None:
         """主线程：接收一个 token"""
@@ -6302,6 +6529,7 @@ class DeepSeekChatGUI(QMainWindow):
             char_desc = self._client.strategy.character_description
             story_bg = self._client.strategy.story_background
             reply_mode = self._client.strategy.reply_mode
+            self._sync_role_strategy()
 
         file_path = self._conversation_manager.save_conversation(
             conversation_id=conversation_id,
@@ -6312,6 +6540,13 @@ class DeepSeekChatGUI(QMainWindow):
             story_background=story_bg,
             strategy=strategy_name,
             reply_mode=reply_mode,
+            chat_type=self._current_chat_type if isinstance(self._client.strategy, RolePlayStrategy) else "",
+            participant_character_ids=list(self._participant_character_ids) if isinstance(self._client.strategy, RolePlayStrategy) else [],
+            primary_character_id=self._primary_character_id if isinstance(self._client.strategy, RolePlayStrategy) else "",
+            timeline_id=conversation_id if isinstance(self._client.strategy, RolePlayStrategy) else "",
+            timeline=timeline_to_dict(self._chat_timeline) if isinstance(self._client.strategy, RolePlayStrategy) else [],
+            character_book_snapshot=character_book_to_dict(self._load_character_book()) if isinstance(self._client.strategy, RolePlayStrategy) else {},
+            schema_version=2,
         )
         self._current_conversation_id = conversation_id
         self._current_conversation_title = title
@@ -6367,6 +6602,31 @@ class DeepSeekChatGUI(QMainWindow):
         self._client.import_messages(messages)
         self._current_conversation_id = conversation_id
         self._current_conversation_title = record.get("title", "")
+
+        if isinstance(self._client.strategy, RolePlayStrategy):
+            self._current_chat_type = record.get("chat_type") or "private"
+            self._participant_character_ids = list(record.get("participant_character_ids") or [])
+            self._primary_character_id = record.get("primary_character_id") or (
+                self._participant_character_ids[0] if self._participant_character_ids else ""
+            )
+            self._chat_timeline = dict_to_timeline(record.get("timeline", []))
+            # Legacy conversation migration: create a reusable profile from old role text.
+            if not self._participant_character_ids:
+                legacy_name = (record.get("title") or "旧角色").strip()
+                legacy_desc = record.get("character_description", "") or ""
+                legacy_bg = record.get("story_background", "") or ""
+                if legacy_desc or legacy_bg:
+                    profile = CharacterProfile(
+                        name=legacy_name[:40],
+                        personality=legacy_desc,
+                        background=legacy_bg,
+                    )
+                    profile = self._character_book_manager.create_profile(profile)
+                    self._participant_character_ids = [profile.character_id]
+                    self._primary_character_id = profile.character_id
+                    self._current_chat_type = "private"
+            self._refresh_character_list()
+            self._sync_role_strategy()
 
         # 恢复角色扮演的角色描述、故事背景和回复方式
         saved_char_desc = record.get("character_description", "") or ""
