@@ -52,6 +52,7 @@ class NovelMeta:
     author_plan: str = ""   # 作者规划层：主线/阶段目标/人物弧光/主题/节奏/禁写事项
     genre: str = ""        # 题材 key（对应 utils.genre_styles.GENRES）
     style_tone: str = ""   # 风格基调 key（对应 utils.genre_styles.STYLE_TONES）
+    xp_mode: bool = False  # 狂野向创作模式开关
     created_at: str = ""
     updated_at: str = ""
     total_chapters: int = 0
@@ -887,7 +888,7 @@ class NovelManager:
         self._write_encrypted_text(summary_path, current)
 
     def rebuild_summary_from_active(self, client, title: str, model: str = "deepseek-v4-flash",
-                                     global_user_prompt: str = "") -> None:
+                                     global_user_prompt: str = "", xp_mode: bool = False) -> None:
         """
         根据当前章节树活跃路径重新生成节点摘要，并刷新兼容 plot_summary.txt。
         """
@@ -897,6 +898,7 @@ class NovelManager:
             return
 
         meta = self.load_meta(title)
+        effective_xp_mode = xp_mode or meta.xp_mode
         for node in nodes:
             chapter_num = int(node.get("chapter_num", 0) or 0)
             version = int(node.get("version", 0) or 0)
@@ -911,6 +913,7 @@ class NovelManager:
                 chapter_title,
                 model=model,
                 global_user_prompt=global_user_prompt,
+                xp_mode=effective_xp_mode,
             )
             self.set_chapter_node_summary(title, chapter_num, version, summary)
 
@@ -931,6 +934,7 @@ class NovelManager:
         title: str,
         model: str = "deepseek-v4-flash",
         global_user_prompt: str = "",
+        xp_mode: bool = False,
         force_extract: bool = False,
     ) -> None:
         """
@@ -989,6 +993,7 @@ class NovelManager:
                     background_story=meta.background_story,
                     protagonist_bio=meta.protagonist_bio,
                     writing_demand=meta.writing_demand,
+                    xp_mode=xp_mode or meta.xp_mode,
                 )
             summary = (node.get("summary") or "").strip()
             if not summary:
@@ -1063,6 +1068,10 @@ class NovelManager:
             # 无缓存，调用 API 压缩
             try:
                 early_block = "\n\n".join(early_texts)
+                from utils.prompts import Prompts
+                xp_hint = ""
+                if meta.xp_mode:
+                    xp_hint = f"\n4. 仍会影响后续的激情内容\n\n{Prompts.XP_SUMMARY_GUIDE}"
                 response = client.chat.completions.create(
                     model=model,
                     messages=[{
@@ -1073,6 +1082,7 @@ class NovelManager:
                             f"1. 尚未解决的核心冲突/悬念\n"
                             f"2. 仍然活跃的人物及其当前关系\n"
                             f"3. 仍在发挥作用的世界设定\n"
+                            f"{xp_hint}\n"
                             f"忽略已完结的支线和不再重要的细节。简洁为主：\n\n{early_block}"
                             + (f"\n\n用户偏好参考: {global_user_prompt}" if global_user_prompt.strip() else "")
                         ),
@@ -1236,6 +1246,7 @@ class NovelManager:
         chapter_title: str,
         model: str = "deepseek-v4-flash",
         global_user_prompt: str = "",
+        xp_mode: bool = False,
     ) -> str:
         """
         调用 API 生成章节摘要
@@ -1252,6 +1263,9 @@ class NovelManager:
         try:
             from utils.prompts import Prompts
             summary_guide = Prompts.CONTINUITY_SUMMARY_GUIDE
+            xp_hint = ""
+            if xp_mode:
+                xp_hint = f"\n\n{Prompts.XP_SUMMARY_GUIDE}"
             response = client.chat.completions.create(
                 model=model,
                 messages=[{
@@ -1259,6 +1273,7 @@ class NovelManager:
                     "content": (
                         f"请为以下小说片段（第{chapter_num}章「{chapter_title}」）"
                         f"生成一段用于后续续写的结构化剧情记忆。\n\n{summary_guide}\n\n章节正文：\n{chapter_content}"
+                        + xp_hint
                         + (f"\n\n用户偏好参考: {global_user_prompt}" if global_user_prompt.strip() else "")
                     ),
                 }],

@@ -61,6 +61,9 @@ GENRES: list[GenreConfig] = [
     GenreConfig("light_novel", "轻小说",
                 "轻松诙谐，对话占比高，吐槽自然。注重角色反差萌和阅读节奏感。",
                 temperature=0.90, frequency_penalty=0.3),
+    GenreConfig("erotic", "色情",
+                "情感铺垫到位，暧昧氛围渲染充分，感官描写细腻。注重情感渐进和氛围。",
+                temperature=0.90, frequency_penalty=0.2),
     GenreConfig("none", "无特定风格",
                 "",
                 temperature=None, frequency_penalty=None),
@@ -80,6 +83,8 @@ STYLE_TONES: list[ToneConfig] = [
                "基调压抑，人性阴暗面刻画深刻，不回避残酷描写。注重心理压迫。"),
     ToneConfig("passionate", "热血",
                "情绪激昂，节奏紧凑，打斗/对决场面富有张力。注重爆发力和感染力。"),
+    ToneConfig("erotic", "色情",
+               "情感铺垫到位，暧昧氛围渲染充分，感官描写细腻。注重氛围渐进。"),
 ]
 
 # ========== 查询函数 ==========

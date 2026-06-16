@@ -117,7 +117,8 @@ def _status_style(widget, kind: str = "normal") -> str:
     return f"color: {color}; font-size: 13px; padding: 6px 10px; background: {bg}; border-radius: 4px;"
 
 
-def analyze_source_text(client, source_text: str, model: str, global_user_prompt: str = "") -> dict:
+def analyze_source_text(client, source_text: str, model: str, global_user_prompt: str = "",
+                        xp_mode: bool = False) -> dict:
     """
     新版分析：使用 AI 语义分段 + 结构化提取，返回可加载的小说设定。
 
@@ -154,6 +155,7 @@ def analyze_source_text(client, source_text: str, model: str, global_user_prompt
         segments,
         model,
         global_user_prompt=global_user_prompt,
+        xp_mode=xp_mode,
     )
 
     # 3. 生成小说设定
@@ -162,6 +164,7 @@ def analyze_source_text(client, source_text: str, model: str, global_user_prompt
         world_data,
         model,
         global_user_prompt=global_user_prompt,
+        xp_mode=xp_mode,
     )
 
     return {
@@ -282,7 +285,7 @@ def _build_world_summary(world_data: dict | None) -> str:
 def suggest_directions(client, setting: str, plot: str, model: str,
                        world_data: dict | None = None,
                        global_user_prompt: str = "",
-                       ) -> list[str]:
+                       xp_mode: bool = False) -> list[str]:
     """
     AI 建议 3-5 个发展方向
 
@@ -302,6 +305,8 @@ def suggest_directions(client, setting: str, plot: str, model: str,
     )
     if global_user_prompt.strip():
         prompt += f"\n\n用户偏好参考: {global_user_prompt}"
+    if xp_mode:
+        prompt += f"\n\n{Prompts.XP_MODE_SYSTEM}\n\n{Prompts.XP_SUGGESTION_GUIDE}"
     try:
         resp = client.chat.completions.create(
             model=model,

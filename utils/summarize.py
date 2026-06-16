@@ -565,6 +565,7 @@ def extract_world_bible_from_segments(
     *,
     progress_callback: Callable[[int, int], None] | None = None,
     global_user_prompt: str = "",
+    xp_mode: bool = False,
 ) -> dict:
     """
     对每个语义段落提取世界观信息，合并为完整数据。
@@ -611,6 +612,8 @@ def extract_world_bible_from_segments(
             dedup_context = ""
 
         prompt = _safe_format(EXTRACT_PROMPT, title=title, content=content_sample, dedup_context=dedup_context)
+        if xp_mode:
+            prompt += f"\n\n{Prompts.XP_WORLD_BIBLE_GUIDE}"
         data = None
         last_error = None
         for max_tokens in (8192, 16384):
@@ -908,6 +911,7 @@ def generate_novel_settings_from_world_bible(
     world_data: dict,
     model: str,
     global_user_prompt: str = "",
+    xp_mode: bool = False,
 ) -> dict:
     """
     从提取的世界书数据生成小说设定（背景故事、主角描述、写作要求）。
@@ -947,6 +951,9 @@ def generate_novel_settings_from_world_bible(
         plot_threads=plot_str,
         timeline=timeline_str,
     )
+    if xp_mode:
+        prompt += f"\n\n{Prompts.XP_MODE_SYSTEM}\n\n{Prompts.XP_SUGGESTION_GUIDE}"
+
     try:
         raw = _call_api(client, [{"role": "user", "content": prompt}], model, max_tokens=4096, temperature=0.3, global_user_prompt=global_user_prompt)
         data = _parse_json(raw)

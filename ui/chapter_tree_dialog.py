@@ -613,6 +613,7 @@ class ChapterTreeDialog(QDialog):
                 title,
                 model=self._client.model,
                 global_user_prompt=self._client.global_user_prompt,
+                xp_mode=self._novel_manager.load_meta(self._book_title).xp_mode,
             )
             self._novel_manager.set_chapter_node_summary(self._book_title, chapter_num, version, summary)
             self._novel_manager.rebuild_plot_summary_from_tree(self._book_title)

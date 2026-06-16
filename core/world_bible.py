@@ -1668,6 +1668,7 @@ def extract_and_merge_world_bible(
     background_story: str = "",
     protagonist_bio: str = "",
     writing_demand: str = "",
+    xp_mode: bool = False,
 ) -> WorldBible:
     """
     分析章节内容，提取世界观信息并与现有世界书合并
@@ -1707,6 +1708,9 @@ def extract_and_merge_world_bible(
     prompt_prefix = ("\n".join(ctx_parts) + "\n\n") if ctx_parts else ""
 
     user_content = prompt_prefix + EXTRACT_PROMPT + content_sample
+    if xp_mode:
+        from utils.prompts import Prompts
+        user_content += f"\n\n{Prompts.XP_WORLD_BIBLE_GUIDE}"
     if global_user_prompt.strip():
         user_content += f"\n\n用户偏好参考: {global_user_prompt}"
 
