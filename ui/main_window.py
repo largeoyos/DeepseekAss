@@ -13,6 +13,8 @@ import re
 import sys
 import threading
 import time
+import copy
+from dataclasses import asdict
 
 from PyQt6.QtCore import Qt, pyqtSignal, QObject
 from PyQt6.QtWidgets import (
@@ -59,8 +61,25 @@ from core.character_book import (
     dict_to_timeline,
     timeline_to_dict,
     character_book_to_dict,
+    dict_to_character_book,
     find_profile,
-    extract_and_merge_character_book,
+    extract_character_book_changes,
+)
+from core.chat_domain import (
+    ChatMessage,
+    ChatSessionState,
+    SenderProfileManager,
+    TurnPolicy,
+    apply_memory_change_set,
+    fork_branch,
+    legacy_messages_to_structured,
+    new_id,
+    now_text,
+    parse_structured_reply,
+    revert_memory_change_set,
+    state_from_dict,
+    state_to_dict,
+    structured_to_legacy_messages,
 )
 from core.settings_manager import SettingsManager
 from core.token_log_manager import TokenLogManager
@@ -79,6 +98,7 @@ from utils.export import (
 )
 from ui.world_bible_dialog import WorldBibleDialog
 from ui.character_book_dialog import CharacterBookDialog, CharacterProfileDialog
+from ui.chat_control_dialog import ChatControlDialog
 from ui.presets import PRESETS, CUSTOM_LABEL
 from ui.settings_dialog import SettingsDialog
 from ui.token_log_dialog import TokenLogDialog
@@ -595,6 +615,11 @@ class DeepSeekChatGUI(QMainWindow):
             crypto=self._auth,
             enc_key=self._enc_key,
         )
+        self._sender_profile_manager = SenderProfileManager(
+            root_dir=user_dir,
+            crypto=self._auth,
+            enc_key=self._enc_key,
+        )
         self._settings_manager = SettingsManager(
             root_dir=user_dir,
             crypto=self._auth,
@@ -615,6 +640,14 @@ class DeepSeekChatGUI(QMainWindow):
         self._primary_character_id: str = ""
         self._chat_timeline = []
         self._last_chat_user_input: str = ""
+        self._sender_name: str = "你"
+        self._sender_profile: str = ""
+        self._required_responder_ids: list[str] = []
+        self._conversation_dirty: bool = False
+        self._chat_state = ChatSessionState()
+        self._chat_state.active_branch()
+        self._sender_profiles = self._sender_profile_manager.load()
+        self._last_structured_assistant_messages: list[ChatMessage] = []
 
         # Step 2: 获取 API Key（加密存储或弹窗输入）
         api_key, base_url = self._load_encrypted_config()
@@ -762,6 +795,24 @@ class DeepSeekChatGUI(QMainWindow):
                         story_background=data.get("story_background", ""),
                         strategy=data.get("strategy", ""),
                         reply_mode=data.get("reply_mode", ""),
+                        chat_type=data.get("chat_type", ""),
+                        participant_character_ids=data.get("participant_character_ids", []),
+                        primary_character_id=data.get("primary_character_id", ""),
+                        timeline_id=data.get("timeline_id", ""),
+                        timeline=data.get("timeline", []),
+                        character_book_snapshot=data.get("character_book_snapshot", {}),
+                        sender_name=data.get("sender_name", ""),
+                        sender_profile=data.get("sender_profile", ""),
+                        required_responder_ids=data.get("required_responder_ids", []),
+                        structured_messages=data.get("structured_messages", []),
+                        branches=data.get("branches", []),
+                        active_branch_id=data.get("active_branch_id", "main"),
+                        sender_profile_id=data.get("sender_profile_id", ""),
+                        scene_state=data.get("scene_state", {}),
+                        turn_policy=data.get("turn_policy", {}),
+                        memory_change_sets=data.get("memory_change_sets", []),
+                        narrator_enabled=data.get("narrator_enabled", False),
+                        schema_version=data.get("schema_version", 1),
                     )
                     migrated_convs += 1
                 except Exception as e:
@@ -1480,18 +1531,40 @@ class DeepSeekChatGUI(QMainWindow):
         private_btn = QPushButton("新建私聊")
         group_btn = QPushButton("新建群聊")
         timeline_btn = QPushButton("时间线")
+        control_btn = QPushButton("控制中心")
         private_btn.clicked.connect(self._on_new_private_chat)
         group_btn.clicked.connect(self._on_new_group_chat)
         timeline_btn.clicked.connect(self._on_chat_timeline)
+        control_btn.clicked.connect(self._on_chat_control_center)
         chat_btn_row.addWidget(private_btn)
         chat_btn_row.addWidget(group_btn)
         chat_btn_row.addWidget(timeline_btn)
+        chat_btn_row.addWidget(control_btn)
         layout.addLayout(chat_btn_row)
 
         self._role_session_label = QLabel("当前会话：未绑定角色")
         self._role_session_label.setWordWrap(True)
         self._role_session_label.setStyleSheet("color: #9cdcfe; font-size: 12px;")
         layout.addWidget(self._role_session_label)
+
+        layout.addWidget(QLabel("🧑 聊天发送者"))
+        self._sender_name_edit = QLineEdit()
+        self._sender_name_edit.setPlaceholderText("发送者称呼，例如：林舟")
+        self._sender_name_edit.setText(self._sender_name)
+        self._sender_name_edit.textChanged.connect(self._on_sender_profile_changed)
+        layout.addWidget(self._sender_name_edit)
+        self._sender_profile_edit = QTextEdit()
+        self._sender_profile_edit.setPlaceholderText("身份、性格、外貌、与角色的关系、已知信息等")
+        self._sender_profile_edit.setMaximumHeight(80)
+        self._sender_profile_edit.textChanged.connect(self._on_sender_profile_changed)
+        layout.addWidget(self._sender_profile_edit)
+
+        layout.addWidget(QLabel("✅ 群聊本轮必须回复"))
+        self._required_responder_list = QListWidget()
+        self._required_responder_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
+        self._required_responder_list.setMaximumHeight(100)
+        self._required_responder_list.itemSelectionChanged.connect(self._on_required_responders_changed)
+        layout.addWidget(self._required_responder_list)
 
         # Hidden legacy editors: old conversation loading still writes into these fields.
         self._role_char_edit = QTextEdit()
@@ -2873,11 +2946,9 @@ class DeepSeekChatGUI(QMainWindow):
         if strategy_cls is None:
             return
 
-        # 检查是否有未保存的对话内容
+        # 仅在保存后又发生变化时提示，已保存对话可直接切换模式。
         if not self._loading_conversation:
-            messages = self._client.export_messages()
-            has_content = any(m.get("role") in ("user", "assistant") for m in messages)
-            if has_content:
+            if self._conversation_dirty:
                 msg_box = QMessageBox(self)
                 msg_box.setWindowTitle("切换模式")
                 msg_box.setText("当前对话未保存，切换模式将丢失对话内容。")
@@ -2895,7 +2966,12 @@ class DeepSeekChatGUI(QMainWindow):
                     self._sync_mode_sidebar()
                     return
                 if clicked == btn_save:
-                    self._on_save_conversation()
+                    if not self._on_save_conversation():
+                        self._mode_combo.blockSignals(True)
+                        self._mode_combo.setCurrentText(self._last_mode)
+                        self._mode_combo.blockSignals(False)
+                        self._sync_mode_sidebar()
+                        return
 
         self._last_mode = text
         strategy = strategy_cls()
@@ -2904,6 +2980,7 @@ class DeepSeekChatGUI(QMainWindow):
         if not self._loading_conversation:
             self._current_conversation_id = None
             self._current_conversation_title = ""
+            self._conversation_dirty = False
         self._model_combo.setCurrentText(self._client.model)
         # 同步滑块时阻止滑块事件把预设改成"自定义"
         current_preset = self._preset_combo.currentText()
@@ -3021,6 +3098,9 @@ class DeepSeekChatGUI(QMainWindow):
         self._reset_display()
         self._current_conversation_id = None
         self._current_conversation_title = ""
+        self._conversation_dirty = False
+        self._chat_state = ChatSessionState()
+        self._chat_state.active_branch()
 
     def _reset_display(self) -> None:
         self._display.setHtml(INITIAL_HTML)
@@ -3248,6 +3328,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._novel_manager._enc_key = new_key
         self._conversation_manager._enc_key = new_key
         self._character_book_manager._enc_key = new_key
+        self._sender_profile_manager._enc_key = new_key
         self._settings_manager._enc_key = new_key
         self._token_log_manager._enc_key = new_key
 
@@ -3272,6 +3353,16 @@ class DeepSeekChatGUI(QMainWindow):
         self._refresh_character_list()
         self._sync_role_strategy()
 
+    def _mark_conversation_dirty(self) -> None:
+        if not self._client:
+            return
+        has_content = any(
+            message.get("role") in ("user", "assistant")
+            for message in self._client.export_messages()
+        )
+        if has_content:
+            self._conversation_dirty = True
+
     def _refresh_character_list(self) -> None:
         if not hasattr(self, "_character_list"):
             return
@@ -3284,6 +3375,25 @@ class DeepSeekChatGUI(QMainWindow):
             self._character_list.addItem(item)
             item.setSelected(profile.character_id in selected)
         self._character_list.blockSignals(False)
+        self._refresh_required_responder_list()
+
+    def _refresh_required_responder_list(self) -> None:
+        if not hasattr(self, "_required_responder_list"):
+            return
+        book = self._load_character_book()
+        allowed = set(self._participant_character_ids)
+        selected = set(self._required_responder_ids)
+        self._required_responder_list.blockSignals(True)
+        self._required_responder_list.clear()
+        for profile in book.profiles:
+            if profile.character_id not in allowed:
+                continue
+            item = QListWidgetItem(profile.name or "未命名角色")
+            item.setData(Qt.ItemDataRole.UserRole, profile.character_id)
+            self._required_responder_list.addItem(item)
+            item.setSelected(profile.character_id in selected)
+        self._required_responder_list.setEnabled(self._current_chat_type == "group")
+        self._required_responder_list.blockSignals(False)
 
     def _selected_character_ids(self) -> list[str]:
         if not hasattr(self, "_character_list"):
@@ -3312,6 +3422,44 @@ class DeepSeekChatGUI(QMainWindow):
         strategy.primary_character_id = self._primary_character_id
         strategy.chat_type = self._current_chat_type
         strategy.timeline = list(self._chat_timeline)
+        strategy.sender_name = self._sender_name or "你"
+        strategy.sender_profile = self._sender_profile
+        strategy.required_responder_ids = list(
+            self._chat_state.turn_policy.required_speaker_ids or self._required_responder_ids
+        )
+        strategy.turn_policy = copy.deepcopy(self._chat_state.turn_policy)
+        if self._chat_state.scene_state.present_character_ids:
+            absent = [
+                cid for cid in self._participant_character_ids
+                if cid not in self._chat_state.scene_state.present_character_ids
+            ]
+            strategy.turn_policy.blocked_speaker_ids = list(
+                dict.fromkeys([*strategy.turn_policy.blocked_speaker_ids, *absent])
+            )
+        strategy.scene_state = self._chat_state.scene_state
+        strategy.narrator_enabled = self._chat_state.narrator_enabled
+        strategy.active_branch_id = self._chat_state.active_branch_id
+        sender_profile = next(
+            (
+                item for item in self._sender_profiles
+                if item.sender_profile_id == self._chat_state.sender_profile_id
+            ),
+            None,
+        )
+        strategy.sender_profile_record = sender_profile
+        if sender_profile:
+            strategy.sender_name = sender_profile.name or strategy.sender_name
+            strategy.sender_profile = "\n".join(
+                value for value in (
+                    sender_profile.identity,
+                    sender_profile.personality,
+                    sender_profile.appearance,
+                    sender_profile.background,
+                    sender_profile.relationships,
+                    sender_profile.knowledge_state,
+                    sender_profile.notes,
+                ) if value
+            )
         strategy.reply_mode = (
             RolePlayStrategy.REPLY_MODE_NARRATOR
             if self._radio_narrator.isChecked()
@@ -3319,6 +3467,293 @@ class DeepSeekChatGUI(QMainWindow):
         )
         self._client.update_system_prompt()
         self._update_role_session_label()
+
+    def _on_chat_control_center(self) -> None:
+        old_scene = state_to_dict(self._chat_state).get("scene_state", {})
+        dialog = ChatControlDialog(
+            self,
+            self._chat_state,
+            self._load_character_book(),
+            self._participant_character_ids,
+            self._sender_profiles,
+            self._apply_memory_change,
+            self._modify_memory_change,
+            self._reject_memory_change,
+            self._revert_memory_change,
+            self._switch_chat_branch,
+            self._fork_current_branch,
+            self._message_operation,
+        )
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        self._sender_profile_manager.save(self._sender_profiles)
+        sender = next(
+            (
+                item for item in self._sender_profiles
+                if item.sender_profile_id == self._chat_state.sender_profile_id
+            ),
+            None,
+        )
+        if sender:
+            self._sender_name = sender.name or "你"
+            self._sender_profile = sender.identity or sender.background
+            self._sender_name_edit.blockSignals(True)
+            self._sender_profile_edit.blockSignals(True)
+            self._sender_name_edit.setText(self._sender_name)
+            self._sender_profile_edit.setPlainText(self._sender_profile)
+            self._sender_name_edit.blockSignals(False)
+            self._sender_profile_edit.blockSignals(False)
+        self._required_responder_ids = list(self._chat_state.turn_policy.required_speaker_ids)
+        new_scene = state_to_dict(self._chat_state).get("scene_state", {})
+        if old_scene != new_scene and (new_scene.get("location") or new_scene.get("description")):
+            from core.character_book import ChatTimelineEntry
+            entry = ChatTimelineEntry(
+                event_id=new_id("evt"),
+                turn_index=max(0, self._current_turn_index()),
+                event=f"场景切换：{new_scene.get('location') or '未命名场景'}",
+                participants=self._character_names(new_scene.get("present_character_ids", [])),
+                impact=new_scene.get("objective", ""),
+                source_message_range="scene-change",
+                created_at=now_text(),
+            )
+            self._chat_timeline.append(entry)
+            self._chat_state.active_branch().timeline = timeline_to_dict(self._chat_timeline)
+        self._refresh_required_responder_list()
+        self._sync_role_strategy()
+        self._mark_conversation_dirty()
+
+    def _current_turn_index(self) -> int:
+        messages = self._chat_state.active_branch().messages
+        return max((message.turn_index for message in messages), default=0)
+
+    def _find_change_set(self, change_set_id: str):
+        return next(
+            (
+                item for item in self._chat_state.memory_change_sets
+                if item.change_set_id == change_set_id
+            ),
+            None,
+        )
+
+    def _apply_memory_change(self, change_set_id: str) -> None:
+        change_set = self._find_change_set(change_set_id)
+        if not change_set:
+            return
+        book = self._load_character_book()
+        apply_memory_change_set(book, change_set)
+        book.change_history.append({
+            "change_set_id": change_set.change_set_id,
+            "status": change_set.status,
+            "applied_at": change_set.applied_at,
+        })
+        self._character_book_manager.save(book)
+        self._snapshot_active_branch(book)
+        self._sync_role_strategy()
+
+    def _reject_memory_change(self, change_set_id: str) -> None:
+        change_set = self._find_change_set(change_set_id)
+        if change_set:
+            change_set.status = "rejected"
+            self._mark_conversation_dirty()
+
+    def _modify_memory_change(self, change_set_id: str) -> None:
+        change_set = self._find_change_set(change_set_id)
+        if not change_set:
+            return
+        editable = [
+            {
+                "change_id": change.change_id,
+                "character_id": change.character_id,
+                "field_name": change.field_name,
+                "new_value": change.new_value,
+                "reason": change.reason,
+            }
+            for change in change_set.changes
+        ]
+        value, ok = QInputDialog.getMultiLineText(
+            self,
+            "修改人物书变更",
+            "编辑 JSON 中的 new_value 后应用：",
+            json.dumps(editable, ensure_ascii=False, indent=2),
+        )
+        if not ok:
+            return
+        try:
+            updates = json.loads(value)
+            update_by_id = {
+                item.get("change_id"): item for item in updates if isinstance(item, dict)
+            }
+            for change in change_set.changes:
+                update = update_by_id.get(change.change_id)
+                if update:
+                    change.new_value = update.get("new_value")
+                    change.reason = str(update.get("reason", change.reason))
+        except Exception as error:
+            QMessageBox.warning(self, "JSON 无效", str(error))
+            return
+        self._apply_memory_change(change_set_id)
+
+    def _revert_memory_change(self, change_set_id: str) -> None:
+        change_set = self._find_change_set(change_set_id)
+        if not change_set or change_set.status != "applied":
+            return
+        book = self._load_character_book()
+        revert_memory_change_set(book, change_set)
+        self._character_book_manager.save(book)
+        self._snapshot_active_branch(book)
+        self._sync_role_strategy()
+
+    def _snapshot_active_branch(self, book=None) -> None:
+        book = book or self._load_character_book()
+        branch = self._chat_state.active_branch()
+        branch.character_state_snapshot = character_book_to_dict(book)
+        branch.timeline = timeline_to_dict(self._chat_timeline)
+
+    def _switch_chat_branch(self, branch_id: str) -> None:
+        branch = next((item for item in self._chat_state.branches if item.branch_id == branch_id), None)
+        if not branch:
+            return
+        self._chat_state.active_branch_id = branch_id
+        self._chat_timeline = dict_to_timeline(branch.timeline)
+        if branch.character_state_snapshot:
+            self._character_book_manager.save(dict_to_character_book(branch.character_state_snapshot))
+        legacy = structured_to_legacy_messages(branch.messages, self._client.strategy.get_system_prompt())
+        self._client.import_messages(legacy)
+        self._render_structured_conversation(branch.messages)
+        self._sync_role_strategy()
+        self._mark_conversation_dirty()
+
+    def _fork_current_branch(self) -> None:
+        branch = self._chat_state.active_branch()
+        if not branch.messages:
+            return
+        new_branch = fork_branch(self._chat_state, branch.messages[-1].message_id)
+        if new_branch.character_state_snapshot:
+            self._character_book_manager.save(dict_to_character_book(new_branch.character_state_snapshot))
+        self._sync_role_strategy()
+        self._mark_conversation_dirty()
+
+    def _message_operation(self, operation: str, message_id: str) -> None:
+        branch = self._chat_state.active_branch()
+        index = next(
+            (idx for idx, message in enumerate(branch.messages) if message.message_id == message_id),
+            -1,
+        )
+        if index < 0:
+            return
+        message = branch.messages[index]
+        if operation == "fork":
+            new_branch = fork_branch(self._chat_state, message_id)
+            self._render_structured_conversation(new_branch.messages)
+            self._mark_conversation_dirty()
+            return
+        if operation == "edit":
+            value, ok = QInputDialog.getMultiLineText(
+                self, "编辑消息", "消息内容：", message.content
+            )
+            if ok:
+                message.content = value.strip()
+                self._render_structured_conversation(branch.messages)
+                self._mark_conversation_dirty()
+            return
+        if operation == "delete":
+            if QMessageBox.question(self, "删除消息", "删除该消息？") == QMessageBox.StandardButton.Yes:
+                del branch.messages[index]
+                self._render_structured_conversation(branch.messages)
+                self._mark_conversation_dirty()
+            return
+        if operation in ("source", "changes"):
+            if operation == "source":
+                text = (
+                    f"消息 ID：{message.message_id}\n"
+                    f"来源消息：{message.source_message_id or '无'}\n"
+                    f"分支：{message.branch_id}\n轮次：{message.turn_index}"
+                )
+            else:
+                related = [
+                    change_set for change_set in self._chat_state.memory_change_sets
+                    if message.message_id in change_set.source_message_ids
+                ]
+                text = "\n\n".join(
+                    f"{item.change_set_id} [{item.status}]\n"
+                    + "\n".join(
+                        f"- {change.character_id}.{change.field_name}: "
+                        f"{change.old_value!r} -> {change.new_value!r} ({change.risk})"
+                        for change in item.changes
+                    )
+                    for item in related
+                ) or "该消息没有人物书变更。"
+            QMessageBox.information(self, "消息信息", text)
+            return
+        if operation == "regenerate":
+            if message.role != "assistant":
+                QMessageBox.warning(self, "无法重生成", "只能重生成角色发言。")
+                return
+            tone, ok = QInputDialog.getText(
+                self, "单角色重生成", "附加语气/行为要求（可留空）："
+            )
+            if not ok:
+                return
+            fork_at = branch.messages[index - 1].message_id if index > 0 else message.message_id
+            new_branch = fork_branch(
+                self._chat_state, fork_at, title=f"重生成-{message.speaker_name}"
+            )
+            self._switch_chat_branch(new_branch.branch_id)
+            self._start_single_character_regeneration(message.speaker_id, message.speaker_name, tone)
+
+    def _start_single_character_regeneration(
+        self, speaker_id: str, speaker_name: str, requirement: str
+    ) -> None:
+        if self._streaming:
+            return
+        self._client.reset_cancel()
+        self._streaming = True
+        self._streaming_start_time = time.time()
+        self._assistant_text_buffer = []
+        self._stop_btn.setVisible(True)
+        self._mode_combo.setEnabled(False)
+
+        def run():
+            try:
+                branch = self._chat_state.active_branch()
+                legacy = structured_to_legacy_messages(
+                    branch.messages, self._client.strategy.get_system_prompt()
+                )
+                legacy.append({
+                    "role": "user",
+                    "content": (
+                        f"只让角色「{speaker_name}」重新回复上一轮。"
+                        f"要求：{requirement or '严格符合人物设定和当前视角'}。"
+                        "输出合法 JSON messages 数组。"
+                    ),
+                })
+                response = self._client.raw_client.chat.completions.create(
+                    model=self._client.model,
+                    messages=legacy,
+                    temperature=self._client.temperature,
+                    max_tokens=self._client.max_tokens,
+                )
+                raw = response.choices[0].message.content or ""
+                name_to_id = {speaker_name: speaker_id}
+                messages = parse_structured_reply(
+                    raw, branch.branch_id, self._current_turn_index(), name_to_id
+                )
+                messages = [
+                    item for item in messages
+                    if item.speaker_id == speaker_id or item.speaker_name == speaker_name
+                ]
+                branch.messages.extend(messages)
+                self._last_structured_assistant_messages = messages
+                self._client.import_messages(
+                    structured_to_legacy_messages(
+                        branch.messages, self._client.strategy.get_system_prompt()
+                    )
+                )
+                self._stream_signals.finished.emit()
+            except Exception as error:
+                self._stream_signals.error.emit(str(error))
+
+        threading.Thread(target=run, daemon=True).start()
 
     def _update_role_session_label(self) -> None:
         if not hasattr(self, "_role_session_label"):
@@ -3331,6 +3766,23 @@ class DeepSeekChatGUI(QMainWindow):
             )
         else:
             self._role_session_label.setText("当前会话：未绑定角色")
+
+    def _on_sender_profile_changed(self) -> None:
+        if not hasattr(self, "_sender_name_edit"):
+            return
+        self._sender_name = self._sender_name_edit.text().strip() or "你"
+        self._sender_profile = self._sender_profile_edit.toPlainText().strip()
+        self._mark_conversation_dirty()
+        self._sync_role_strategy()
+
+    def _on_required_responders_changed(self) -> None:
+        self._required_responder_ids = [
+            item.data(Qt.ItemDataRole.UserRole)
+            for item in self._required_responder_list.selectedItems()
+            if item.data(Qt.ItemDataRole.UserRole)
+        ]
+        self._mark_conversation_dirty()
+        self._sync_role_strategy()
 
     def _on_new_character_profile(self) -> None:
         dlg = CharacterProfileDialog(self)
@@ -3379,9 +3831,18 @@ class DeepSeekChatGUI(QMainWindow):
         self._current_chat_type = chat_type
         self._participant_character_ids = ids
         self._primary_character_id = ids[0] if ids else ""
+        self._required_responder_ids = list(ids) if chat_type == "group" else list(ids[:1])
         self._chat_timeline = []
+        self._chat_state = ChatSessionState()
+        branch = self._chat_state.active_branch()
+        branch.character_state_snapshot = character_book_to_dict(self._load_character_book())
+        self._chat_state.scene_state.present_character_ids = list(ids)
+        self._chat_state.turn_policy.required_speaker_ids = list(self._required_responder_ids)
+        self._chat_state.turn_policy.allowed_speaker_ids = list(ids)
         self._current_conversation_id = None
         self._current_conversation_title = ""
+        self._conversation_dirty = False
+        self._refresh_required_responder_list()
         self._sync_role_strategy()
         self._client.clear_context(keep_system=True)
         self._reset_display()
@@ -3429,6 +3890,7 @@ class DeepSeekChatGUI(QMainWindow):
                 else RolePlayStrategy.REPLY_MODE_CHARACTER
             )
             self._client.update_system_prompt()
+            self._mark_conversation_dirty()
 
     def _on_apply_role_settings(self) -> None:
         """将当前角色档案、人物书、时间线和回复方式写入 system prompt。"""
@@ -3440,6 +3902,7 @@ class DeepSeekChatGUI(QMainWindow):
                 self._participant_character_ids = ids
                 self._primary_character_id = ids[0]
         self._sync_role_strategy()
+        self._mark_conversation_dirty()
         is_narrator = self._client.strategy.reply_mode == RolePlayStrategy.REPLY_MODE_NARRATOR
         mode_text = "旁白描述（第三人称）" if is_narrator else "角色回答（第一人称）"
         names = "、".join(self._character_names(self._participant_character_ids)) or "未选择角色"
@@ -4916,6 +5379,9 @@ class DeepSeekChatGUI(QMainWindow):
 
         self._input_box.clear()
         self._append_user_message(user_input)
+        self._conversation_dirty = True
+        if isinstance(self._client.strategy, RolePlayStrategy):
+            self._record_structured_user_message(user_input)
 
         self._client.reset_cancel()
         self._stop_btn.setVisible(True)
@@ -4953,6 +5419,16 @@ class DeepSeekChatGUI(QMainWindow):
                 if m.get("role") == "assistant"
             ]
             assistant_content = assistant_messages[-1] if assistant_messages else ""
+            if isinstance(self._client.strategy, RolePlayStrategy):
+                try:
+                    structured = self._parse_and_store_assistant_messages(assistant_content)
+                    assistant_content = "\n\n".join(
+                        f"{message.speaker_name}：{message.content}" for message in structured
+                    )
+                except Exception as responder_error:
+                    self._stream_signals.token.emit(
+                        f"\n\n⚠️ 结构化群聊处理失败，已保留原回复：{responder_error}\n"
+                    )
             self._token_log_manager.add_entry(
                 operation="chat",
                 direction="receive",
@@ -4967,35 +5443,194 @@ class DeepSeekChatGUI(QMainWindow):
         except Exception as e:
             self._stream_signals.error.emit(str(e))
 
+    def _record_structured_user_message(self, content: str) -> ChatMessage:
+        branch = self._chat_state.active_branch()
+        turn_index = self._current_turn_index() + 1
+        message = ChatMessage(
+            message_id=new_id("msg"),
+            branch_id=branch.branch_id,
+            role="user",
+            speaker_id=self._chat_state.sender_profile_id or "sender",
+            speaker_name=self._sender_name or "你",
+            content=content,
+            turn_index=turn_index,
+            created_at=now_text(),
+        )
+        branch.messages.append(message)
+        return message
+
+    def _parse_and_store_assistant_messages(self, raw: str) -> list[ChatMessage]:
+        branch = self._chat_state.active_branch()
+        turn_index = self._current_turn_index()
+        book = self._load_character_book()
+        name_to_id = {
+            profile.name: profile.character_id
+            for profile in book.profiles
+            if profile.character_id in self._participant_character_ids
+        }
+        messages = parse_structured_reply(raw, branch.branch_id, turn_index, name_to_id)
+        if self._current_chat_type == "private":
+            profile = find_profile(book, self._primary_character_id)
+            for message in messages:
+                message.speaker_id = self._primary_character_id or message.speaker_id
+                message.speaker_name = profile.name if profile else message.speaker_name
+        policy = self._chat_state.turn_policy
+        blocked = set(policy.blocked_speaker_ids)
+        if self._chat_state.scene_state.present_character_ids:
+            blocked.update(
+                cid for cid in self._participant_character_ids
+                if cid not in self._chat_state.scene_state.present_character_ids
+            )
+        allowed = set(policy.allowed_speaker_ids)
+        messages = [
+            message for message in messages
+            if message.speaker_id == "narrator"
+            or (
+                message.speaker_id not in blocked
+                and (not allowed or message.speaker_id in allowed)
+            )
+        ]
+        if not self._chat_state.narrator_enabled:
+            messages = [message for message in messages if message.speaker_id != "narrator"]
+        if policy.mention_only_ids:
+            mentioned_ids = {
+                profile.character_id
+                for profile in book.profiles
+                if profile.name and profile.name in self._last_chat_user_input
+            }
+            messages = [
+                message for message in messages
+                if message.speaker_id not in policy.mention_only_ids
+                or message.speaker_id in mentioned_ids
+            ]
+        required = list(policy.required_speaker_ids or self._required_responder_ids)
+        required = [cid for cid in required if cid not in blocked and (not allowed or cid in allowed)]
+        missing = [cid for cid in required if cid not in {message.speaker_id for message in messages}]
+        if missing:
+            missing_names = self._character_names(missing)
+            prompt = (
+                "只补充以下角色遗漏的发言：" + "、".join(missing_names)
+                + "。输出合法 JSON："
+                '{"messages":[{"speaker_id":"角色ID","speaker_name":"角色名","content":"内容","action":""}]}'
+            )
+            response = self._client.raw_client.chat.completions.create(
+                model=self._client.model,
+                messages=[
+                    {"role": "system", "content": self._client.strategy.get_system_prompt()},
+                    {"role": "assistant", "content": raw},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=self._client.temperature,
+                max_tokens=min(self._client.max_tokens, 2048),
+            )
+            supplement_raw = response.choices[0].message.content or ""
+            supplement = parse_structured_reply(
+                supplement_raw, branch.branch_id, turn_index, name_to_id
+            )
+            messages.extend(
+                message for message in supplement
+                if message.speaker_id in missing
+            )
+        if policy.speaker_order:
+            order = {speaker_id: index for index, speaker_id in enumerate(policy.speaker_order)}
+            messages.sort(key=lambda message: order.get(message.speaker_id, len(order)))
+        if policy.max_speakers:
+            speaker_limit = max(policy.max_speakers, len(set(required)))
+            kept_speakers = []
+            filtered = []
+            for message in messages:
+                if message.speaker_id not in kept_speakers:
+                    if len(kept_speakers) >= speaker_limit:
+                        continue
+                    kept_speakers.append(message.speaker_id)
+                filtered.append(message)
+            messages = filtered
+        branch.messages.extend(messages)
+        self._audit_character_knowledge(messages, book)
+        self._last_structured_assistant_messages = messages
+        combined = "\n\n".join(f"{message.speaker_name}：{message.content}" for message in messages)
+        if self._client._messages and self._client._messages[-1].get("role") == "assistant":
+            self._client._messages[-1]["content"] = combined
+        return messages
+
+    def _audit_character_knowledge(self, messages: list[ChatMessage], book) -> None:
+        knowledge_by_character = {
+            memory.character_id: {
+                item.get("fact", "")
+                for item in memory.knowledge
+                if item.get("awareness") != "unknown"
+            }
+            for memory in book.memories
+        }
+        all_facts = set().union(*knowledge_by_character.values()) if knowledge_by_character else set()
+        for message in messages:
+            own = knowledge_by_character.get(message.speaker_id, set())
+            for fact in all_facts - own:
+                if len(fact) >= 4 and fact in message.content:
+                    warning = f"{message.speaker_name}可能使用了未知信息：{fact[:80]}"
+                    if warning not in self._chat_state.consistency_warnings:
+                        self._chat_state.consistency_warnings.append(warning)
+
     def _sync_character_book_after_chat(self, user_input: str, assistant_content: str) -> None:
         if not self._participant_character_ids or not assistant_content.strip():
             return
         try:
-            messages = [
-                m for m in self._client.export_messages()
-                if m.get("role") in ("user", "assistant")
+            branch = self._chat_state.active_branch()
+            turn_index = self._current_turn_index()
+            source_messages = [
+                message for message in branch.messages
+                if message.turn_index == turn_index
             ]
-            turn_index = max(1, len(messages) // 2)
             book = self._load_character_book()
-            updated_book, new_events = extract_and_merge_character_book(
+            extraction_participants = (
+                list(self._chat_state.scene_state.present_character_ids)
+                if self._chat_state.scene_state.present_character_ids
+                else list(self._participant_character_ids)
+            )
+            change_set, new_events = extract_character_book_changes(
                 self._usage_logged_client("character_book_update"),
                 self._client.model,
                 book,
-                self._participant_character_ids,
+                extraction_participants,
                 user_input,
                 assistant_content,
                 self._chat_timeline,
                 turn_index,
+                branch.branch_id,
+                [message.message_id for message in source_messages],
                 global_user_prompt=self._client.global_user_prompt,
+                sender_name=self._sender_name,
+                sender_profile=self._sender_profile,
             )
-            self._character_book_manager.save(updated_book)
+            applied_count = 0
+            pending_count = 0
+            if change_set and change_set.changes:
+                low_changes = [change for change in change_set.changes if change.risk == "low"]
+                high_changes = [change for change in change_set.changes if change.risk == "high"]
+                if low_changes:
+                    low_set = copy.deepcopy(change_set)
+                    low_set.change_set_id = new_id("changeset")
+                    low_set.changes = low_changes
+                    apply_memory_change_set(book, low_set)
+                    self._chat_state.memory_change_sets.append(low_set)
+                    applied_count = len(low_changes)
+                if high_changes:
+                    change_set.changes = high_changes
+                    self._chat_state.memory_change_sets.append(change_set)
+                    pending_count = len(high_changes)
+            self._character_book_manager.save(book)
             if new_events:
                 self._chat_timeline.extend(new_events)
+                branch.timeline = timeline_to_dict(self._chat_timeline)
                 if isinstance(self._client.strategy, RolePlayStrategy):
-                    self._client.strategy.character_book = updated_book
+                    self._client.strategy.character_book = book
                     self._client.strategy.timeline = list(self._chat_timeline)
                     self._client.update_system_prompt()
-            self._stream_signals.token.emit(f"\n\n📘 人物书已同步，新增时间线 {len(new_events)} 条。\n")
+            self._snapshot_active_branch(book)
+            self._stream_signals.token.emit(
+                f"\n\n📘 人物书同步：自动应用 {applied_count} 项，"
+                f"待审核 {pending_count} 项，新增时间线 {len(new_events)} 条。\n"
+            )
         except Exception as e:
             self._stream_signals.token.emit(f"\n\n⚠️ 人物书同步失败，已保留本轮对话：{e}\n")
 
@@ -5003,7 +5638,11 @@ class DeepSeekChatGUI(QMainWindow):
         """主线程：接收一个 token"""
         self._assistant_text_buffer.append(token)
         full_text = "".join(self._assistant_text_buffer)
-        self._render_assistant_stream(full_text)
+        if not (
+            isinstance(self._client.strategy, RolePlayStrategy)
+            and self._current_chat_type == "group"
+        ):
+            self._render_assistant_stream(full_text)
         # 实时显示已接收字符数
         char_count = len(full_text)
         self._stream_count_label.setText(f"⏳ 已接收 {char_count} 字符")
@@ -5026,8 +5665,14 @@ class DeepSeekChatGUI(QMainWindow):
                 self._client.reset_cancel()
             self._on_chapter_rendering_done()
         else:
-            full_text = "".join(self._assistant_text_buffer)
-            self._render_assistant_message(full_text, callback=self._on_chapter_rendering_done)
+            if isinstance(self._client.strategy, RolePlayStrategy):
+                self._render_structured_conversation(
+                    self._chat_state.active_branch().messages,
+                    callback=self._on_chapter_rendering_done,
+                )
+            else:
+                full_text = "".join(self._assistant_text_buffer)
+                self._render_assistant_message(full_text, callback=self._on_chapter_rendering_done)
 
     def _on_chapter_rendering_done(self, result=None) -> None:
         """JS 渲染完成后回调 — 释放章节生成锁"""
@@ -5056,6 +5701,27 @@ class DeepSeekChatGUI(QMainWindow):
 
     # ========== 渲染 ==========
 
+    def _assistant_display_name(self) -> str:
+        if not isinstance(self._client.strategy, RolePlayStrategy):
+            return "助手"
+        if self._current_chat_type == "group":
+            return "群聊"
+        names = self._character_names([self._primary_character_id])
+        return names[0] if names else "角色"
+
+    def _format_roleplay_display_text(self, text: str) -> str:
+        if not isinstance(self._client.strategy, RolePlayStrategy):
+            return text
+        names = self._character_names(self._participant_character_ids)
+        labels = [*names, "旁白"]
+        if not labels:
+            return text
+        pattern = re.compile(
+            r"^(\s*)(" + "|".join(re.escape(name) for name in labels) + r")\s*[：:]\s*",
+            re.MULTILINE,
+        )
+        return pattern.sub(lambda m: f"{m.group(1)}**{m.group(2)}：** ", text)
+
     def _append_user_message(self, text: str) -> None:
         """追加用户消息到显示区域"""
         escaped = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
@@ -5065,7 +5731,7 @@ class DeepSeekChatGUI(QMainWindow):
             (function() {{
                 var div = document.createElement('div');
                 div.className = 'user-msg';
-                div.innerHTML = '<strong>🧑 你：</strong><br>' + `{js_safe}`;
+                div.innerHTML = '<strong>🧑 {self._escape_for_js(self._sender_name or "你")}：</strong><br>' + `{js_safe}`;
                 document.body.appendChild(div);
                 window.scrollTo(0, document.body.scrollHeight);
             }})();
@@ -5074,6 +5740,7 @@ class DeepSeekChatGUI(QMainWindow):
 
     def _render_assistant_stream(self, text: str) -> None:
         """流式渲染 Markdown"""
+        text = self._format_roleplay_display_text(text)
         html_body = md_lib.markdown(
             text,
             extensions=["fenced_code", "tables", "codehilite", "nl2br", "sane_lists"],
@@ -5089,7 +5756,7 @@ class DeepSeekChatGUI(QMainWindow):
                     container.className = 'assistant-msg';
                     document.body.appendChild(container);
                 }}
-                container.innerHTML = '<strong>🤖 助手：</strong><br>' + `{escaped_body}`;
+                container.innerHTML = '<strong>💬 {self._escape_for_js(self._assistant_display_name())}：</strong><br>' + `{escaped_body}`;
                 window.scrollTo(0, document.body.scrollHeight);
             }})();
         """
@@ -5097,6 +5764,7 @@ class DeepSeekChatGUI(QMainWindow):
 
     def _render_assistant_message(self, text: str, callback=None) -> None:
         """最终渲染（含可选 JS 完成回调）"""
+        text = self._format_roleplay_display_text(text)
         html_body = md_lib.markdown(
             text,
             extensions=["fenced_code", "tables", "codehilite", "nl2br", "sane_lists"],
@@ -5109,13 +5777,40 @@ class DeepSeekChatGUI(QMainWindow):
                 if (old) {{
                     var finalDiv = document.createElement('div');
                     finalDiv.className = 'assistant-msg';
-                    finalDiv.innerHTML = '<strong>🤖 助手：</strong><br>' + `{escaped_body}`;
+                    finalDiv.innerHTML = '<strong>💬 {self._escape_for_js(self._assistant_display_name())}：</strong><br>' + `{escaped_body}`;
                     old.parentNode.replaceChild(finalDiv, old);
                 }}
                 window.scrollTo(0, document.body.scrollHeight);
             }})();
         """
         self._display.page().runJavaScript(script, callback)
+
+    def _render_structured_conversation(self, messages: list[ChatMessage], callback=None) -> None:
+        body_parts = []
+        for message in messages[-100:]:
+            content = message.content or ""
+            if message.action:
+                content = f"*{message.action}*\n\n{content}"
+            html_body = md_lib.markdown(
+                content,
+                extensions=["fenced_code", "tables", "codehilite", "nl2br", "sane_lists"],
+            )
+            speaker = (
+                (message.speaker_name or ("你" if message.role == "user" else "角色"))
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+            )
+            css_class = "user-msg" if message.role == "user" else "system-msg" if message.speaker_id == "narrator" else "assistant-msg"
+            icon = "🧑" if message.role == "user" else "📖" if message.speaker_id == "narrator" else "💬"
+            body_parts.append(
+                f'<div class="{css_class}" data-message-id="{message.message_id}">'
+                f"<strong>{icon} {speaker}：</strong><br>{html_body}</div>"
+            )
+        full_html = f"<html><head>{CURRENT_HTML_STYLE}</head><body>{''.join(body_parts)}</body></html>"
+        self._display.setHtml(full_html)
+        if callback:
+            self._display.page().runJavaScript("true", callback)
 
     @staticmethod
     def _escape_for_js(s: str) -> str:
@@ -6475,14 +7170,20 @@ class DeepSeekChatGUI(QMainWindow):
             return None
         return str(data)
 
-    def _on_save_conversation(self) -> None:
+    def _on_save_conversation(self) -> bool:
         """保存当前对话到历史记录"""
         messages = self._client.export_messages()
+        if isinstance(self._client.strategy, RolePlayStrategy):
+            branch = self._chat_state.active_branch()
+            if branch.messages:
+                messages = structured_to_legacy_messages(
+                    branch.messages, self._client.strategy.get_system_prompt()
+                )
         # 过滤掉 system prompt，只统计用户和助手的消息
         user_assistant = [m for m in messages if m.get("role") in ("user", "assistant")]
         if not user_assistant:
             QMessageBox.warning(self, "提示", "当前没有对话内容，无法保存。")
-            return
+            return False
 
         # 弹出对话框获取标题
         title, ok = QInputDialog.getText(
@@ -6492,7 +7193,7 @@ class DeepSeekChatGUI(QMainWindow):
             text=self._current_conversation_title or ""
         )
         if not ok or not title.strip():
-            return
+            return False
 
         title = title.strip()
         if self._current_conversation_id:
@@ -6509,7 +7210,7 @@ class DeepSeekChatGUI(QMainWindow):
             msg_box.exec()
             clicked = msg_box.clickedButton()
             if clicked == btn_cancel or clicked is None:
-                return
+                return False
             if clicked == btn_new:
                 conversation_id = self._conversation_manager.generate_id(title)
             else:
@@ -6546,10 +7247,24 @@ class DeepSeekChatGUI(QMainWindow):
             timeline_id=conversation_id if isinstance(self._client.strategy, RolePlayStrategy) else "",
             timeline=timeline_to_dict(self._chat_timeline) if isinstance(self._client.strategy, RolePlayStrategy) else [],
             character_book_snapshot=character_book_to_dict(self._load_character_book()) if isinstance(self._client.strategy, RolePlayStrategy) else {},
-            schema_version=2,
+            sender_name=self._sender_name if isinstance(self._client.strategy, RolePlayStrategy) else "",
+            sender_profile=self._sender_profile if isinstance(self._client.strategy, RolePlayStrategy) else "",
+            required_responder_ids=list(self._required_responder_ids) if isinstance(self._client.strategy, RolePlayStrategy) else [],
+            structured_messages=[
+                asdict(message) for message in self._chat_state.active_branch().messages
+            ] if isinstance(self._client.strategy, RolePlayStrategy) else [],
+            branches=state_to_dict(self._chat_state).get("branches", []) if isinstance(self._client.strategy, RolePlayStrategy) else [],
+            active_branch_id=self._chat_state.active_branch_id if isinstance(self._client.strategy, RolePlayStrategy) else "main",
+            sender_profile_id=self._chat_state.sender_profile_id if isinstance(self._client.strategy, RolePlayStrategy) else "",
+            scene_state=state_to_dict(self._chat_state).get("scene_state", {}) if isinstance(self._client.strategy, RolePlayStrategy) else {},
+            turn_policy=state_to_dict(self._chat_state).get("turn_policy", {}) if isinstance(self._client.strategy, RolePlayStrategy) else {},
+            memory_change_sets=state_to_dict(self._chat_state).get("memory_change_sets", []) if isinstance(self._client.strategy, RolePlayStrategy) else [],
+            narrator_enabled=self._chat_state.narrator_enabled if isinstance(self._client.strategy, RolePlayStrategy) else False,
+            schema_version=4,
         )
         self._current_conversation_id = conversation_id
         self._current_conversation_title = title
+        self._conversation_dirty = False
         self._refresh_history_list()
         # 选中刚保存的对话
         for i in range(self._history_combo.count()):
@@ -6560,6 +7275,7 @@ class DeepSeekChatGUI(QMainWindow):
             self, "保存成功",
             f"对话「{title}」已保存（{len(user_assistant)} 条消息）\n{file_path}"
         )
+        return True
 
     def _on_load_conversation(self) -> None:
         """加载选中的对话历史（最多加载最近50条消息）"""
@@ -6604,12 +7320,25 @@ class DeepSeekChatGUI(QMainWindow):
         self._current_conversation_title = record.get("title", "")
 
         if isinstance(self._client.strategy, RolePlayStrategy):
+            state_payload = {
+                "branches": record.get("branches", []),
+                "active_branch_id": record.get("active_branch_id", "main"),
+                "sender_profile_id": record.get("sender_profile_id", ""),
+                "scene_state": record.get("scene_state", {}),
+                "turn_policy": record.get("turn_policy", {}),
+                "memory_change_sets": record.get("memory_change_sets", []),
+                "narrator_enabled": record.get("narrator_enabled", False),
+            }
+            self._chat_state = state_from_dict(state_payload)
             self._current_chat_type = record.get("chat_type") or "private"
             self._participant_character_ids = list(record.get("participant_character_ids") or [])
             self._primary_character_id = record.get("primary_character_id") or (
                 self._participant_character_ids[0] if self._participant_character_ids else ""
             )
             self._chat_timeline = dict_to_timeline(record.get("timeline", []))
+            self._sender_name = record.get("sender_name") or "你"
+            self._sender_profile = record.get("sender_profile") or ""
+            self._required_responder_ids = list(record.get("required_responder_ids") or [])
             # Legacy conversation migration: create a reusable profile from old role text.
             if not self._participant_character_ids:
                 legacy_name = (record.get("title") or "旧角色").strip()
@@ -6625,7 +7354,50 @@ class DeepSeekChatGUI(QMainWindow):
                     self._participant_character_ids = [profile.character_id]
                     self._primary_character_id = profile.character_id
                     self._current_chat_type = "private"
+            if not self._required_responder_ids:
+                self._required_responder_ids = (
+                    list(self._participant_character_ids)
+                    if self._current_chat_type == "group"
+                    else list(self._participant_character_ids[:1])
+                )
+            branch = self._chat_state.active_branch()
+            if not branch.messages:
+                structured = record.get("structured_messages", [])
+                if structured:
+                    branch.messages = [
+                        ChatMessage(**{
+                            key: value for key, value in item.items()
+                            if key in ChatMessage.__dataclass_fields__
+                        })
+                        for item in structured
+                    ]
+                else:
+                    assistant_name = (
+                        self._character_names([self._primary_character_id])[0]
+                        if self._primary_character_id and self._character_names([self._primary_character_id])
+                        else "角色"
+                    )
+                    branch.messages = legacy_messages_to_structured(
+                        messages,
+                        branch_id=branch.branch_id,
+                        sender_name=self._sender_name,
+                        assistant_name=assistant_name,
+                        name_to_id={
+                            profile.name: profile.character_id
+                            for profile in self._load_character_book().profiles
+                            if profile.character_id in self._participant_character_ids
+                        },
+                    )
+                branch.timeline = timeline_to_dict(self._chat_timeline)
+                branch.character_state_snapshot = record.get("character_book_snapshot", {})
+            self._sender_name_edit.blockSignals(True)
+            self._sender_profile_edit.blockSignals(True)
+            self._sender_name_edit.setText(self._sender_name)
+            self._sender_profile_edit.setPlainText(self._sender_profile)
+            self._sender_name_edit.blockSignals(False)
+            self._sender_profile_edit.blockSignals(False)
             self._refresh_character_list()
+            self._refresh_required_responder_list()
             self._sync_role_strategy()
 
         # 恢复角色扮演的角色描述、故事背景和回复方式
@@ -6658,7 +7430,11 @@ class DeepSeekChatGUI(QMainWindow):
             self._update_status()
 
         # 重新渲染完整对话
-        self._render_full_conversation(messages)
+        if isinstance(self._client.strategy, RolePlayStrategy):
+            self._render_structured_conversation(self._chat_state.active_branch().messages)
+        else:
+            self._render_full_conversation(messages)
+        self._conversation_dirty = False
         self._refresh_history_list()
         QMessageBox.information(
             self, "加载成功",
@@ -6720,13 +7496,21 @@ class DeepSeekChatGUI(QMainWindow):
                 body_parts.append(f'<div class="system-msg"><em>[系统提示]</em><br>{escaped}</div>')
             elif role == "user":
                 escaped = content.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace("\n", "<br>")
-                body_parts.append(f'<div class="user-msg"><strong>🧑 你：</strong><br>{escaped}</div>')
+                sender = (self._sender_name or "你").replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+                body_parts.append(f'<div class="user-msg"><strong>🧑 {sender}：</strong><br>{escaped}</div>')
             elif role == "assistant":
+                content = self._format_roleplay_display_text(content)
                 html_body = md_lib.markdown(
                     content,
                     extensions=["fenced_code", "tables", "codehilite", "nl2br", "sane_lists"],
                 )
-                body_parts.append(f'<div class="assistant-msg"><strong>🤖 助手：</strong><br>{html_body}</div>')
+                assistant_name = (
+                    self._assistant_display_name()
+                    .replace("&", "&amp;")
+                    .replace("<", "&lt;")
+                    .replace(">", "&gt;")
+                )
+                body_parts.append(f'<div class="assistant-msg"><strong>💬 {assistant_name}：</strong><br>{html_body}</div>')
 
         full_html = f"<html><head>{HTML_STYLE}</head><body>{''.join(body_parts)}</body></html>"
         self._display.setHtml(full_html)

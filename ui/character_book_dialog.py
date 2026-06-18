@@ -33,6 +33,7 @@ class CharacterProfileDialog(QDialog):
         self.name_edit = QLineEdit(self.profile.name)
         self.aliases_edit = QLineEdit("、".join(self.profile.aliases))
         self.identity_edit = QLineEdit(self.profile.identity)
+        self.status_edit = QLineEdit(self.profile.status)
         self.appearance_edit = QTextEdit(self.profile.appearance)
         self.personality_edit = QTextEdit(self.profile.personality)
         self.speech_edit = QTextEdit(self.profile.speech_style)
@@ -53,6 +54,7 @@ class CharacterProfileDialog(QDialog):
         form.addRow("名称", self.name_edit)
         form.addRow("别名", self.aliases_edit)
         form.addRow("身份", self.identity_edit)
+        form.addRow("状态", self.status_edit)
         form.addRow("外貌", self.appearance_edit)
         form.addRow("性格", self.personality_edit)
         form.addRow("说话风格", self.speech_edit)
@@ -75,6 +77,7 @@ class CharacterProfileDialog(QDialog):
         self.profile.name = self.name_edit.text().strip()
         self.profile.aliases = aliases
         self.profile.identity = self.identity_edit.text().strip()
+        self.profile.status = self.status_edit.text().strip() or "active"
         self.profile.appearance = self.appearance_edit.toPlainText().strip()
         self.profile.personality = self.personality_edit.toPlainText().strip()
         self.profile.speech_style = self.speech_edit.toPlainText().strip()
@@ -162,6 +165,7 @@ class CharacterBookDialog(QDialog):
         labels = {
             "aliases": "别名",
             "identity": "身份",
+            "status": "状态",
             "appearance": "外貌",
             "personality": "性格",
             "speech_style": "说话风格",

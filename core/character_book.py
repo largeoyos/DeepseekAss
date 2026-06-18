@@ -19,6 +19,7 @@ class CharacterProfile:
     name: str = ""
     aliases: list[str] = field(default_factory=list)
     identity: str = ""
+    status: str = "active"
     appearance: str = ""
     personality: str = ""
     speech_style: str = ""
@@ -42,6 +43,8 @@ class CharacterMemory:
     emotion_and_goals: str = ""
     key_dialogues: list[str] = field(default_factory=list)
     fact_sources: list[dict] = field(default_factory=list)
+    knowledge: list[dict] = field(default_factory=list)
+    relationship_states: list[dict] = field(default_factory=list)
     updated_at: str = ""
 
 
@@ -60,6 +63,8 @@ class ChatTimelineEntry:
 class CharacterBook:
     profiles: list[CharacterProfile] = field(default_factory=list)
     memories: list[CharacterMemory] = field(default_factory=list)
+    branch_snapshots: dict[str, dict] = field(default_factory=dict)
+    change_history: list[dict] = field(default_factory=list)
 
 
 def _now() -> str:
@@ -87,6 +92,8 @@ def dict_to_character_book(data: dict | None) -> CharacterBook:
     return CharacterBook(
         profiles=[CharacterProfile(**_filter_fields(CharacterProfile, p)) for p in data.get("profiles", [])],
         memories=[CharacterMemory(**_filter_fields(CharacterMemory, m)) for m in data.get("memories", [])],
+        branch_snapshots=dict(data.get("branch_snapshots", {})),
+        change_history=list(data.get("change_history", [])),
     )
 
 
@@ -116,6 +123,7 @@ def format_profile(profile: CharacterProfile) -> str:
         parts.append(f"别名：{'、'.join(profile.aliases)}")
     for label, value in (
         ("身份", profile.identity),
+        ("状态", profile.status),
         ("外貌", profile.appearance),
         ("性格", profile.personality),
         ("说话风格", profile.speech_style),
@@ -157,6 +165,15 @@ def format_character_book_for_prompt(
             if memory.relationships:
                 rels = [f"{k}={v}" for k, v in list(memory.relationships.items())[:6]]
                 mem_parts.append("关系：" + "；".join(rels))
+            if memory.relationship_states:
+                relation_lines = []
+                for rel in memory.relationship_states[:8]:
+                    relation_lines.append(
+                        f"{rel.get('target_id', '')}: 信任{rel.get('trust', 0)} "
+                        f"好感{rel.get('affection', 0)} 敌意{rel.get('hostility', 0)} "
+                        f"警惕{rel.get('vigilance', 0)} {rel.get('description', '')}"
+                    )
+                mem_parts.append("关系状态：" + "；".join(relation_lines))
             if memory.key_dialogues:
                 mem_parts.append("关键对话：" + " | ".join(memory.key_dialogues[-2:]))
             if mem_parts:
@@ -266,6 +283,9 @@ JSON 格式：
       "recent_actions": ["近期关键行动"],
       "emotion_and_goals": "情绪与目标变化",
       "key_dialogues": ["重要原话或近似摘录"]
+      "knowledge": [{"fact": "事实", "awareness": "witnessed/heard/inferred", "confidence": 0.0}],
+      "relationship_metrics": [{"target": "对象", "trust_delta": 0, "affection_delta": 0, "hostility_delta": 0, "vigilance_delta": 0, "description": "变化原因"}],
+      "high_risk_changes": [{"field_name": "current_state/identity/status/knowledge_state/relationships", "new_value": "新值", "reason": "依据"}]
     }
   ],
   "timeline": [
@@ -279,6 +299,192 @@ JSON 格式：
 """
 
 
+def build_memory_change_set(
+    book: CharacterBook,
+    data: dict,
+    participant_ids: list[str],
+    branch_id: str,
+    source_message_ids: list[str],
+):
+    from core.chat_domain import MemoryChange, MemoryChangeSet, new_id, now_text
+
+    id_by_name = {profile.name: profile.character_id for profile in book.profiles}
+    changes: list[MemoryChange] = []
+    for item in data.get("characters", []):
+        character_id = item.get("character_id") or id_by_name.get(str(item.get("name", "")).strip())
+        if character_id not in participant_ids:
+            continue
+        memory = find_memory(book, character_id)
+        if memory is None:
+            profile = find_profile(book, character_id)
+            memory = CharacterMemory(character_id=character_id, name=profile.name if profile else "")
+            book.memories.append(memory)
+        for field_name in ("experiences", "recent_actions", "key_dialogues"):
+            incoming = _as_list(item.get(field_name, []))
+            if not incoming:
+                continue
+            old_value = list(getattr(memory, field_name))
+            new_value = list(old_value)
+            _merge_unique(new_value, incoming, 30 if field_name == "experiences" else 20)
+            if new_value != old_value:
+                changes.append(MemoryChange(
+                    change_id=new_id("change"),
+                    character_id=character_id,
+                    field_name=field_name,
+                    old_value=old_value,
+                    new_value=new_value,
+                    risk="low",
+                    reason="本轮对话自动提取",
+                ))
+        for field_name in ("current_state", "emotion_and_goals"):
+            incoming = str(item.get(field_name, "")).strip()
+            old_value = getattr(memory, field_name)
+            if incoming and incoming != old_value:
+                changes.append(MemoryChange(
+                    change_id=new_id("change"),
+                    character_id=character_id,
+                    field_name=field_name,
+                    old_value=old_value,
+                    new_value=incoming[:300],
+                    risk="low",
+                    reason="本轮对话自动提取",
+                ))
+        for high in item.get("high_risk_changes", []):
+            field_name = str(high.get("field_name", "")).strip()
+            profile = find_profile(book, character_id)
+            target = memory if hasattr(memory, field_name) else profile
+            if not field_name or target is None or not hasattr(target, field_name):
+                continue
+            changes.append(MemoryChange(
+                change_id=new_id("change"),
+                character_id=character_id,
+                field_name=field_name,
+                old_value=getattr(target, field_name),
+                new_value=high.get("new_value"),
+                risk="high",
+                reason=str(high.get("reason", ""))[:300],
+            ))
+        knowledge = item.get("knowledge", [])
+        if knowledge:
+            old_value = list(memory.knowledge)
+            new_value = old_value + [
+                {
+                    "knowledge_id": new_id("knowledge"),
+                    "character_id": character_id,
+                    "fact": str(entry.get("fact", ""))[:300],
+                    "awareness": entry.get("awareness", "witnessed"),
+                    "confidence": float(entry.get("confidence", 1.0) or 0),
+                    "source_message_id": source_message_ids[-1] if source_message_ids else "",
+                    "learned_at": now_text(),
+                    "branch_id": branch_id,
+                }
+                for entry in knowledge if entry.get("fact")
+            ]
+            changes.append(MemoryChange(
+                change_id=new_id("change"),
+                character_id=character_id,
+                field_name="knowledge",
+                old_value=old_value,
+                new_value=new_value[-50:],
+                risk="high",
+                reason="角色知识状态变化",
+            ))
+        metrics = item.get("relationship_metrics", [])
+        if metrics:
+            old_value = list(memory.relationship_states)
+            states = {entry.get("target_id") or entry.get("target"): dict(entry) for entry in old_value}
+            for metric in metrics:
+                target = str(metric.get("target", "")).strip()
+                if not target:
+                    continue
+                state = states.get(target, {
+                    "source_character_id": character_id,
+                    "target_id": target,
+                    "trust": 0,
+                    "affection": 0,
+                    "hostility": 0,
+                    "vigilance": 0,
+                })
+                for field_name in ("trust", "affection", "hostility", "vigilance"):
+                    delta = int(metric.get(f"{field_name}_delta", 0) or 0)
+                    state[field_name] = max(-100, min(100, int(state.get(field_name, 0)) + delta))
+                state["description"] = str(metric.get("description", ""))[:200]
+                state["reason"] = str(metric.get("description", ""))[:200]
+                state["source_message_id"] = source_message_ids[-1] if source_message_ids else ""
+                state["updated_at"] = now_text()
+                states[target] = state
+            changes.append(MemoryChange(
+                change_id=new_id("change"),
+                character_id=character_id,
+                field_name="relationship_states",
+                old_value=old_value,
+                new_value=list(states.values()),
+                risk="high",
+                reason="关系数值变化",
+            ))
+    return MemoryChangeSet(
+        change_set_id=new_id("changeset"),
+        branch_id=branch_id,
+        source_message_ids=source_message_ids,
+        changes=changes,
+        status="pending",
+        created_at=now_text(),
+    )
+
+
+def extract_character_book_changes(
+    client,
+    model: str,
+    book: CharacterBook,
+    participant_ids: list[str],
+    user_message: str,
+    assistant_message: str,
+    timeline: list[ChatTimelineEntry],
+    turn_index: int,
+    branch_id: str,
+    source_message_ids: list[str],
+    global_user_prompt: str = "",
+    sender_name: str = "",
+    sender_profile: str = "",
+):
+    participants = [profile for profile in book.profiles if profile.character_id in set(participant_ids)]
+    if not participants:
+        return None, []
+    context = {
+        "participants": [asdict(profile) for profile in participants],
+        "recent_timeline": [asdict(item) for item in timeline[-8:]],
+        "sender": {"name": sender_name, "profile": sender_profile},
+        "user_message": user_message,
+        "assistant_message": assistant_message,
+    }
+    prompt = EXTRACT_PROMPT + "\n输入：\n" + json.dumps(context, ensure_ascii=False, indent=2)
+    if global_user_prompt.strip():
+        prompt += "\n用户偏好：" + global_user_prompt.strip()
+    response = client.chat.completions.create(
+        model=model,
+        messages=[{"role": "user", "content": prompt}],
+        temperature=0.1,
+        max_tokens=4096,
+    )
+    raw = response.choices[0].message.content or "{}"
+    if "```json" in raw:
+        raw = raw.split("```json", 1)[1].split("```", 1)[0]
+    elif "```" in raw:
+        raw = raw.split("```", 1)[1].split("```", 1)[0]
+    data = json.loads(raw.strip())
+    change_set = build_memory_change_set(
+        book, data, participant_ids, branch_id, source_message_ids
+    )
+    _, events = merge_character_book_data(
+        CharacterBook(profiles=book.profiles),
+        {"timeline": data.get("timeline", [])},
+        participant_ids=participant_ids,
+        turn_index=turn_index,
+        source_message_range=f"turn:{turn_index}",
+    )
+    return change_set, events
+
+
 def extract_and_merge_character_book(
     client,
     model: str,
@@ -289,6 +495,8 @@ def extract_and_merge_character_book(
     timeline: list[ChatTimelineEntry],
     turn_index: int,
     global_user_prompt: str = "",
+    sender_name: str = "",
+    sender_profile: str = "",
 ) -> tuple[CharacterBook, list[ChatTimelineEntry]]:
     participants = [p for p in book.profiles if p.character_id in set(participant_ids)]
     if not participants:
@@ -296,6 +504,7 @@ def extract_and_merge_character_book(
     context = {
         "participants": [asdict(p) for p in participants],
         "recent_timeline": [asdict(t) for t in timeline[-8:]],
+        "sender": {"name": sender_name, "profile": sender_profile},
         "user_message": user_message,
         "assistant_message": assistant_message,
     }
