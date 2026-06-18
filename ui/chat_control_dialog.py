@@ -1,3 +1,4 @@
+import copy
 from dataclasses import asdict
 
 from PyQt6.QtCore import Qt
@@ -11,6 +12,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QInputDialog,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
@@ -22,7 +24,7 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
-from core.chat_domain import SenderProfile, new_id, now_text
+from core.chat_domain import ScenePreset, SceneState, SenderProfile, new_id, now_text
 
 
 class SenderProfileEditDialog(QDialog):
@@ -79,6 +81,7 @@ class ChatControlDialog(QDialog):
         character_book,
         participant_ids,
         sender_profiles,
+        scene_presets,
         apply_change_callback,
         modify_change_callback,
         reject_change_callback,
@@ -92,6 +95,8 @@ class ChatControlDialog(QDialog):
         self.character_book = character_book
         self.participant_ids = list(participant_ids)
         self.sender_profiles = sender_profiles
+        self._scene_presets_target = scene_presets
+        self.scene_presets = copy.deepcopy(scene_presets)
         self.apply_change_callback = apply_change_callback
         self.modify_change_callback = modify_change_callback
         self.reject_change_callback = reject_change_callback
@@ -188,7 +193,21 @@ class ChatControlDialog(QDialog):
 
     def _build_scene_tab(self):
         tab = QWidget()
-        form = QFormLayout(tab)
+        layout = QVBoxLayout(tab)
+        preset_row = QHBoxLayout()
+        self.scene_preset_combo = QComboBox()
+        apply_preset_btn = QPushButton("应用常用场景")
+        save_preset_btn = QPushButton("保存为常用场景")
+        delete_preset_btn = QPushButton("删除常用场景")
+        apply_preset_btn.clicked.connect(self._apply_scene_preset)
+        save_preset_btn.clicked.connect(self._save_scene_preset)
+        delete_preset_btn.clicked.connect(self._delete_scene_preset)
+        preset_row.addWidget(self.scene_preset_combo, 1)
+        preset_row.addWidget(apply_preset_btn)
+        preset_row.addWidget(save_preset_btn)
+        preset_row.addWidget(delete_preset_btn)
+        layout.addLayout(preset_row)
+        form = QFormLayout()
         self.scene_time = QLineEdit(self.state.scene_state.time)
         self.scene_location = QLineEdit(self.state.scene_state.location)
         self.scene_weather = QLineEdit(self.state.scene_state.weather)
@@ -212,7 +231,106 @@ class ChatControlDialog(QDialog):
         form.addRow("环境描述", self.scene_description)
         form.addRow("状态标签", self.scene_tags)
         form.addRow("在场角色", self.scene_present)
+        layout.addLayout(form)
+        self._refresh_scene_presets()
         return tab
+
+    def _refresh_scene_presets(self, selected_id: str = ""):
+        self.scene_preset_combo.clear()
+        self.scene_preset_combo.addItem("选择常用场景", "")
+        for preset in self.scene_presets:
+            self.scene_preset_combo.addItem(
+                preset.name or "未命名场景",
+                preset.scene_preset_id,
+            )
+        if selected_id:
+            index = self.scene_preset_combo.findData(selected_id)
+            if index >= 0:
+                self.scene_preset_combo.setCurrentIndex(index)
+
+    def _current_scene_from_fields(self) -> SceneState:
+        return SceneState(
+            time=self.scene_time.text().strip(),
+            location=self.scene_location.text().strip(),
+            weather=self.scene_weather.text().strip(),
+            objective=self.scene_objective.text().strip(),
+            description=self.scene_description.toPlainText().strip(),
+            tags=[
+                value.strip()
+                for value in self.scene_tags.text().replace(",", "、").split("、")
+                if value.strip()
+            ],
+            present_character_ids=self._selected_ids(self.scene_present),
+        )
+
+    def _set_scene_fields(self, scene: SceneState):
+        self.scene_time.setText(scene.time)
+        self.scene_location.setText(scene.location)
+        self.scene_weather.setText(scene.weather)
+        self.scene_objective.setText(scene.objective)
+        self.scene_description.setPlainText(scene.description)
+        self.scene_tags.setText("、".join(scene.tags))
+        present_ids = set(scene.present_character_ids)
+        for index in range(self.scene_present.count()):
+            item = self.scene_present.item(index)
+            item.setSelected(item.data(Qt.ItemDataRole.UserRole) in present_ids)
+
+    def _selected_scene_preset(self):
+        preset_id = self.scene_preset_combo.currentData()
+        return next(
+            (
+                preset
+                for preset in self.scene_presets
+                if preset.scene_preset_id == preset_id
+            ),
+            None,
+        )
+
+    def _apply_scene_preset(self):
+        preset = self._selected_scene_preset()
+        if preset:
+            self._set_scene_fields(copy.deepcopy(preset.scene))
+
+    def _save_scene_preset(self):
+        current = self._selected_scene_preset()
+        default_name = current.name if current else self.scene_location.text().strip()
+        name, accepted = QInputDialog.getText(
+            self,
+            "保存常用场景",
+            "场景名称",
+            text=default_name,
+        )
+        name = name.strip()
+        if not accepted or not name:
+            return
+        preset = current or next(
+            (item for item in self.scene_presets if item.name == name),
+            None,
+        )
+        if preset is None:
+            preset = ScenePreset(
+                scene_preset_id=new_id("scene"),
+                created_at=now_text(),
+            )
+            self.scene_presets.append(preset)
+        preset.name = name
+        preset.scene = self._current_scene_from_fields()
+        preset.updated_at = now_text()
+        self._refresh_scene_presets(preset.scene_preset_id)
+
+    def _delete_scene_preset(self):
+        preset = self._selected_scene_preset()
+        if not preset:
+            return
+        answer = QMessageBox.question(
+            self,
+            "删除常用场景",
+            f"确定删除“{preset.name}”吗？",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        self.scene_presets.remove(preset)
+        self._refresh_scene_presets()
 
     def _character_selector(self, selected_ids):
         widget = QListWidget()
@@ -415,4 +533,5 @@ class ChatControlDialog(QDialog):
         ]
         policy.max_speakers = self.policy_max.value()
         self.state.narrator_enabled = self.narrator_check.isChecked()
+        self._scene_presets_target[:] = copy.deepcopy(self.scene_presets)
         self.accept()

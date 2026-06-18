@@ -1193,6 +1193,26 @@ def audit_world_bible_consistency(bible: WorldBible) -> list[dict]:
             version_text = f" v{version}" if version else ""
             add("info", "快照缺失", f"{kind}「{title}」指向第{chapter}章{version_text}，但没有对应章节世界书快照。", [title, f"第{chapter}章"])
 
+    def check_fact_source_health(kind: str, title: str, data: dict, fields: tuple[str, ...]) -> None:
+        fact_sources = data.get("fact_sources")
+        missing = [
+            field_name
+            for field_name in fields
+            if data.get(field_name)
+            and (
+                not isinstance(fact_sources, dict)
+                or not isinstance(fact_sources.get(field_name), list)
+                or not fact_sources.get(field_name)
+            )
+        ]
+        if missing:
+            add(
+                "info",
+                "字段来源待补全",
+                f"{kind}「{title}」有 {len(missing)} 个主要字段缺少章节级来源，可通过按活跃路径同步世界书补全。",
+                [title],
+            )
+
     category_counts = {
         "角色": len(bible.characters),
         "地点": len(bible.locations),
@@ -1213,7 +1233,18 @@ def audit_world_bible_consistency(bible: WorldBible) -> list[dict]:
     # 同名/同别名角色碰撞
     seen_chars: dict[str, str] = {}
     for ch in bible.characters:
-        check_source_health("角色", ch.name or "未命名角色", asdict(ch))
+        ch_data = asdict(ch)
+        check_source_health("角色", ch.name or "未命名角色", ch_data)
+        check_fact_source_health(
+            "角色",
+            ch.name or "未命名角色",
+            ch_data,
+            (
+                "traits", "status", "motivation", "arc", "current_location",
+                "current_goal", "current_emotion", "recent_action",
+                "knowledge_state", "key_details", "relationships",
+            ),
+        )
         if ch.importance == "major" and not any([
             ch.current_goal,
             ch.current_location,
@@ -1243,7 +1274,14 @@ def audit_world_bible_consistency(bible: WorldBible) -> list[dict]:
     # 地点重复/矛盾风险
     seen_locs: dict[str, str] = {}
     for loc in bible.locations:
-        check_source_health("地点", loc.name or "未命名地点", asdict(loc))
+        loc_data = asdict(loc)
+        check_source_health("地点", loc.name or "未命名地点", loc_data)
+        check_fact_source_health(
+            "地点",
+            loc.name or "未命名地点",
+            loc_data,
+            ("description", "significance", "key_details", "atmosphere"),
+        )
         if not loc.description:
             add("info", "地点描述缺失", f"地点「{loc.name}」缺少描述。", [loc.name])
         if not loc.key_details:
@@ -1268,7 +1306,17 @@ def audit_world_bible_consistency(bible: WorldBible) -> list[dict]:
 
     current_chapter = bible.last_updated_chapter or max([t.chapter for t in bible.timeline] or [0])
     for thread in bible.active_plot_threads:
-        check_source_health("剧情线", thread.name or "未命名剧情线", asdict(thread))
+        thread_data = asdict(thread)
+        check_source_health("剧情线", thread.name or "未命名剧情线", thread_data)
+        check_fact_source_health(
+            "剧情线",
+            thread.name or "未命名剧情线",
+            thread_data,
+            (
+                "status", "description", "involved_characters", "key_details",
+                "foreshadowing_related", "expected_payoff", "payoff_hint",
+            ),
+        )
         if thread.status == "active" and thread.last_touched_chapter:
             idle = current_chapter - thread.last_touched_chapter
             if idle >= 8:

@@ -94,6 +94,15 @@ class SceneState:
 
 
 @dataclass
+class ScenePreset:
+    scene_preset_id: str = ""
+    name: str = ""
+    scene: SceneState = field(default_factory=SceneState)
+    created_at: str = ""
+    updated_at: str = ""
+
+
+@dataclass
 class TurnPolicy:
     required_speaker_ids: list[str] = field(default_factory=list)
     allowed_speaker_ids: list[str] = field(default_factory=list)
@@ -409,6 +418,46 @@ class SenderProfileManager:
             profile.created_at = profile.created_at or now
             profile.updated_at = now
         data = {"profiles": [asdict(profile) for profile in profiles]}
+        if self._enc_key is None:
+            with open(self._path, "w", encoding="utf-8") as handle:
+                json.dump(data, handle, ensure_ascii=False, indent=2)
+        else:
+            self._crypto.encrypt_json(self._enc_key, self._path + ".enc", data)
+
+
+class ScenePresetManager:
+    def __init__(self, root_dir: str, crypto=None, enc_key: bytes | None = None) -> None:
+        self._path = os.path.join(root_dir, "scene_presets.json")
+        self._crypto = crypto
+        self._enc_key = enc_key
+
+    def load(self) -> list[ScenePreset]:
+        path = self._path + ".enc" if self._enc_key is not None else self._path
+        if not os.path.exists(path):
+            return []
+        if self._enc_key is None:
+            with open(path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+        else:
+            data = self._crypto.decrypt_json(self._enc_key, path) or {}
+        result = []
+        for item in data.get("presets", []):
+            result.append(ScenePreset(
+                scene_preset_id=item.get("scene_preset_id", ""),
+                name=item.get("name", ""),
+                scene=SceneState(**filter_fields(SceneState, item.get("scene", {}))),
+                created_at=item.get("created_at", ""),
+                updated_at=item.get("updated_at", ""),
+            ))
+        return result
+
+    def save(self, presets: list[ScenePreset]) -> None:
+        now = now_text()
+        for preset in presets:
+            preset.scene_preset_id = preset.scene_preset_id or new_id("scene")
+            preset.created_at = preset.created_at or now
+            preset.updated_at = now
+        data = {"presets": [asdict(preset) for preset in presets]}
         if self._enc_key is None:
             with open(self._path, "w", encoding="utf-8") as handle:
                 json.dump(data, handle, ensure_ascii=False, indent=2)

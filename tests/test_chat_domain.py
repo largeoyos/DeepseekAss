@@ -11,6 +11,8 @@ from core.character_book import (
 from core.chat_domain import (
     ChatSessionState,
     MemoryChangeSet,
+    ScenePreset,
+    ScenePresetManager,
     SceneState,
     SenderProfile,
     SenderProfileManager,
@@ -108,6 +110,22 @@ class ChatDomainTests(unittest.TestCase):
         sender_manager = SenderProfileManager(root)
         sender_manager.save([SenderProfile(name="Player")])
         self.assertEqual("Player", sender_manager.load()[0].name)
+
+        scene_manager = ScenePresetManager(root)
+        scene_manager.save([
+            ScenePreset(
+                name="Library",
+                scene=SceneState(
+                    time="night",
+                    location="library",
+                    present_character_ids=["a"],
+                ),
+            )
+        ])
+        scene = scene_manager.load()[0]
+        self.assertEqual("Library", scene.name)
+        self.assertEqual("library", scene.scene.location)
+        self.assertEqual(["a"], scene.scene.present_character_ids)
 
 
 if __name__ == "__main__":

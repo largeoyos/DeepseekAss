@@ -363,13 +363,129 @@ class NovelManager:
     def _node_id(chapter_num: int, version: int) -> str:
         return f"ch{chapter_num:04d}_v{version:03d}"
 
+    @staticmethod
+    def _virtual_root_node_id() -> str:
+        return "ch0000_v000"
+
     def ensure_chapter_tree(self, title: str) -> NovelMeta:
         """Build tree metadata from legacy chapter_versions when needed."""
         meta = self.load_meta(title)
         changed = self._ensure_tree_meta_from_versions(meta)
+        changed = self._normalize_chapter_tree(meta) or changed
         if changed:
             self._save_meta(title, meta)
         return meta
+
+    def _normalize_chapter_tree(self, meta: NovelMeta) -> bool:
+        """Repair root, parent/child links and the active path."""
+        root_id = self._virtual_root_node_id()
+        changed = False
+        if root_id not in meta.chapter_nodes:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M")
+            meta.chapter_nodes[root_id] = {
+                "id": root_id,
+                "chapter_num": 0,
+                "version": 0,
+                "title": "故事起点",
+                "file": "",
+                "summary": "",
+                "user_direction": "",
+                "generation_params": {},
+                "parent_id": None,
+                "children_ids": [],
+                "sibling_order": 0,
+                "created_at": now,
+                "updated_at": now,
+                "virtual": True,
+            }
+            changed = True
+
+        root = meta.chapter_nodes[root_id]
+        root_defaults = {
+            "chapter_num": 0,
+            "version": 0,
+            "title": "故事起点",
+            "file": "",
+            "summary": "",
+            "virtual": True,
+            "parent_id": None,
+        }
+        for key, value in root_defaults.items():
+            if root.get(key) != value:
+                root[key] = value
+                changed = True
+
+        valid_ids = set(meta.chapter_nodes)
+        for node_id, node in meta.chapter_nodes.items():
+            if node_id == root_id:
+                continue
+            parent_id = node.get("parent_id")
+            if not parent_id or parent_id not in valid_ids or parent_id == node_id:
+                node["parent_id"] = root_id
+                changed = True
+
+        expected_children: dict[str, list[str]] = {node_id: [] for node_id in valid_ids}
+        for node_id, node in meta.chapter_nodes.items():
+            if node_id == root_id:
+                continue
+            parent_id = node.get("parent_id") or root_id
+            expected_children.setdefault(parent_id, []).append(node_id)
+        for parent_id, node in meta.chapter_nodes.items():
+            children = sorted(
+                dict.fromkeys(expected_children.get(parent_id, [])),
+                key=lambda nid: (
+                    int(meta.chapter_nodes[nid].get("chapter_num", 0) or 0),
+                    int(meta.chapter_nodes[nid].get("sibling_order", 0) or 0),
+                    int(meta.chapter_nodes[nid].get("version", 0) or 0),
+                ),
+            )
+            if node.get("children_ids", []) != children:
+                node["children_ids"] = children
+                changed = True
+
+        selected_id = next(
+            (nid for nid in reversed(meta.active_path) if nid in meta.chapter_nodes),
+            root_id,
+        )
+        desired_path: list[str] = []
+        cursor: str | None = selected_id
+        seen: set[str] = set()
+        while cursor and cursor not in seen and cursor in meta.chapter_nodes:
+            seen.add(cursor)
+            desired_path.append(cursor)
+            cursor = meta.chapter_nodes[cursor].get("parent_id")
+        desired_path.reverse()
+        if not desired_path or desired_path[0] != root_id:
+            desired_path = [root_id]
+        if meta.active_path != desired_path:
+            meta.active_path = desired_path
+            changed = True
+        if meta.root_chapter_id != root_id:
+            meta.root_chapter_id = root_id
+            changed = True
+        return changed
+
+    def get_active_generation_target(self, title: str) -> dict:
+        """Return the next chapter/version and parent for the current active path."""
+        meta = self.ensure_chapter_tree(title)
+        root_id = self._virtual_root_node_id()
+        active_nodes = [
+            meta.chapter_nodes[nid]
+            for nid in meta.active_path
+            if nid in meta.chapter_nodes and not meta.chapter_nodes[nid].get("virtual")
+        ]
+        if active_nodes:
+            parent = active_nodes[-1]
+            chapter_num = int(parent.get("chapter_num", 0) or 0) + 1
+            parent_id = parent["id"]
+        else:
+            chapter_num = 1
+            parent_id = root_id
+        return {
+            "chapter_num": chapter_num,
+            "version": self.get_next_version(title, chapter_num),
+            "parent_id": parent_id,
+        }
 
     def _ensure_tree_meta_from_versions(self, meta: NovelMeta) -> bool:
         if meta.schema_version >= 2 and meta.chapter_nodes:
@@ -431,12 +547,16 @@ class NovelManager:
 
     def get_active_path_nodes(self, title: str) -> list[dict]:
         meta = self.ensure_chapter_tree(title)
-        return [meta.chapter_nodes[nid] for nid in meta.active_path if nid in meta.chapter_nodes]
+        return [
+            meta.chapter_nodes[nid]
+            for nid in meta.active_path
+            if nid in meta.chapter_nodes and not meta.chapter_nodes[nid].get("virtual")
+        ]
 
     def read_chapter_node(self, title: str, node_id: str) -> str | None:
         meta = self.ensure_chapter_tree(title)
         node = meta.chapter_nodes.get(node_id)
-        if not node:
+        if not node or node.get("virtual"):
             return None
         return self.read_chapter_version(title, int(node["chapter_num"]), int(node["version"]))
 
@@ -535,14 +655,14 @@ class NovelManager:
                 key = str(active["chapter_num"])
                 if key in meta.chapter_versions:
                     meta.chapter_versions[key]["active"] = int(active["version"])
-        meta.root_chapter_id = path[0] if path else ""
+        self._normalize_chapter_tree(meta)
         meta.compressed_early_summary = ""
         self._save_meta(title, meta)
         return True
 
     def delete_chapter_node(self, title: str, node_id: str) -> bool:
         meta = self.ensure_chapter_tree(title)
-        if node_id not in meta.chapter_nodes:
+        if node_id not in meta.chapter_nodes or meta.chapter_nodes[node_id].get("virtual"):
             return False
         to_delete: set[str] = set()
 
@@ -585,6 +705,7 @@ class NovelManager:
         chapter_title: str,
         content: str,
         version: int | None = None,
+        parent_id: str | None = None,
     ) -> tuple[str, int]:
         """
         保存一章的一个版本
@@ -634,13 +755,18 @@ class NovelManager:
             meta.chapter_titles.append(chapter_title)
 
         self._ensure_tree_meta_from_versions(meta)
+        self._normalize_chapter_tree(meta)
         node_id = self._node_id(chapter_num, version)
-        parent_id = None
-        if chapter_num > 1 and meta.active_path:
+        resolved_parent_id = parent_id if parent_id in meta.chapter_nodes else self._virtual_root_node_id()
+        if parent_id is None and chapter_num > 1 and meta.active_path:
             for active_id in reversed(meta.active_path):
                 active_node = meta.chapter_nodes.get(active_id)
-                if active_node and int(active_node.get("chapter_num", 0)) < chapter_num:
-                    parent_id = active_id
+                if (
+                    active_node
+                    and not active_node.get("virtual")
+                    and int(active_node.get("chapter_num", 0)) < chapter_num
+                ):
+                    resolved_parent_id = active_id
                     break
         if node_id not in meta.chapter_nodes:
             siblings = [
@@ -656,14 +782,14 @@ class NovelManager:
                 "summary": "",
                 "user_direction": "",
                 "generation_params": {},
-                "parent_id": parent_id,
+                "parent_id": resolved_parent_id,
                 "children_ids": [],
                 "sibling_order": len(siblings) + 1,
                 "created_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
                 "updated_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
             }
-            if parent_id and parent_id in meta.chapter_nodes:
-                children = meta.chapter_nodes[parent_id].setdefault("children_ids", [])
+            if resolved_parent_id and resolved_parent_id in meta.chapter_nodes:
+                children = meta.chapter_nodes[resolved_parent_id].setdefault("children_ids", [])
                 if node_id not in children:
                     children.append(node_id)
             if not meta.root_chapter_id:
@@ -678,6 +804,7 @@ class NovelManager:
             if chapter_num not in existing_nums:
                 meta.active_path.append(node_id)
 
+        self._normalize_chapter_tree(meta)
         self._save_meta(title, meta)
         return written_path, version
 
@@ -701,7 +828,7 @@ class NovelManager:
                     path.append(cursor)
                     cursor = node.get("parent_id")
                 meta.active_path = list(reversed(path))
-                meta.root_chapter_id = meta.active_path[0] if meta.active_path else ""
+                self._normalize_chapter_tree(meta)
             self._save_meta(title, meta)
 
     def get_active_version(self, title: str, chapter_num: int) -> int | None:
@@ -752,6 +879,15 @@ class NovelManager:
                 return os.path.join(directory, fname)
         return None
 
+    def _delete_world_bible_snapshot(self, title: str, chapter_num: int, version: int) -> None:
+        from core.world_bible import _chapter_world_entry_key
+
+        bible = self.load_world_bible(title)
+        key = _chapter_world_entry_key(chapter_num, version)
+        if key in getattr(bible, "chapter_world_entries", {}):
+            del bible.chapter_world_entries[key]
+            self.save_world_bible(title, bible)
+
     def delete_chapter_version(
         self, title: str, chapter_num: int, version: int
     ) -> bool:
@@ -795,15 +931,18 @@ class NovelManager:
         meta = self.load_meta(title)
         if meta.chapter_nodes:
             node_id = self._node_id(chapter_num, version)
-            for node in meta.chapter_nodes.values():
-                children = node.get("children_ids", [])
-                if node_id in children:
-                    node["children_ids"] = [cid for cid in children if cid != node_id]
+            removed = meta.chapter_nodes.get(node_id) or {}
+            parent_id = removed.get("parent_id") or self._virtual_root_node_id()
+            for child_id in list(removed.get("children_ids", [])):
+                child = meta.chapter_nodes.get(child_id)
+                if child:
+                    child["parent_id"] = parent_id
             meta.chapter_nodes.pop(node_id, None)
             meta.active_path = [nid for nid in meta.active_path if nid in meta.chapter_nodes]
-            meta.root_chapter_id = meta.active_path[0] if meta.active_path else ""
+            self._normalize_chapter_tree(meta)
             self._save_meta(title, meta)
 
+        self._delete_world_bible_snapshot(title, chapter_num, version)
         return True
 
     def delete_chapter(self, title: str, chapter_num: int) -> bool:
@@ -823,12 +962,33 @@ class NovelManager:
         if deleted:
             meta = self.load_meta(title)
             key = str(chapter_num)
+            deleted_versions = [
+                int(item.get("v", 0) or 0)
+                for item in meta.chapter_versions.get(key, {}).get("versions", [])
+            ]
             meta.chapter_versions.pop(key, None)
             meta.total_chapters = max(
                 (int(k) for k in meta.chapter_versions.keys()),
                 default=0,
             )
+            removed_ids = {
+                node_id
+                for node_id, node in meta.chapter_nodes.items()
+                if int(node.get("chapter_num", 0) or 0) == chapter_num
+            }
+            for node_id in removed_ids:
+                removed = meta.chapter_nodes.get(node_id) or {}
+                parent_id = removed.get("parent_id") or self._virtual_root_node_id()
+                for child_id in removed.get("children_ids", []):
+                    child = meta.chapter_nodes.get(child_id)
+                    if child and child_id not in removed_ids:
+                        child["parent_id"] = parent_id
+                meta.chapter_nodes.pop(node_id, None)
+            meta.active_path = [nid for nid in meta.active_path if nid in meta.chapter_nodes]
+            self._normalize_chapter_tree(meta)
             self._save_meta(title, meta)
+            for version in deleted_versions:
+                self._delete_world_bible_snapshot(title, chapter_num, version)
 
         return deleted
 
@@ -936,7 +1096,7 @@ class NovelManager:
         global_user_prompt: str = "",
         xp_mode: bool = False,
         force_extract: bool = False,
-    ) -> None:
+    ) -> dict:
         """
         根据所有活跃章节同步 world_bible.json。
 
@@ -950,24 +1110,36 @@ class NovelManager:
             merge_extracted_world_bible_data,
         )
 
-        nodes = self.get_active_path_nodes(title)
-        if not nodes:
-            self.save_world_bible(title, WorldBible())
-            return
-
         existing_bible = self.load_world_bible(title)
-        bible = WorldBible()
+        snapshots = dict(getattr(existing_bible, "chapter_world_entries", {}) or {})
+        bible = WorldBible(chapter_world_entries=snapshots)
+        nodes = self.get_active_path_nodes(title)
+        report = {
+            "active_chapters": len(nodes),
+            "snapshot_count": 0,
+            "snapshot_missing_count": 0,
+            "extracted_count": 0,
+            "missing_chapters": [],
+            "failed_chapters": [],
+        }
+        if not nodes:
+            self.save_world_bible(title, bible)
+            return report
+
         story_context_entries = []
         meta = self.load_meta(title)
         for node in nodes:
             chapter_num = int(node.get("chapter_num", 0) or 0)
             version = int(node.get("version", 0) or 0)
             story_context = self._summary_context_from_entries(story_context_entries)
+            content = ""
             entry = None
             if not force_extract:
-                entry = getattr(existing_bible, "chapter_world_entries", {}).get(
+                entry = snapshots.get(
                     _chapter_world_entry_key(chapter_num, version)
                 )
+                if not (isinstance(entry, dict) and isinstance(entry.get("data"), dict)):
+                    report["snapshot_missing_count"] += 1
             if not force_extract and isinstance(entry, dict) and isinstance(entry.get("data"), dict):
                 bible = merge_extracted_world_bible_data(
                     bible,
@@ -977,35 +1149,64 @@ class NovelManager:
                     store_chapter_entry=True,
                     run_dedup=False,
                 )
+                report["snapshot_count"] += 1
             else:
                 content = self.read_chapter_node(title, node["id"])
                 if not content:
+                    report["missing_chapters"].append({
+                        "chapter": chapter_num,
+                        "version": version,
+                    })
                     continue
-                bible = extract_and_merge_world_bible(
-                    client,
-                    content,
-                    chapter_num,
-                    bible,
-                    model,
-                    chapter_version=version,
-                    global_user_prompt=global_user_prompt,
-                    story_context=story_context,
-                    background_story=meta.background_story,
-                    protagonist_bio=meta.protagonist_bio,
-                    writing_demand=meta.writing_demand,
-                    xp_mode=xp_mode or meta.xp_mode,
-                )
+                try:
+                    bible = extract_and_merge_world_bible(
+                        client,
+                        content,
+                        chapter_num,
+                        bible,
+                        model,
+                        chapter_version=version,
+                        global_user_prompt=global_user_prompt,
+                        story_context=story_context,
+                        background_story=meta.background_story,
+                        protagonist_bio=meta.protagonist_bio,
+                        writing_demand=meta.writing_demand,
+                        xp_mode=xp_mode or meta.xp_mode,
+                    )
+                    report["extracted_count"] += 1
+                except Exception as exc:
+                    report["failed_chapters"].append({
+                        "chapter": chapter_num,
+                        "version": version,
+                        "error": str(exc),
+                    })
+                    continue
             summary = (node.get("summary") or "").strip()
             if not summary:
                 summary = self._legacy_extract_chapter_summary(self.load_summary(title), chapter_num)
-            if not summary:
+            if not summary and content:
                 summary = content[:300]
             story_context_entries.append({
                 "chapter_num": chapter_num,
                 "summary": summary,
             })
 
+        for item in report["missing_chapters"]:
+            bible.consistency_warnings.append({
+                "severity": "info",
+                "type": "章节内容缺失",
+                "message": f"第{item['chapter']}章 v{item['version']} 缺少正文和可用快照，未参与世界书重建。",
+                "related": [f"第{item['chapter']}章 v{item['version']}"],
+            })
+        for item in report["failed_chapters"]:
+            bible.consistency_warnings.append({
+                "severity": "minor",
+                "type": "章节提取失败",
+                "message": f"第{item['chapter']}章 v{item['version']} 世界书提取失败，未保留旧分支聚合信息。",
+                "related": [f"第{item['chapter']}章 v{item['version']}"],
+            })
         self.save_world_bible(title, bible)
+        return report
 
     # ========== 🔬 智能前情提要选取算法 ==========
 

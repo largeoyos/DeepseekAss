@@ -68,6 +68,7 @@ from core.character_book import (
 from core.chat_domain import (
     ChatMessage,
     ChatSessionState,
+    ScenePresetManager,
     SenderProfileManager,
     TurnPolicy,
     apply_memory_change_set,
@@ -333,6 +334,12 @@ HTML_STYLE = """
     margin: 8px 0;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
   }
+  .reply-jump-nav { position: fixed; top: 14px; right: 14px; z-index: 1000; width: 176px; max-height: calc(100vh - 28px); overflow: hidden; background: rgba(24,24,38,.94); border: 1px solid rgba(255,255,255,.12); border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.32); backdrop-filter: blur(10px); }
+  .reply-jump-nav summary { padding: 9px 12px; cursor: pointer; color: #d7e7ff; font-size: 13px; font-weight: 700; user-select: none; }
+  .reply-jump-list { max-height: calc(100vh - 74px); overflow-y: auto; padding: 0 7px 8px; }
+  .reply-jump-item { display: block; width: 100%; margin: 3px 0; padding: 7px 9px; border: 0; border-radius: 7px; background: transparent; color: #aebdd3; text-align: left; font: inherit; font-size: 12px; cursor: pointer; }
+  .reply-jump-item:hover { background: #264f78; color: #fff; }
+  .assistant-msg { scroll-margin-top: 18px; }
 </style>
 """
 
@@ -424,10 +431,47 @@ LIGHT_HTML_STYLE = """
   ul, ol { padding-left: 26px; }
   li { margin: 4px 0; }
   img { max-width: 100%; border-radius: 8px; margin: 8px 0; }
+  .reply-jump-nav { position: fixed; top: 14px; right: 14px; z-index: 1000; width: 176px; max-height: calc(100vh - 28px); overflow: hidden; background: rgba(255,255,255,.95); border: 1px solid #d7dfed; border-radius: 10px; box-shadow: 0 8px 28px rgba(30,50,90,.16); backdrop-filter: blur(10px); }
+  .reply-jump-nav summary { padding: 9px 12px; cursor: pointer; color: #244a8f; font-size: 13px; font-weight: 700; user-select: none; }
+  .reply-jump-list { max-height: calc(100vh - 74px); overflow-y: auto; padding: 0 7px 8px; }
+  .reply-jump-item { display: block; width: 100%; margin: 3px 0; padding: 7px 9px; border: 0; border-radius: 7px; background: transparent; color: #526078; text-align: left; font: inherit; font-size: 12px; cursor: pointer; }
+  .reply-jump-item:hover { background: #dbe7ff; color: #123a8a; }
+  .assistant-msg { scroll-margin-top: 18px; }
 </style>
 """
 
 CURRENT_HTML_STYLE = HTML_STYLE
+
+REPLY_JUMP_NAV_SCRIPT = """
+function rebuildReplyJumpNav() {
+    var replies = Array.from(document.querySelectorAll('.assistant-msg'));
+    var nav = document.getElementById('reply-jump-nav');
+    if (!replies.length) {
+        if (nav) nav.remove();
+        return;
+    }
+    if (!nav) {
+        nav = document.createElement('details');
+        nav.id = 'reply-jump-nav';
+        nav.className = 'reply-jump-nav';
+        nav.open = true;
+        nav.innerHTML = '<summary>回复目录</summary><div class="reply-jump-list"></div>';
+        document.body.appendChild(nav);
+    }
+    var list = nav.querySelector('.reply-jump-list');
+    list.innerHTML = '';
+    replies.forEach(function(reply, index) {
+        var button = document.createElement('button');
+        button.type = 'button';
+        button.className = 'reply-jump-item';
+        button.textContent = '回复 ' + (index + 1);
+        button.onclick = function() {
+            reply.scrollIntoView({behavior: 'smooth', block: 'start'});
+        };
+        list.appendChild(button);
+    });
+}
+"""
 
 
 def initial_html() -> str:
@@ -620,6 +664,11 @@ class DeepSeekChatGUI(QMainWindow):
             crypto=self._auth,
             enc_key=self._enc_key,
         )
+        self._scene_preset_manager = ScenePresetManager(
+            root_dir=user_dir,
+            crypto=self._auth,
+            enc_key=self._enc_key,
+        )
         self._settings_manager = SettingsManager(
             root_dir=user_dir,
             crypto=self._auth,
@@ -647,6 +696,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._chat_state = ChatSessionState()
         self._chat_state.active_branch()
         self._sender_profiles = self._sender_profile_manager.load()
+        self._scene_presets = self._scene_preset_manager.load()
         self._last_structured_assistant_messages: list[ChatMessage] = []
 
         # Step 2: 获取 API Key（加密存储或弹窗输入）
@@ -3329,6 +3379,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._conversation_manager._enc_key = new_key
         self._character_book_manager._enc_key = new_key
         self._sender_profile_manager._enc_key = new_key
+        self._scene_preset_manager._enc_key = new_key
         self._settings_manager._enc_key = new_key
         self._token_log_manager._enc_key = new_key
 
@@ -3469,6 +3520,9 @@ class DeepSeekChatGUI(QMainWindow):
         self._update_role_session_label()
 
     def _on_chat_control_center(self) -> None:
+        self._chat_state.turn_policy.required_speaker_ids = list(
+            self._required_responder_ids
+        )
         old_scene = state_to_dict(self._chat_state).get("scene_state", {})
         dialog = ChatControlDialog(
             self,
@@ -3476,6 +3530,7 @@ class DeepSeekChatGUI(QMainWindow):
             self._load_character_book(),
             self._participant_character_ids,
             self._sender_profiles,
+            self._scene_presets,
             self._apply_memory_change,
             self._modify_memory_change,
             self._reject_memory_change,
@@ -3487,6 +3542,7 @@ class DeepSeekChatGUI(QMainWindow):
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         self._sender_profile_manager.save(self._sender_profiles)
+        self._scene_preset_manager.save(self._scene_presets)
         sender = next(
             (
                 item for item in self._sender_profiles
@@ -3781,6 +3837,9 @@ class DeepSeekChatGUI(QMainWindow):
             for item in self._required_responder_list.selectedItems()
             if item.data(Qt.ItemDataRole.UserRole)
         ]
+        self._chat_state.turn_policy.required_speaker_ids = list(
+            self._required_responder_ids
+        )
         self._mark_conversation_dirty()
         self._sync_role_strategy()
 
@@ -4062,7 +4121,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._author_plan_edit.blockSignals(True)
         self._author_plan_edit.setPlainText(getattr(meta, "author_plan", ""))
         self._author_plan_edit.blockSignals(False)
-        next_ch = self._novel_manager.get_next_chapter_num(title)
+        next_ch = self._novel_manager.get_active_generation_target(title)["chapter_num"]
         chapters = self._novel_manager.list_chapters(title)
         self._chapter_info_label.setText(
             f"已有 {len(chapters)} 章，下一章编号: 第{next_ch}章"
@@ -4344,7 +4403,7 @@ class DeepSeekChatGUI(QMainWindow):
             "key_worldbuilding": list(wb.key_worldbuilding_passages),
         }
 
-        next_ch = self._novel_manager.get_next_chapter_num(title)
+        next_ch = self._novel_manager.get_active_generation_target(title)["chapter_num"]
         chapters = self._novel_manager.list_chapters(title)
         self._cont_chapter_info_label.setText(
             f"已有 {len(chapters)} 章，下一章编号: 第{next_ch}章"
@@ -4450,16 +4509,16 @@ class DeepSeekChatGUI(QMainWindow):
                 self._cont_analysis_source = source_text
         # source_text 为空时仍可续写，仅 prompt 中不添加【原文内容】区块
 
+        generation_target = self._novel_manager.get_active_generation_target(book_title)
+        chapter_num = int(generation_target["chapter_num"])
         chapter_title = self._cont_chapter_title_edit.text().strip()
         if not chapter_title:
-            chapter_title = f"续写 (第{self._novel_manager.get_next_chapter_num(book_title)}章)"
+            chapter_title = f"续写 (第{chapter_num}章)"
             self._cont_chapter_title_edit.setText(chapter_title)
 
         requirement = self._continue_requirement.toPlainText().strip()
         word_count = self._continue_word_count.value()
         plot = self._continue_plot.toPlainText().strip()
-        chapter_num = self._novel_manager.get_next_chapter_num(book_title)
-
         self._chapter_finalized = False
         self._generate_btn.setEnabled(False)
         self._cont_generate_btn.setEnabled(False)
@@ -4485,7 +4544,10 @@ class DeepSeekChatGUI(QMainWindow):
 
         threading.Thread(
             target=self._run_continuation,
-            args=(book_title, chapter_num, chapter_title, source_text, requirement, word_count, plot),
+            args=(
+                book_title, chapter_num, chapter_title, source_text,
+                requirement, word_count, plot, "", generation_target,
+            ),
             daemon=True,
         ).start()
 
@@ -4586,8 +4648,11 @@ class DeepSeekChatGUI(QMainWindow):
         if not title:
             QMessageBox.warning(self, "提示", "请先设置小说标题。")
             return
+        self._novel_manager.create_book(title)
+        generation_target = self._novel_manager.get_active_generation_target(title)
+        chapter_num = int(generation_target["chapter_num"])
         if not chapter_title:
-            chapter_title = f"第{self._novel_manager.get_next_chapter_num(title)}章"
+            chapter_title = f"第{chapter_num}章"
             self._chapter_title_edit.setText(chapter_title)
 
         self._chapter_finalized = False
@@ -4618,7 +4683,6 @@ class DeepSeekChatGUI(QMainWindow):
         # 保存当前设定到 meta.json
         genre_cfg_save = get_genre_by_display(self._novel_genre_combo.currentText())
         tone_cfg_save = get_tone_by_display(self._novel_tone_combo.currentText())
-        self._novel_manager.create_book(title)
         self._novel_manager.save_meta(
             title,
             protagonist_bio=self._protagonist_edit.toPlainText().strip(),
@@ -4630,7 +4694,7 @@ class DeepSeekChatGUI(QMainWindow):
             xp_mode=self._xp_mode_check.isChecked(),
         )
 
-        self._append_user_message(f"📖 生成第{self._novel_manager.get_next_chapter_num(title)}章：{chapter_title}")
+        self._append_user_message(f"📖 生成第{chapter_num}章：{chapter_title}")
 
         # 在主线程中捕获 UI 值，避免后台线程访问 QWidget
         plot_content = self._plot_edit.toPlainText().strip()
@@ -4638,13 +4702,19 @@ class DeepSeekChatGUI(QMainWindow):
 
         threading.Thread(
             target=self._run_chapter_generation,
-            args=(title, chapter_title, plot_content, target_words),
+            args=(title, chapter_title, plot_content, target_words, generation_target),
             daemon=True,
         ).start()
 
-    def _build_chapter_prompt(self, title: str, chapter_title: str, plot_content: str = "") -> str:
+    def _build_chapter_prompt(
+        self,
+        title: str,
+        chapter_title: str,
+        plot_content: str = "",
+        chapter_num: int | None = None,
+    ) -> str:
         """构造章节续写的完整 User Prompt（含历史记录参考）"""
-        chapter_num = self._novel_manager.get_next_chapter_num(title)
+        chapter_num = chapter_num or self._novel_manager.get_active_generation_target(title)["chapter_num"]
 
         # 智能前情提要（剧情摘要）
         client = self._usage_logged_client("novel_context_summary") if hasattr(self, '_client') else None
@@ -4785,11 +4855,18 @@ class DeepSeekChatGUI(QMainWindow):
             self._stream_signals.token.emit(f"⚠️ 连贯性检查跳过: {e}\n")
         return content
 
-    def _run_chapter_generation(self, title: str, chapter_title: str,
-                                 plot_content: str = "", target_words: int = 40000) -> None:
+    def _run_chapter_generation(
+        self,
+        title: str,
+        chapter_title: str,
+        plot_content: str = "",
+        target_words: int = 40000,
+        generation_target: dict | None = None,
+    ) -> None:
         """后台线程：生成章节 + 版本保存 + 摘要"""
         try:
-            chapter_num = self._novel_manager.get_next_chapter_num(title)
+            generation_target = generation_target or self._novel_manager.get_active_generation_target(title)
+            chapter_num = int(generation_target["chapter_num"])
 
             strategy = self._client.strategy
             messages = [{"role": "system", "content": Prompts.NOVEL_CHAPTER_WRITING}]
@@ -4807,7 +4884,12 @@ class DeepSeekChatGUI(QMainWindow):
             if isinstance(strategy, NovelStrategy):
                 messages += strategy.build_system_messages()
 
-            user_prompt = self._build_chapter_prompt(title, chapter_title, plot_content=plot_content)
+            user_prompt = self._build_chapter_prompt(
+                title,
+                chapter_title,
+                plot_content=plot_content,
+                chapter_num=chapter_num,
+            )
             messages.append({"role": "user", "content": user_prompt})
 
             self._stream_signals.token.emit(f"\n\n📝 正在创作第 {chapter_num} 章「{chapter_title}」...\n\n")
@@ -4841,16 +4923,24 @@ class DeepSeekChatGUI(QMainWindow):
             # 确定版本号
             existing_versions = self._novel_manager.get_chapter_versions(title, chapter_num)
             if existing_versions:
-                version = self._novel_manager.get_next_version(title, chapter_num)
+                version = int(generation_target["version"])
                 old_active = self._novel_manager.get_active_version(title, chapter_num)
                 new_chapter = False
             else:
-                version = 1
+                version = int(generation_target["version"])
                 old_active = None
                 new_chapter = True
 
             file_path, saved_version = self._novel_manager.save_chapter_version(
-                title, chapter_num, chapter_title, content, version=version
+                title,
+                chapter_num,
+                chapter_title,
+                content,
+                version=version,
+                parent_id=generation_target["parent_id"],
+            )
+            self._novel_manager.switch_active_node(
+                title, self._novel_manager._node_id(chapter_num, saved_version)
             )
             self._stream_signals.token.emit(f"✅ 已保存版本 v{saved_version} → `{file_path}`\n")
 
@@ -4917,7 +5007,7 @@ class DeepSeekChatGUI(QMainWindow):
                 self._stream_signals.token.emit(f"⚠️ 世界书更新跳过: {wb_e}\n")
 
             self._refresh_chapter_info_display(title)
-            next_ch = self._novel_manager.get_next_chapter_num(title)
+            next_ch = self._novel_manager.get_active_generation_target(title)["chapter_num"]
 
             self._stream_signals.token.emit(
                 f"📖 下一章：第{next_ch}章（请修改章节标题后再次生成）\n"
@@ -5078,7 +5168,8 @@ class DeepSeekChatGUI(QMainWindow):
             self._refresh_novel_bookshelf()
             self._cont_bookshelf_combo.setCurrentText(book_title)
 
-        chapter_num = self._novel_manager.get_next_chapter_num(book_title)
+        generation_target = self._novel_manager.get_active_generation_target(book_title)
+        chapter_num = int(generation_target["chapter_num"])
         chapter_title = self._cont_chapter_title_edit.text().strip()
         if not chapter_title:
             chapter_title = f"续写 (第{chapter_num}章)"
@@ -5107,7 +5198,10 @@ class DeepSeekChatGUI(QMainWindow):
 
         threading.Thread(
             target=self._run_continuation,
-            args=(book_title, chapter_num, chapter_title, source_text, requirement, word_count, plot),
+            args=(
+                book_title, chapter_num, chapter_title, source_text,
+                requirement, word_count, plot, "", generation_target,
+            ),
             daemon=True,
         ).start()
 
@@ -5121,9 +5215,11 @@ class DeepSeekChatGUI(QMainWindow):
         word_count: int,
         plot: str,
         setting: str = "",
+        generation_target: dict | None = None,
     ) -> None:
         """后台线程：执行续写（增强版：含世界书+剧情摘要+设定）"""
         try:
+            generation_target = generation_target or self._novel_manager.get_active_generation_target(book_title)
             # ── 构建 User Prompt（含前情提要 + 世界书 + 设定） ──
             user_parts = []
             if source_text:
@@ -5266,7 +5362,15 @@ class DeepSeekChatGUI(QMainWindow):
 
             # 保存为章节
             file_path, saved_version = self._novel_manager.save_chapter_version(
-                book_title, chapter_num, chapter_title, content
+                book_title,
+                chapter_num,
+                chapter_title,
+                content,
+                version=int(generation_target["version"]),
+                parent_id=generation_target["parent_id"],
+            )
+            self._novel_manager.switch_active_node(
+                book_title, self._novel_manager._node_id(chapter_num, saved_version)
             )
             self._stream_signals.token.emit(
                 f"✅ 续写完成，已保存版本 v{saved_version} → `{file_path}`\n"
@@ -5331,7 +5435,7 @@ class DeepSeekChatGUI(QMainWindow):
 
             self._stream_signals.refresh_chapter_info.emit(book_title)
             self._stream_signals.token.emit(
-                f"\n📖 下一章：第{self._novel_manager.get_next_chapter_num(book_title)}章\n"
+                f"\n📖 下一章：第{self._novel_manager.get_active_generation_target(book_title)['chapter_num']}章\n"
             )
             self._stream_signals.finished.emit()
         except Exception as e:
@@ -5729,6 +5833,10 @@ class DeepSeekChatGUI(QMainWindow):
         js_safe = self._escape_for_js(escaped)
         script = f"""
             (function() {{
+                var previousReply = document.getElementById('stream-container');
+                if (previousReply) {{
+                    previousReply.removeAttribute('id');
+                }}
                 var div = document.createElement('div');
                 div.className = 'user-msg';
                 div.innerHTML = '<strong>🧑 {self._escape_for_js(self._sender_name or "你")}：</strong><br>' + `{js_safe}`;
@@ -5750,6 +5858,7 @@ class DeepSeekChatGUI(QMainWindow):
         script = f"""
             (function() {{
                 var container = document.getElementById('stream-container');
+                var isNewReply = !container;
                 if (!container) {{
                     container = document.createElement('div');
                     container.id = 'stream-container';
@@ -5757,6 +5866,10 @@ class DeepSeekChatGUI(QMainWindow):
                     document.body.appendChild(container);
                 }}
                 container.innerHTML = '<strong>💬 {self._escape_for_js(self._assistant_display_name())}：</strong><br>' + `{escaped_body}`;
+                if (isNewReply) {{
+                    {REPLY_JUMP_NAV_SCRIPT}
+                    rebuildReplyJumpNav();
+                }}
                 window.scrollTo(0, document.body.scrollHeight);
             }})();
         """
@@ -5774,11 +5887,17 @@ class DeepSeekChatGUI(QMainWindow):
         script = f"""
             (function() {{
                 var old = document.getElementById('stream-container');
-                if (old) {{
-                    var finalDiv = document.createElement('div');
-                    finalDiv.className = 'assistant-msg';
-                    finalDiv.innerHTML = '<strong>💬 {self._escape_for_js(self._assistant_display_name())}：</strong><br>' + `{escaped_body}`;
-                    old.parentNode.replaceChild(finalDiv, old);
+                var isNewReply = !old;
+                if (!old) {{
+                    old = document.createElement('div');
+                    old.id = 'stream-container';
+                    old.className = 'assistant-msg';
+                    document.body.appendChild(old);
+                }}
+                old.innerHTML = '<strong>💬 {self._escape_for_js(self._assistant_display_name())}：</strong><br>' + `{escaped_body}`;
+                if (isNewReply) {{
+                    {REPLY_JUMP_NAV_SCRIPT}
+                    rebuildReplyJumpNav();
                 }}
                 window.scrollTo(0, document.body.scrollHeight);
             }})();
@@ -5807,10 +5926,20 @@ class DeepSeekChatGUI(QMainWindow):
                 f'<div class="{css_class}" data-message-id="{message.message_id}">'
                 f"<strong>{icon} {speaker}：</strong><br>{html_body}</div>"
             )
-        full_html = f"<html><head>{CURRENT_HTML_STYLE}</head><body>{''.join(body_parts)}</body></html>"
-        self._display.setHtml(full_html)
+        full_html = (
+            f"<html><head>{CURRENT_HTML_STYLE}</head><body>{''.join(body_parts)}"
+            f"<script>{REPLY_JUMP_NAV_SCRIPT}rebuildReplyJumpNav();</script></body></html>"
+        )
         if callback:
-            self._display.page().runJavaScript("true", callback)
+            def on_loaded(ok):
+                try:
+                    self._display.loadFinished.disconnect(on_loaded)
+                except (TypeError, RuntimeError):
+                    pass
+                callback(ok)
+
+            self._display.loadFinished.connect(on_loaded)
+        self._display.setHtml(full_html)
 
     @staticmethod
     def _escape_for_js(s: str) -> str:
@@ -5827,9 +5956,9 @@ class DeepSeekChatGUI(QMainWindow):
         chapters = self._novel_manager.list_chapters(title)
         info_text = ""
         if not chapters:
-            info_text = f"暂无章节，下一章编号: 第{self._novel_manager.get_next_chapter_num(title)}章"
+            info_text = f"暂无章节，下一章编号: 第{self._novel_manager.get_active_generation_target(title)['chapter_num']}章"
         else:
-            lines = [f"已有 {len(chapters)} 章，下一章: 第{self._novel_manager.get_next_chapter_num(title)}章"]
+            lines = [f"已有 {len(chapters)} 章，下一章: 第{self._novel_manager.get_active_generation_target(title)['chapter_num']}章"]
             for ch in chapters:
                 active = ch.get("active_version", 1)
                 count = ch.get("version_count", 1)
@@ -5849,7 +5978,7 @@ class DeepSeekChatGUI(QMainWindow):
                     )
                     self._chapter_tree_status.setText(f"活跃路径：{path_text}")
                 else:
-                    self._chapter_tree_status.setText("活跃路径：未设置")
+                    self._chapter_tree_status.setText("活跃路径：第零章（尚未选择正文分支）")
         except Exception:
             if hasattr(self, "_chapter_tree_status"):
                 self._chapter_tree_status.setText("活跃路径：读取失败")
@@ -6138,7 +6267,7 @@ class DeepSeekChatGUI(QMainWindow):
                     f"  • 世界书来源已按对应章节号和版本绑定\n"
                     f"  • 世界书 {chars}角色 + {locs}地点 + {rules}规则\n"
                     f"  • 小说设定已生成并加载到面板\n"
-                    f"  • 现在可以从第{self._novel_manager.get_next_chapter_num(title)}章开始续写\n"
+                    f"  • 现在可以从第{self._novel_manager.get_active_generation_target(title)['chapter_num']}章开始续写\n"
                     f"{'='*50}\n"
                 )
                 si.finished.emit()
@@ -6448,7 +6577,8 @@ class DeepSeekChatGUI(QMainWindow):
             QMessageBox.warning(self, "错误", "请先选择或创建一本小说。")
             return
 
-        chapter_num = self._novel_manager.get_next_chapter_num(book_title)
+        generation_target = self._novel_manager.get_active_generation_target(book_title)
+        chapter_num = int(generation_target["chapter_num"])
         chapter_title = self._cont_chapter_title_edit.text().strip()
         if not chapter_title:
             chapter_title = f"续写 (第{chapter_num}章)"
@@ -6469,7 +6599,10 @@ class DeepSeekChatGUI(QMainWindow):
 
         threading.Thread(
             target=self._run_continuation,
-            args=(book_title, chapter_num, chapter_title, source_text, requirement, word_count, plot, setting),
+            args=(
+                book_title, chapter_num, chapter_title, source_text,
+                requirement, word_count, plot, setting, generation_target,
+            ),
             daemon=True,
         ).start()
 
@@ -6689,28 +6822,18 @@ class DeepSeekChatGUI(QMainWindow):
                 self._novel_mgr.set_active_version(
                     self._book_title, data["chapter_num"], data["version"]
                 )
-                reply = QMessageBox.question(
-                    self, "同步剧情记忆与世界书",
-                    "已切换活跃版本。是否按当前活跃路径同步剧情记忆与世界书？\n"
-                    "剧情摘要会直接拼接活跃章节节点 summary；世界书会优先合并已保存的章节世界书快照。\n"
-                    "缺少快照的旧章节才会重新从正文提取。",
-                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                )
-
-                QMessageBox.information(
-                    self, "成功",
-                    f"第{data['chapter_num']}章 v{data['version']} 已设为活跃版本。"
-                )
                 self._load_chapters()
                 parent = self.parent()
                 if hasattr(parent, "_refresh_chapter_info_display"):
                     parent._refresh_chapter_info_display(self._book_title)
 
-                if reply == QMessageBox.StandardButton.Yes and hasattr(self.parent(), "_client"):
-                    self._rebuild_success_message = "剧情记忆和世界书已按活跃路径同步。"
-                    self._close_btn.setText("⏳ 同步记忆中...")
-                    self._close_btn.setEnabled(False)
-                    threading.Thread(target=self._do_rebuild_summary, daemon=True).start()
+                self._rebuild_success_message = (
+                    f"第{data['chapter_num']}章 v{data['version']} 已设为活跃版本，"
+                    "剧情记忆和世界书已同步。"
+                )
+                self._close_btn.setText("⏳ 同步记忆中...")
+                self._close_btn.setEnabled(False)
+                threading.Thread(target=self._do_rebuild_summary, daemon=True).start()
 
             def _do_rebuild_summary(self):
                 try:
@@ -7007,11 +7130,14 @@ class DeepSeekChatGUI(QMainWindow):
                     self._novel_mgr.delete_chapter_version(
                         self._book_title, data["chapter_num"], data["version"]
                     )
-                    QMessageBox.information(self, "成功", "已删除。")
                     self._load_chapters()
                     parent = self.parent()
                     if hasattr(parent, "_refresh_chapter_info_display"):
                         parent._refresh_chapter_info_display(self._book_title)
+                    self._rebuild_success_message = "版本已删除，剧情记忆和世界书已按剩余活跃路径同步。"
+                    self._close_btn.setText("⏳ 同步记忆中...")
+                    self._close_btn.setEnabled(False)
+                    threading.Thread(target=self._do_rebuild_summary, daemon=True).start()
 
         dialog = ChapterTreeDialog(self, self._novel_manager, title, self._client)
         dialog.exec()
@@ -7512,7 +7638,10 @@ class DeepSeekChatGUI(QMainWindow):
                 )
                 body_parts.append(f'<div class="assistant-msg"><strong>💬 {assistant_name}：</strong><br>{html_body}</div>')
 
-        full_html = f"<html><head>{HTML_STYLE}</head><body>{''.join(body_parts)}</body></html>"
+        full_html = (
+            f"<html><head>{CURRENT_HTML_STYLE}</head><body>{''.join(body_parts)}"
+            f"<script>{REPLY_JUMP_NAV_SCRIPT}rebuildReplyJumpNav();</script></body></html>"
+        )
         self._display.setHtml(full_html)
 
     # ========== 启动入口 ==========
