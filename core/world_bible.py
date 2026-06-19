@@ -36,6 +36,10 @@ class CharacterEntry:
     key_dialogues: list[str] = field(default_factory=list)     # 原文引用的角色重要台词
     motivation: str = ""                                       # 核心动机/目标
     arc: str = ""                                              # 成长弧线
+    birth_date: str = ""                                       # 出生日期/纪年，不确定则留空
+    current_age: str = ""                                      # 当前年龄，可保留原文的约数口径
+    age_basis: str = ""                                        # 年龄依据，如故事日期、生日或原文说明
+    life_stage: str = ""                                       # 人生/身份阶段，如童年、大学一年级、孕中期
     current_location: str = ""                                  # 当前所在位置
     current_goal: str = ""                                      # 当前目标/意图
     current_emotion: str = ""                                   # 当前情绪/关系状态
@@ -71,6 +75,7 @@ class TimelineEntry:
     chapter: int = 0
     event: str = ""
     significance: str = ""
+    occurrence_count: int = 1                                  # 关键事件被提取/触达的次数
     key_passages: list[str] = field(default_factory=list)          # 原文引用的事件重要段落
     foreshadowing_hints: list[str] = field(default_factory=list)   # 该事件中埋下的伏笔
     source_version: int = 0
@@ -103,6 +108,7 @@ class WorldBible:
     rules: list[str] = field(default_factory=list)
     timeline: list[TimelineEntry] = field(default_factory=list)
     active_plot_threads: list[PlotThread] = field(default_factory=list)
+    story_clock: dict = field(default_factory=dict)                    # 当前故事日期、时段、已流逝时间和阶段
     last_updated_chapter: int = 0
     chapter_world_entries: dict[str, dict] = field(default_factory=dict)  # {"ch0001_v001": raw extracted JSON}
     key_worldbuilding_passages: list[dict] = field(default_factory=list)  # [{chapter, passage, topic}]
@@ -132,6 +138,7 @@ def _from_dict(cls, data: dict):
             rules=list(data.get("rules", [])),
             timeline=[TimelineEntry(**_filter_fields(TimelineEntry, t)) for t in data.get("timeline", [])],
             active_plot_threads=[PlotThread(**_filter_fields(PlotThread, p)) for p in data.get("active_plot_threads", [])],
+            story_clock=dict(data.get("story_clock", {})),
             last_updated_chapter=data.get("last_updated_chapter", 0),
             chapter_world_entries=dict(data.get("chapter_world_entries", {})),
             key_worldbuilding_passages=list(data.get("key_worldbuilding_passages", [])),
@@ -160,6 +167,15 @@ def format_world_bible_for_prompt(bible: WorldBible, max_entries: int = 10) -> s
     """
     parts = []
 
+    clock = bible.story_clock or {}
+    clock_parts = []
+    for key, label in (("current_date", "当前日期"), ("time_of_day", "时段"), ("elapsed_time", "已流逝"), ("story_phase", "故事阶段"), ("calendar_system", "纪年体系")):
+        value = str(clock.get(key, "")).strip()
+        if value:
+            clock_parts.append(f"{label}：{value}")
+    if clock_parts:
+        parts.append("【当前故事时间】\n- " + "；".join(clock_parts))
+
     visible_characters = [c for c in bible.characters if not getattr(c, "hidden", False)]
     visible_locations = [l for l in bible.locations if not getattr(l, "hidden", False)]
     visible_threads = [p for p in bible.active_plot_threads if not getattr(p, "hidden", False)]
@@ -179,6 +195,17 @@ def format_world_bible_for_prompt(bible: WorldBible, max_entries: int = 10) -> s
                 line += f" | 动机：{ch.motivation[:60]}"
             if ch.arc:
                 line += f" | 弧光：{ch.arc[:60]}"
+            age_parts = []
+            if ch.birth_date:
+                age_parts.append(f"出生={ch.birth_date[:30]}")
+            if ch.current_age:
+                age_parts.append(f"年龄={ch.current_age[:30]}")
+            if ch.life_stage:
+                age_parts.append(f"阶段={ch.life_stage[:40]}")
+            if ch.age_basis:
+                age_parts.append(f"依据={ch.age_basis[:50]}")
+            if age_parts:
+                line += " | 时间年龄：" + "；".join(age_parts)
             state_parts = []
             if ch.current_location:
                 state_parts.append(f"位置：{ch.current_location[:40]}")
@@ -256,6 +283,8 @@ def format_world_bible_for_prompt(bible: WorldBible, max_entries: int = 10) -> s
         parts.append("\n【近期事件】")
         for t in recent:
             line = f"- 第{t.chapter}章：{t.event[:80]}"
+            if t.occurrence_count > 1:
+                line += f" [次数：{t.occurrence_count}]"
             if t.significance:
                 line += f"（{t.significance[:40]}）"
             if t.foreshadowing_hints:
@@ -421,6 +450,14 @@ def format_relevant_world_bible_for_prompt(
 
     def format_char(c: CharacterEntry) -> str:
         state = []
+        if c.current_age:
+            state.append(f"年龄={c.current_age[:30]}")
+        if c.life_stage:
+            state.append(f"人生阶段={c.life_stage[:40]}")
+        if c.birth_date:
+            state.append(f"出生={c.birth_date[:30]}")
+        if c.age_basis:
+            state.append(f"年龄依据={c.age_basis[:50]}")
         if c.current_location:
             state.append(f"位置={c.current_location[:40]}")
         if c.current_goal:
@@ -463,6 +500,16 @@ def format_relevant_world_bible_for_prompt(
         return line + source_suffix(p)
 
     parts = []
+    clock = bible.story_clock or {}
+    clock_parts = []
+    for key, label in (("current_date", "当前日期"), ("time_of_day", "当前时段"), ("elapsed_time", "累计流逝"), ("story_phase", "所处阶段"), ("calendar_system", "纪年体系")):
+        value = str(clock.get(key, "")).strip()
+        if value:
+            clock_parts.append(f"{label}={value}")
+    if clock_parts:
+        parts.append("【故事时钟（硬约束）】")
+        parts.append("- " + "；".join(clock_parts))
+        parts.append("- 除非正文明确发生时间跳跃或生日，人物年龄与人生阶段不得静默变化。")
     if core_chars or core_rules or core_passages:
         parts.append("【核心设定（长期约束，除非正文明确改写否则不可违背）】")
         for c in core_chars:
@@ -806,6 +853,10 @@ def _merge_character_entry(
     _record_fact_source(existing, "motivation", ch_data.get("motivation", "")[:200], chapter_num, chapter_version)
     _record_fact_source(existing, "arc", ch_data.get("arc", "")[:200], chapter_num, chapter_version)
     for field_name, limit in (
+        ("birth_date", 60),
+        ("current_age", 60),
+        ("age_basis", 120),
+        ("life_stage", 100),
         ("current_location", 100),
         ("current_goal", 200),
         ("current_emotion", 200),
@@ -1222,6 +1273,7 @@ def audit_world_bible_consistency(bible: WorldBible) -> list[dict]:
         "设定": len(bible.key_worldbuilding_passages),
         "伏笔": len(bible.global_foreshadowing),
         "关键对话": len(bible.global_key_dialogues),
+        "时间状态": 1 if bible.story_clock else 0,
     }
     if not any(category_counts.values()):
         add("info", "世界书为空", "世界书还没有任何结构化条目，生成时只能依赖剧情摘要或正文上下文。")
@@ -1240,7 +1292,8 @@ def audit_world_bible_consistency(bible: WorldBible) -> list[dict]:
             ch.name or "未命名角色",
             ch_data,
             (
-                "traits", "status", "motivation", "arc", "current_location",
+                "traits", "status", "motivation", "arc", "birth_date", "current_age",
+                "age_basis", "life_stage", "current_location",
                 "current_goal", "current_emotion", "recent_action",
                 "knowledge_state", "key_details", "relationships",
             ),
@@ -1253,6 +1306,10 @@ def audit_world_bible_consistency(bible: WorldBible) -> list[dict]:
             ch.knowledge_state,
         ]):
             add("info", "角色状态缺失", f"重要角色「{ch.name}」缺少当前目标/位置/情绪/近期行动等关键状态。", [ch.name])
+        if ch.importance == "major" and not ch.current_age and not ch.life_stage:
+            add("info", "年龄阶段缺失", f"重要角色「{ch.name}」缺少当前年龄和人生阶段，跨年或成长剧情容易失真。", [ch.name])
+        if ch.current_age and not ch.age_basis and not ch.birth_date:
+            add("minor", "年龄依据不足", f"角色「{ch.name}」记录了当前年龄，但没有出生日期或判断依据，时间推进后难以校准。", [ch.name])
         keys = _character_keys(ch)
         for key in keys:
             if key in seen_chars and seen_chars[key] != ch.name:
@@ -1362,6 +1419,7 @@ EXTRACT_PROMPT = """你是一个小说信息深度提取专家。请严格根据
 
 约束：
 - 严格基于原文，不要添加社会学分析、心理描写分析或道德评判
+- 日期、年龄和人生阶段只能提取正文明确给出的信息或可由明确日期直接计算的信息；没有依据必须留空，不得猜测
 - 对于标注了【原文引用】的字段，直接从原文复制原文，不要改写或概括
 - 对于未标注【原文引用】的字段，可以适当概括但保留所有关键信息
 - 宁多勿少，不确定该不该提取的信息请提取出来
@@ -1383,6 +1441,10 @@ EXTRACT_PROMPT = """你是一个小说信息深度提取专家。请严格根据
       "key_dialogues": ["【原文引用】从原文中直接复制该角色说出的重要台词（每句100字内）"],
       "motivation": "该角色的核心动机/目标（100字内）",
       "arc": "该角色的成长弧线/变化趋势（100字内）",
+      "birth_date": "出生日期、年份或纪年（正文无依据则空字符串）",
+      "current_age": "本章结尾时的当前年龄，可写约数（正文无依据则空字符串）",
+      "age_basis": "年龄判断依据，如出生日期+当前日期或原文明示（无依据则空字符串）",
+      "life_stage": "本章结尾时的人生/身份阶段，如童年、大学一年级、孕中期（无依据则空字符串）",
       "current_location": "该角色章节结尾时所在位置（50字内，不确定则空字符串）",
       "current_goal": "该角色当前最明确的目标/意图（100字内，不确定则空字符串）",
       "current_emotion": "该角色当前情绪、关系状态或心理状态（100字内，不确定则空字符串）",
@@ -1391,6 +1453,13 @@ EXTRACT_PROMPT = """你是一个小说信息深度提取专家。请严格根据
       "unresolved_conflicts": ["该角色身上仍未解决的冲突/问题（每条50字内）"]
     }
   ],
+  "story_clock": {
+    "current_date": "本章结尾的故事内日期/纪年；不明确则空字符串",
+    "time_of_day": "本章结尾时段，如清晨、深夜；不明确则空字符串",
+    "elapsed_time": "从故事基准点累计流逝的时间或本章明确推进的时间；不明确则空字符串",
+    "story_phase": "当前阶段，如入学第一周、战争第三年、任务执行期；不明确则空字符串",
+    "calendar_system": "公历、架空纪年或其他日历说明；不明确则空字符串"
+  },
   "locations": [
     {
       "name": "地点名",
@@ -1405,6 +1474,7 @@ EXTRACT_PROMPT = """你是一个小说信息深度提取专家。请严格根据
     {
       "event": "【200字内】核心事件的详细描述",
       "significance": "【200字内】该事件的影响/意义",
+      "occurrence_count": 1,
       "key_passages": ["【原文引用】从原文中直接复制该事件中最重要的一段描写"],
       "foreshadowing_hints": ["该事件中埋下的伏笔或暗示（50字内）"]
     }
@@ -1517,6 +1587,19 @@ def merge_extracted_world_bible_data(
             "data": data,
         }
 
+    incoming_clock = data.get("story_clock", {})
+    if isinstance(incoming_clock, dict):
+        clock = dict(bible.story_clock or {})
+        for field_name in ("current_date", "time_of_day", "elapsed_time", "story_phase", "calendar_system"):
+            value = str(incoming_clock.get(field_name, "")).strip()
+            if value:
+                clock[field_name] = value[:120]
+        if any(clock.get(field_name) for field_name in ("current_date", "time_of_day", "elapsed_time", "story_phase", "calendar_system")):
+            if chapter_num:
+                clock["source_chapter"] = int(chapter_num)
+                clock["source_version"] = int(chapter_version or 0)
+            bible.story_clock = clock
+
     # === 合并角色 ===
     for ch_data in data.get("characters", []):
         name = ch_data.get("name", "").strip()
@@ -1539,6 +1622,10 @@ def merge_extracted_world_bible_data(
                 key_dialogues=[_verify_verbatim(kd, chapter_content) for kd in ch_data.get("key_dialogues", [])],
                 motivation=ch_data.get("motivation", "")[:200],
                 arc=ch_data.get("arc", "")[:200],
+                birth_date=ch_data.get("birth_date", "")[:60],
+                current_age=ch_data.get("current_age", "")[:60],
+                age_basis=ch_data.get("age_basis", "")[:120],
+                life_stage=ch_data.get("life_stage", "")[:100],
                 current_location=ch_data.get("current_location", "")[:100],
                 current_goal=ch_data.get("current_goal", "")[:200],
                 current_emotion=ch_data.get("current_emotion", "")[:200],
@@ -1554,7 +1641,8 @@ def merge_extracted_world_bible_data(
             _merge_fact_sources(entry, ch_data.get("fact_sources"))
             for field_name in (
                 "name", "aliases", "traits", "status", "importance", "key_details", "key_dialogues",
-                "motivation", "arc", "current_location", "current_goal", "current_emotion",
+                "motivation", "arc", "birth_date", "current_age", "age_basis", "life_stage",
+                "current_location", "current_goal", "current_emotion",
                 "recent_action", "knowledge_state", "unresolved_conflicts", "relationships",
             ):
                 _record_fact_source(entry, field_name, getattr(entry, field_name, None), chapter_num, chapter_version)
@@ -1613,15 +1701,37 @@ def merge_extracted_world_bible_data(
     for t_data in data.get("timeline", []):
         event = t_data.get("event", "").strip()
         if event:
-            entry = TimelineEntry(
-                chapter=chapter_num,
-                event=event[:200],
-                significance=t_data.get("significance", "")[:200],
-                key_passages=[_verify_verbatim(kp, chapter_content) for kp in t_data.get("key_passages", [])],
-                foreshadowing_hints=[fh[:50] for fh in t_data.get("foreshadowing_hints", [])],
-                source_version=chapter_version,
+            try:
+                incoming_count = max(1, int(t_data.get("occurrence_count", 1) or 1))
+            except (TypeError, ValueError):
+                incoming_count = 1
+            existing = next(
+                (entry for entry in bible.timeline if _norm_key(entry.event) == _norm_key(event)),
+                None,
             )
-            bible.timeline.append(entry)
+            key_passages = [_verify_verbatim(kp, chapter_content) for kp in t_data.get("key_passages", [])]
+            hints = [fh[:50] for fh in t_data.get("foreshadowing_hints", [])]
+            if existing:
+                existing.occurrence_count = max(1, existing.occurrence_count) + incoming_count
+                existing.significance = _append_text_unique(
+                    existing.significance,
+                    t_data.get("significance", "")[:200],
+                    500,
+                )
+                _merge_list_dedup(existing.key_passages, key_passages)
+                _merge_list_dedup(existing.foreshadowing_hints, hints)
+                existing.source_version = chapter_version or existing.source_version
+            else:
+                entry = TimelineEntry(
+                    chapter=chapter_num,
+                    event=event[:200],
+                    significance=t_data.get("significance", "")[:200],
+                    occurrence_count=incoming_count,
+                    key_passages=key_passages,
+                    foreshadowing_hints=hints,
+                    source_version=chapter_version,
+                )
+                bible.timeline.append(entry)
 
     # === 合并剧情线 ===
     for pt_data in data.get("plot_threads", []):

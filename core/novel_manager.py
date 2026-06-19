@@ -1,4 +1,4 @@
-"""
+﻿"""
 小说管理器模块
 负责：
 - 书架管理（创建/列出/删除小说项目）
@@ -12,6 +12,7 @@ import json
 import os
 import shutil
 import re
+import time
 import uuid
 from dataclasses import dataclass, field, asdict
 from datetime import datetime
@@ -585,7 +586,8 @@ class NovelManager:
         node = meta.chapter_nodes.get(self._node_id(chapter_num, version))
         if not node:
             return ""
-        return (node.get("summary") or "").strip()
+        summary = (node.get("summary") or "").strip()
+        return "" if summary.startswith("[摘要生成失败:") else summary
 
     def _legacy_extract_chapter_summary(self, full_summary: str, chapter_num: int) -> str:
         pattern = rf"第{chapter_num}章「.*?」摘要：(.*?)(?=\n第\d+章「|$)"
@@ -1075,7 +1077,8 @@ class NovelManager:
                 global_user_prompt=global_user_prompt,
                 xp_mode=effective_xp_mode,
             )
-            self.set_chapter_node_summary(title, chapter_num, version, summary)
+            if summary.strip():
+                self.set_chapter_node_summary(title, chapter_num, version, summary)
 
         self.rebuild_plot_summary_from_tree(title)
         meta = self.load_meta(title)
@@ -1096,12 +1099,13 @@ class NovelManager:
         global_user_prompt: str = "",
         xp_mode: bool = False,
         force_extract: bool = False,
+        extract_missing: bool = False,
     ) -> dict:
         """
         根据所有活跃章节同步 world_bible.json。
 
-        默认优先合并章节生成/导入时保存的世界书快照，不重新读正文调用模型。
-        旧章节缺少快照时才回退到正文提取。force_extract=True 时强制从正文重抽。
+        默认只合并章节生成/导入时保存的世界书快照，不调用模型。
+        extract_missing=True 时补提取缺失快照；force_extract=True 时强制从正文重抽。
         """
         from core.world_bible import (
             WorldBible,
@@ -1118,6 +1122,7 @@ class NovelManager:
             "active_chapters": len(nodes),
             "snapshot_count": 0,
             "snapshot_missing_count": 0,
+            "snapshot_skipped_count": 0,
             "extracted_count": 0,
             "missing_chapters": [],
             "failed_chapters": [],
@@ -1150,7 +1155,7 @@ class NovelManager:
                     run_dedup=False,
                 )
                 report["snapshot_count"] += 1
-            else:
+            elif force_extract or extract_missing:
                 content = self.read_chapter_node(title, node["id"])
                 if not content:
                     report["missing_chapters"].append({
@@ -1181,7 +1186,13 @@ class NovelManager:
                         "error": str(exc),
                     })
                     continue
+            else:
+                # 普通分支切换/删除只做本地快照合并，避免隐式触发逐章模型请求。
+                report["snapshot_skipped_count"] += 1
+                continue
             summary = (node.get("summary") or "").strip()
+            if summary.startswith("[摘要生成失败:"):
+                summary = ""
             if not summary:
                 summary = self._legacy_extract_chapter_summary(self.load_summary(title), chapter_num)
             if not summary and content:
@@ -1206,6 +1217,57 @@ class NovelManager:
                 "related": [f"第{item['chapter']}章 v{item['version']}"],
             })
         self.save_world_bible(title, bible)
+        return report
+
+    def extract_world_bible_for_node(
+        self,
+        client,
+        title: str,
+        node_id: str,
+        model: str = "deepseek-v4-flash",
+        global_user_prompt: str = "",
+        xp_mode: bool = False,
+    ) -> dict:
+        """Refresh one chapter snapshot, then rebuild the active aggregate from snapshots."""
+        from core.world_bible import WorldBible, extract_and_merge_world_bible
+
+        meta = self.ensure_chapter_tree(title)
+        node = meta.chapter_nodes.get(node_id)
+        if not node or node.get("virtual"):
+            raise ValueError("请选择一个正文章节节点。")
+        content = self.read_chapter_node(title, node_id)
+        if not content:
+            raise ValueError("当前章节正文为空。")
+
+        chapter_num = int(node.get("chapter_num", 0) or 0)
+        version = int(node.get("version", 0) or 0)
+        existing = self.load_world_bible(title)
+        snapshot_holder = WorldBible(
+            chapter_world_entries=dict(getattr(existing, "chapter_world_entries", {}) or {})
+        )
+        extract_and_merge_world_bible(
+            client,
+            content,
+            chapter_num,
+            snapshot_holder,
+            model,
+            chapter_version=version,
+            global_user_prompt=global_user_prompt,
+            background_story=meta.background_story,
+            protagonist_bio=meta.protagonist_bio,
+            writing_demand=meta.writing_demand,
+            xp_mode=xp_mode or meta.xp_mode,
+        )
+        self.save_world_bible(title, snapshot_holder)
+        report = self.rebuild_world_bible_from_active(
+            client,
+            title,
+            model=model,
+            global_user_prompt=global_user_prompt,
+            xp_mode=xp_mode,
+        )
+        report["refreshed_chapter"] = chapter_num
+        report["refreshed_version"] = version
         return report
 
     # ========== 🔬 智能前情提要选取算法 ==========
@@ -1448,6 +1510,7 @@ class NovelManager:
         model: str = "deepseek-v4-flash",
         global_user_prompt: str = "",
         xp_mode: bool = False,
+        raise_on_error: bool = False,
     ) -> str:
         """
         调用 API 生成章节摘要
@@ -1461,29 +1524,48 @@ class NovelManager:
         Returns:
             生成的摘要文本
         """
-        try:
-            from utils.prompts import Prompts
-            summary_guide = Prompts.CONTINUITY_SUMMARY_GUIDE
-            xp_hint = ""
-            if xp_mode:
-                xp_hint = f"\n\n{Prompts.XP_SUMMARY_GUIDE}"
-            response = client.chat.completions.create(
-                model=model,
-                messages=[{
-                    "role": "user",
-                    "content": (
-                        f"请为以下小说片段（第{chapter_num}章「{chapter_title}」）"
-                        f"生成一段用于后续续写的结构化剧情记忆。\n\n{summary_guide}\n\n章节正文：\n{chapter_content}"
-                        + xp_hint
-                        + (f"\n\n用户偏好参考: {global_user_prompt}" if global_user_prompt.strip() else "")
-                    ),
-                }],
-                max_tokens=2000,
-                temperature=0.3,
-            )
-            return response.choices[0].message.content or ""
-        except Exception as e:
-            return f"[摘要生成失败: {e}]"
+        from utils.prompts import Prompts
+
+        summary_guide = Prompts.CONTINUITY_SUMMARY_GUIDE
+        xp_hint = f"\n\n{Prompts.XP_SUMMARY_GUIDE}" if xp_mode else ""
+        request_kwargs = {
+            "model": model,
+            "messages": [{
+                "role": "user",
+                "content": (
+                    f"请为以下小说片段（第{chapter_num}章「{chapter_title}」）"
+                    f"生成一段用于后续续写的结构化剧情记忆。\n\n{summary_guide}\n\n章节正文：\n{chapter_content}"
+                    + xp_hint
+                    + (f"\n\n用户偏好参考: {global_user_prompt}" if global_user_prompt.strip() else "")
+                ),
+            }],
+            "max_tokens": 2000,
+            "temperature": 0.3,
+        }
+        last_error: Exception | None = None
+        retryable_names = {
+            "APIConnectionError",
+            "APITimeoutError",
+            "RateLimitError",
+            "InternalServerError",
+        }
+        for attempt in range(3):
+            try:
+                response = client.chat.completions.create(**request_kwargs)
+                return response.choices[0].message.content or ""
+            except Exception as exc:
+                last_error = exc
+                if type(exc).__name__ not in retryable_names or attempt == 2:
+                    break
+                time.sleep(1.5 * (attempt + 1))
+
+        if raise_on_error and last_error is not None:
+            cause = getattr(last_error, "__cause__", None)
+            detail = str(cause).strip() if cause else ""
+            if detail and detail not in str(last_error):
+                raise RuntimeError(f"{last_error}\n底层原因：{detail}") from last_error
+            raise last_error
+        return ""
 
     # ========== 生成历史记录 ==========
 
@@ -1656,3 +1738,6 @@ class NovelManager:
         os.makedirs(os.path.dirname(wb_path), exist_ok=True)
         data = world_bible_to_dict(bible)
         self._write_encrypted_json(wb_path, data)
+
+
+

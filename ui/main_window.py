@@ -16,7 +16,7 @@ import time
 import copy
 from dataclasses import asdict
 
-from PyQt6.QtCore import Qt, pyqtSignal, QObject
+from PyQt6.QtCore import Qt, pyqtSignal, QObject, QTimer
 from PyQt6.QtWidgets import (
     QApplication,
     QDialog,
@@ -334,7 +334,7 @@ HTML_STYLE = """
     margin: 8px 0;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
   }
-  .reply-jump-nav { position: fixed; top: 14px; right: 14px; z-index: 1000; width: 176px; max-height: calc(100vh - 28px); overflow: hidden; background: rgba(24,24,38,.94); border: 1px solid rgba(255,255,255,.12); border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.32); backdrop-filter: blur(10px); }
+  .reply-jump-nav { position: fixed; top: 14px; right: 14px; z-index: 1000; width: 176px; max-height: calc(100vh - 28px); overflow: hidden; background: #181826; border: 1px solid rgba(255,255,255,.12); border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.32); }
   .reply-jump-nav summary { padding: 9px 12px; cursor: pointer; color: #d7e7ff; font-size: 13px; font-weight: 700; user-select: none; }
   .reply-jump-list { max-height: calc(100vh - 74px); overflow-y: auto; padding: 0 7px 8px; }
   .reply-jump-item { display: block; width: 100%; margin: 3px 0; padding: 7px 9px; border: 0; border-radius: 7px; background: transparent; color: #aebdd3; text-align: left; font: inherit; font-size: 12px; cursor: pointer; }
@@ -431,7 +431,7 @@ LIGHT_HTML_STYLE = """
   ul, ol { padding-left: 26px; }
   li { margin: 4px 0; }
   img { max-width: 100%; border-radius: 8px; margin: 8px 0; }
-  .reply-jump-nav { position: fixed; top: 14px; right: 14px; z-index: 1000; width: 176px; max-height: calc(100vh - 28px); overflow: hidden; background: rgba(255,255,255,.95); border: 1px solid #d7dfed; border-radius: 10px; box-shadow: 0 8px 28px rgba(30,50,90,.16); backdrop-filter: blur(10px); }
+  .reply-jump-nav { position: fixed; top: 14px; right: 14px; z-index: 1000; width: 176px; max-height: calc(100vh - 28px); overflow: hidden; background: #ffffff; border: 1px solid #d7dfed; border-radius: 10px; box-shadow: 0 8px 28px rgba(30,50,90,.16); }
   .reply-jump-nav summary { padding: 9px 12px; cursor: pointer; color: #244a8f; font-size: 13px; font-weight: 700; user-select: none; }
   .reply-jump-list { max-height: calc(100vh - 74px); overflow-y: auto; padding: 0 7px 8px; }
   .reply-jump-item { display: block; width: 100%; margin: 3px 0; padding: 7px 9px; border: 0; border-radius: 7px; background: transparent; color: #526078; text-align: left; font: inherit; font-size: 12px; cursor: pointer; }
@@ -610,6 +610,11 @@ class DeepSeekChatGUI(QMainWindow):
 
         # 累积的文本（用于流式追加）
         self._assistant_text_buffer: list[str] = []
+        self._assistant_char_count = 0
+        self._stream_render_timer = QTimer(self)
+        self._stream_render_timer.setSingleShot(True)
+        self._stream_render_timer.setInterval(80)
+        self._stream_render_timer.timeout.connect(self._flush_stream_render)
         self._streaming = False
         self._streaming_start_time = 0.0
         # 章节渲染完成标志（防止 JS 异步渲染前触发下一章）
@@ -4977,7 +4982,8 @@ class DeepSeekChatGUI(QMainWindow):
                 global_user_prompt=self._client.global_user_prompt,
                 xp_mode=xp_mode,
             )
-            self._novel_manager.set_chapter_node_summary(title, chapter_num, saved_version, summary)
+            if summary.strip():
+                self._novel_manager.set_chapter_node_summary(title, chapter_num, saved_version, summary)
             self._novel_manager.rebuild_plot_summary_from_tree(title)
             self._stream_signals.token.emit(f"📋 剧情摘要已绑定至章节树。\n\n")
 
@@ -5404,7 +5410,8 @@ class DeepSeekChatGUI(QMainWindow):
                 global_user_prompt=self._client.global_user_prompt,
                 xp_mode=xp_mode,
             )
-            self._novel_manager.set_chapter_node_summary(book_title, chapter_num, saved_version, summary)
+            if summary.strip():
+                self._novel_manager.set_chapter_node_summary(book_title, chapter_num, saved_version, summary)
             self._novel_manager.rebuild_plot_summary_from_tree(book_title)
             self._stream_signals.token.emit("📋 剧情摘要已绑定至章节树。\n")
 
@@ -5740,21 +5747,37 @@ class DeepSeekChatGUI(QMainWindow):
 
     def _on_stream_token(self, token: str) -> None:
         """主线程：接收一个 token"""
+        if not self._assistant_text_buffer:
+            self._assistant_char_count = 0
         self._assistant_text_buffer.append(token)
-        full_text = "".join(self._assistant_text_buffer)
+        self._assistant_char_count += len(token)
         if not (
             isinstance(self._client.strategy, RolePlayStrategy)
             and self._current_chat_type == "group"
         ):
-            self._render_assistant_stream(full_text)
+            # WebEngine + Markdown 全量渲染成本较高，合并短时间内到达的 token。
+            # 这样最多约每 80ms 刷新一次，而不是每个 token 都重排整个页面。
+            if not self._stream_render_timer.isActive():
+                self._stream_render_timer.start()
         # 实时显示已接收字符数
-        char_count = len(full_text)
-        self._stream_count_label.setText(f"⏳ 已接收 {char_count} 字符")
+        self._stream_count_label.setText(f"⏳ 已接收 {self._assistant_char_count} 字符")
         if not self._stream_count_label.isVisible():
             self._stream_count_label.setVisible(True)
 
+    def _flush_stream_render(self) -> None:
+        """按节流频率将当前完整回复提交给 WebEngine。"""
+        if not self._assistant_text_buffer:
+            return
+        if (
+            isinstance(self._client.strategy, RolePlayStrategy)
+            and self._current_chat_type == "group"
+        ):
+            return
+        self._render_assistant_stream("".join(self._assistant_text_buffer))
+
     def _on_stream_finished(self) -> None:
         """主线程：流式完成（可能因取消而结束）"""
+        self._stream_render_timer.stop()
         was_cancelled = self._client._cancel_requested if self._client else False
         self._stop_btn.setVisible(False)
         self._stop_btn.setEnabled(True)
@@ -5787,6 +5810,7 @@ class DeepSeekChatGUI(QMainWindow):
 
     def _on_stream_error(self, error_msg: str) -> None:
         """主线程：流式出错"""
+        self._stream_render_timer.stop()
         self._streaming = False
         self._chapter_finalized = True
         self._generate_btn.setEnabled(True)
@@ -6201,9 +6225,10 @@ class DeepSeekChatGUI(QMainWindow):
                         global_user_prompt=_global_prompt,
                         xp_mode=xp_mode,
                     )
-                    self._novel_manager.set_chapter_node_summary(
-                        title, chapter_num, saved_version, summary_text
-                    )
+                    if summary_text.strip():
+                        self._novel_manager.set_chapter_node_summary(
+                            title, chapter_num, saved_version, summary_text
+                        )
                     self._novel_manager.rebuild_plot_summary_from_tree(title)
 
                     world_bible = extract_and_merge_world_bible(
@@ -6428,7 +6453,8 @@ class DeepSeekChatGUI(QMainWindow):
                     model=model, global_user_prompt=_global_prompt,
                     xp_mode=xp_mode,
                 )
-                self._novel_manager.set_chapter_node_summary(title, chapter_num, saved_version, summary_text)
+                if summary_text.strip():
+                    self._novel_manager.set_chapter_node_summary(title, chapter_num, saved_version, summary_text)
                 self._novel_manager.rebuild_plot_summary_from_tree(title)
 
                 si.token.emit(f"    ✅ 世界书已更新 | 摘要已绑定章节树\n")
@@ -6731,10 +6757,13 @@ class DeepSeekChatGUI(QMainWindow):
                 regenerate_btn.clicked.connect(self._on_regenerate)
                 btn_row.addWidget(regenerate_btn)
 
-                force_wb_btn = QPushButton("从正文重提世界书")
-                force_wb_btn.setToolTip("修复或刷新世界书时使用；会重新读取当前活跃版本正文并调用模型提取")
-                force_wb_btn.clicked.connect(self._on_force_extract_world_bible)
-                btn_row.addWidget(force_wb_btn)
+                current_wb_btn = QPushButton("重提当前章节世界书")
+                current_wb_btn.clicked.connect(self._on_force_extract_current_world_bible)
+                btn_row.addWidget(current_wb_btn)
+
+                all_wb_btn = QPushButton("重提全部路径世界书")
+                all_wb_btn.clicked.connect(self._on_force_extract_all_world_bible)
+                btn_row.addWidget(all_wb_btn)
 
                 delete_btn = QPushButton("🗑 删除此版本")
                 delete_btn.setStyleSheet("QPushButton { background-color: #8b0000; }")
@@ -6861,23 +6890,23 @@ class DeepSeekChatGUI(QMainWindow):
                 self._close_btn.setText("关闭")
                 self._close_btn.setEnabled(True)
 
-            def _on_force_extract_world_bible(self):
+            def _on_force_extract_all_world_bible(self):
                 reply = QMessageBox.question(
                     self,
-                    "重新从正文提取世界书",
-                    "将读取当前活跃路径上的章节正文，重新调用模型提取世界书。\n"
+                    "提取全部活跃路径世界书",
+                    "将读取当前活跃路径上的全部章节正文，重新调用模型提取世界书。\n"
                     "这个操作用于修复或刷新世界书，耗时和消耗会高于普通同步。\n\n继续吗？",
                     QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                     QMessageBox.StandardButton.No,
                 )
                 if reply != QMessageBox.StandardButton.Yes:
                     return
-                self._rebuild_success_message = "世界书已从当前活跃章节正文重新提取。"
+                self._rebuild_success_message = "世界书已从全部活跃路径正文重新提取。"
                 self._close_btn.setText("⏳ 重提世界书中...")
                 self._close_btn.setEnabled(False)
-                threading.Thread(target=self._do_force_extract_world_bible, daemon=True).start()
+                threading.Thread(target=self._do_force_extract_all_world_bible, daemon=True).start()
 
-            def _do_force_extract_world_bible(self):
+            def _do_force_extract_all_world_bible(self):
                 try:
                     self._novel_mgr.rebuild_world_bible_from_active(
                         self._client.raw_client,
@@ -6885,6 +6914,45 @@ class DeepSeekChatGUI(QMainWindow):
                         model=self._client.model,
                         global_user_prompt=self._client.global_user_prompt,
                         force_extract=True,
+                    )
+                    self._rebuild_done_signal.emit()
+                except Exception as e:
+                    self._rebuild_error_signal.emit(str(e))
+
+            def _on_force_extract_current_world_bible(self):
+                data = self._get_selected_data()
+                if not data:
+                    return
+                reply = QMessageBox.question(
+                    self,
+                    "提取当前章节世界书",
+                    f"只重新提取第{data['chapter_num']}章 v{data['version']} 的世界书快照，"
+                    "然后按活跃路径重新合并世界书。\n\n继续吗？",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if reply != QMessageBox.StandardButton.Yes:
+                    return
+                node_id = self._novel_mgr._node_id(data["chapter_num"], data["version"])
+                self._rebuild_success_message = (
+                    f"第{data['chapter_num']}章 v{data['version']} 世界书快照已刷新。"
+                )
+                self._close_btn.setText("⏳ 重提当前章节中...")
+                self._close_btn.setEnabled(False)
+                threading.Thread(
+                    target=self._do_force_extract_current_world_bible,
+                    args=(node_id,),
+                    daemon=True,
+                ).start()
+
+            def _do_force_extract_current_world_bible(self, node_id: str):
+                try:
+                    self._novel_mgr.extract_world_bible_for_node(
+                        self._client.raw_client,
+                        self._book_title,
+                        node_id,
+                        model=self._client.model,
+                        global_user_prompt=self._client.global_user_prompt,
                     )
                     self._rebuild_done_signal.emit()
                 except Exception as e:
@@ -7066,9 +7134,10 @@ class DeepSeekChatGUI(QMainWindow):
                         global_user_prompt=global_prompt,
                         xp_mode=xp_mode,
                     )
-                    self._novel_mgr.set_chapter_node_summary(
-                        self._book_title, chapter_num, saved_version, summary
-                    )
+                    if summary.strip():
+                        self._novel_mgr.set_chapter_node_summary(
+                            self._book_title, chapter_num, saved_version, summary
+                        )
                     self._novel_mgr.rebuild_plot_summary_from_tree(self._book_title)
 
                     # 更新世界书

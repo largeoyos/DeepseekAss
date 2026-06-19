@@ -72,7 +72,7 @@ class WorldBibleDialog(QDialog):
         """)
 
         self._card_tabs: dict[str, QVBoxLayout] = {}
-        for kind in ("角色", "地点", "规则", "时间线", "剧情线", "设定", "伏笔", "关键对话", "冲突提醒"):
+        for kind in ("角色", "时间状态", "地点", "规则", "时间线", "剧情线", "设定", "伏笔", "关键对话", "冲突提醒"):
             self._tabs.addTab(self._build_kind_cards_tab(kind), kind)
 
         self._advanced_edit = self._make_tab("高级 JSON", json.dumps(asdict(self._bible), ensure_ascii=False, indent=2))
@@ -137,7 +137,19 @@ class WorldBibleDialog(QDialog):
 
     def _kind_card_entries(self, kind: str) -> list[dict]:
         entries = [entry for entry in self._card_entries() if entry["kind"] == kind]
-        if kind == "规则":
+        if kind == "时间状态":
+            data = dict(self._bible.story_clock or {})
+            entries = [{
+                "kind": kind,
+                "index": 0,
+                "title": data.get("current_date") or data.get("story_phase") or "当前故事时间",
+                "subtitle": "；".join(str(data.get(key, "")) for key in ("time_of_day", "elapsed_time", "story_phase") if data.get(key)),
+                "source": self._card_source_label(data),
+                "data": data,
+                "hidden": False,
+                "resolved": False,
+            }]
+        elif kind == "规则":
             entries = []
             for idx, rule in enumerate(self._bible.rules):
                 entries.append({
@@ -377,6 +389,8 @@ class WorldBibleDialog(QDialog):
         kind = entry.get("kind", "")
         if kind == "角色":
             self._render_character_card(layout, data)
+        elif kind == "时间状态":
+            self._render_story_clock_card(layout, data)
         elif kind == "地点":
             self._render_location_card(layout, data)
         elif kind == "剧情线":
@@ -396,6 +410,15 @@ class WorldBibleDialog(QDialog):
         else:
             self._render_generic_card(layout, data)
 
+    def _render_story_clock_card(self, layout: QVBoxLayout, data: dict) -> None:
+        self._add_meta_row(layout, data, [
+            ("current_date", "当前日期"), ("time_of_day", "当前时段"),
+            ("elapsed_time", "累计流逝"), ("story_phase", "故事阶段"),
+            ("calendar_system", "纪年体系"), ("source_chapter", "来源章"),
+            ("source_version", "来源版本"),
+        ])
+        self._add_text_block(layout, "使用规则", "这是续写硬约束；只有正文明确发生时间跳跃、跨日或生日时才更新。")
+
     def _render_character_card(self, layout: QVBoxLayout, data: dict) -> None:
         self._add_meta_row(layout, data, [
             ("status", "状态"), ("importance", "重要性"), ("first_appearance", "首次出现"),
@@ -405,6 +428,10 @@ class WorldBibleDialog(QDialog):
         self._add_text_block(layout, "角色特征", data.get("traits"))
         self._add_text_block(layout, "动机", data.get("motivation"))
         self._add_text_block(layout, "成长弧线", data.get("arc"))
+        self._add_meta_row(layout, data, [
+            ("birth_date", "出生日期/纪年"), ("current_age", "当前年龄"),
+            ("life_stage", "人生/身份阶段"), ("age_basis", "年龄依据"),
+        ])
         self._add_meta_row(layout, data, [
             ("current_location", "当前位置"), ("current_goal", "当前目标"),
             ("current_emotion", "当前情绪"), ("recent_action", "近期行动"),
@@ -473,7 +500,11 @@ class WorldBibleDialog(QDialog):
         self._add_text_block(layout, "回收规则", data.get("reveal_rule"))
 
     def _render_timeline_card(self, layout: QVBoxLayout, data: dict) -> None:
-        self._add_meta_row(layout, data, [("chapter", "章节"), ("source_version", "来源版本")])
+        self._add_meta_row(layout, data, [
+            ("chapter", "章节"),
+            ("source_version", "来源版本"),
+            ("occurrence_count", "关键事件次数"),
+        ])
         self._add_text_block(layout, "事件", data.get("event"))
         self._add_text_block(layout, "意义", data.get("significance"))
         self._add_list_block(layout, "关键原文", data.get("key_passages"), quote=True)
@@ -521,7 +552,10 @@ class WorldBibleDialog(QDialog):
             "name": "名称", "aliases": "别名", "traits": "角色特征", "relationships": "关系",
             "status": "状态", "importance": "重要性", "first_appearance": "首次出现",
             "notes": "备注", "key_details": "关键细节", "key_dialogues": "关键台词",
-            "motivation": "动机", "arc": "成长弧线", "current_location": "当前位置",
+            "motivation": "动机", "arc": "成长弧线", "birth_date": "出生日期/纪年",
+            "current_age": "当前年龄", "age_basis": "年龄依据", "life_stage": "人生/身份阶段",
+            "current_date": "当前日期", "time_of_day": "当前时段", "elapsed_time": "累计流逝",
+            "story_phase": "故事阶段", "calendar_system": "纪年体系", "current_location": "当前位置",
             "current_goal": "当前目标", "current_emotion": "当前情绪", "recent_action": "近期行动",
             "knowledge_state": "已知信息", "unresolved_conflicts": "未解决冲突",
             "description": "描述", "significance": "作用", "atmosphere": "氛围",
@@ -799,6 +833,8 @@ class WorldBibleDialog(QDialog):
         return (data.get("kind"), int(data.get("index", -1)))
 
     def _get_card_data(self, kind: str, index: int):
+        if kind == "时间状态" and index == 0:
+            return self._bible.story_clock
         if kind == "角色" and 0 <= index < len(self._bible.characters):
             return self._bible.characters[index]
         if kind == "地点" and 0 <= index < len(self._bible.locations):
@@ -841,7 +877,10 @@ class WorldBibleDialog(QDialog):
         self._audit_and_refresh()
 
     def _replace_card_data(self, kind: str, index: int, payload: dict) -> None:
-        if kind == "角色":
+        if kind == "时间状态":
+            allowed = {"current_date", "time_of_day", "elapsed_time", "story_phase", "calendar_system", "source_chapter", "source_version"}
+            self._bible.story_clock = {key: value for key, value in payload.items() if key in allowed}
+        elif kind == "角色":
             from core.world_bible import CharacterEntry, Relationship
             rels = [Relationship(**r) for r in payload.get("relationships", []) if isinstance(r, dict)]
             data = {k: v for k, v in payload.items() if k in CharacterEntry.__dataclass_fields__ and k != "relationships"}
@@ -892,7 +931,9 @@ class WorldBibleDialog(QDialog):
         reply = QMessageBox.question(self, "确认删除", f"删除这个{kind}条目？")
         if reply != QMessageBox.StandardButton.Yes:
             return
-        if kind == "角色" and 0 <= index < len(self._bible.characters):
+        if kind == "时间状态" and index == 0:
+            self._bible.story_clock = {}
+        elif kind == "角色" and 0 <= index < len(self._bible.characters):
             del self._bible.characters[index]
         elif kind == "地点" and 0 <= index < len(self._bible.locations):
             del self._bible.locations[index]
@@ -1067,7 +1108,9 @@ class WorldBibleDialog(QDialog):
     def _format_timeline(self) -> str:
         lines = ["# 时间线（按章节）\n"]
         for t in self._bible.timeline:
-            lines.append(f"- 第{t.chapter}章：{t.event} ({t.significance})")
+            lines.append(
+                f"- 第{t.chapter}章：{t.event} ({t.significance}) [关键事件次数：{t.occurrence_count}]"
+            )
             if t.key_passages:
                 for kp in t.key_passages[:2]:
                     lines.append(f"  📄 原文段落：{kp}")
@@ -1334,13 +1377,24 @@ class WorldBibleDialog(QDialog):
                 except ValueError:
                     chapter = 0
                 after_ch = "章：".join(rest.split("章：")[1:]) if "章：" in rest else ""
+                count_match = re.search(r"\s*\[关键事件次数：(\d+)\]\s*$", after_ch)
+                occurrence_count = int(count_match.group(1)) if count_match else 1
+                if count_match:
+                    after_ch = after_ch[:count_match.start()].strip()
                 if "(" in after_ch and after_ch.endswith(")"):
                     event = after_ch[:after_ch.rindex("(")].strip()
                     significance = after_ch[after_ch.rindex("(")+1:-1].strip()
                 else:
                     event = after_ch.strip()
                     significance = ""
-                current = {"chapter": chapter, "event": event, "significance": significance, "key_passages": [], "foreshadowing_hints": []}
+                current = {
+                    "chapter": chapter,
+                    "event": event,
+                    "significance": significance,
+                    "occurrence_count": occurrence_count,
+                    "key_passages": [],
+                    "foreshadowing_hints": [],
+                }
             elif line.startswith("📄 原文段落：") and current:
                 current.setdefault("key_passages", []).append(line[7:].strip())
             elif line.startswith("🔮 伏笔：") and current:

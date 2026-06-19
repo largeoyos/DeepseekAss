@@ -1,4 +1,4 @@
-import re
+﻿import re
 import threading
 import time
 
@@ -108,6 +108,8 @@ class ChapterTreeDialog(QDialog):
     generation_failed = pyqtSignal(str)
     rebuild_done = pyqtSignal(object)
     rebuild_failed = pyqtSignal(str)
+    summary_done = pyqtSignal(str)
+    summary_failed = pyqtSignal(str)
 
     def __init__(self, parent, novel_manager: NovelManager, book_title: str, client=None):
         super().__init__(parent)
@@ -126,6 +128,8 @@ class ChapterTreeDialog(QDialog):
         self.generation_failed.connect(self._on_generation_failed)
         self.rebuild_done.connect(self._on_rebuild_done)
         self.rebuild_failed.connect(self._on_rebuild_failed)
+        self.summary_done.connect(self._on_summary_done)
+        self.summary_failed.connect(self._on_summary_failed)
         self._init_ui()
         self._load_tree()
 
@@ -194,15 +198,26 @@ class ChapterTreeDialog(QDialog):
         insert_btn.clicked.connect(self._insert_middle_chapter)
         self._delete_btn = QPushButton("删除子树")
         self._delete_btn.clicked.connect(self._delete_current)
-        force_wb_btn = QPushButton("从正文重新提取世界书")
-        force_wb_btn.setToolTip("修复或刷新世界书时使用；会重新读取当前活跃路径正文并调用模型提取")
-        force_wb_btn.clicked.connect(self._force_extract_world_bible)
+        self._summary_btn = QPushButton("重新生成摘要")
+        self._summary_btn.clicked.connect(self._regenerate_summary)
         for btn in (
             self._switch_btn, self._edit_btn, self._polish_btn, self._rewrite_btn,
-            self._export_btn, insert_btn, self._delete_btn, force_wb_btn,
+            self._export_btn, insert_btn, self._delete_btn, self._summary_btn,
         ):
             button_row.addWidget(btn)
         right_layout.addLayout(button_row)
+
+        world_row = QHBoxLayout()
+        current_wb_btn = QPushButton("提取当前章节世界书")
+        current_wb_btn.setToolTip("只重新提取当前选中章节版本，然后按活跃路径重新合并世界书")
+        current_wb_btn.clicked.connect(self._force_extract_current_world_bible)
+        all_wb_btn = QPushButton("提取全部活跃路径世界书")
+        all_wb_btn.setToolTip("依次读取当前活跃路径上的全部正文章节并重新提取世界书")
+        all_wb_btn.clicked.connect(self._force_extract_all_world_bible)
+        world_row.addWidget(current_wb_btn)
+        world_row.addWidget(all_wb_btn)
+        world_row.addStretch()
+        right_layout.addLayout(world_row)
         splitter.addWidget(right)
 
         splitter.setSizes([360, 620])
@@ -368,7 +383,7 @@ class ChapterTreeDialog(QDialog):
         is_virtual = bool(node.get("virtual"))
         for button in (
             self._edit_btn, self._polish_btn, self._rewrite_btn,
-            self._export_btn, self._delete_btn,
+            self._export_btn, self._delete_btn, self._summary_btn,
         ):
             button.setEnabled(not is_virtual)
         if is_virtual:
@@ -395,7 +410,9 @@ class ChapterTreeDialog(QDialog):
             f"中文字数: {count_cn(content)}",
             "",
             "节点剧情摘要:",
-            node.get("summary", "").strip() or "(未生成)",
+            self._novel_manager.get_chapter_node_summary(
+                self._book_title, int(node["chapter_num"]), int(node["version"])
+            ) or "(未生成)",
             "",
             "生成参数:",
             f"  模型: {record.get('model', '')}",
@@ -443,6 +460,7 @@ class ChapterTreeDialog(QDialog):
             f"\n活跃章节：{report.get('active_chapters', 0)}"
             f"\n使用快照：{report.get('snapshot_count', 0)}"
             f"\n快照缺失：{report.get('snapshot_missing_count', 0)}"
+            f"\n缺失快照已跳过：{report.get('snapshot_skipped_count', 0)}"
             f"\n正文补提取：{report.get('extracted_count', 0)}"
             f"\n缺失章节：{len(report.get('missing_chapters', []))}"
             f"\n提取失败：{len(report.get('failed_chapters', []))}"
@@ -454,25 +472,25 @@ class ChapterTreeDialog(QDialog):
         QMessageBox.warning(self, "同步失败", error)
         self._load_tree()
 
-    def _force_extract_world_bible(self) -> None:
+    def _force_extract_all_world_bible(self) -> None:
         if not self._client:
             QMessageBox.warning(self, "无法提取", "当前没有可用的模型客户端。")
             return
         reply = QMessageBox.question(
             self,
-            "重新从正文提取世界书",
-            "将读取当前活跃路径上的章节正文，重新调用模型提取世界书。\n"
+            "提取全部活跃路径世界书",
+            "将读取当前活跃路径上的全部章节正文，重新调用模型提取世界书。\n"
             "这个操作用于修复或刷新世界书，耗时和消耗会高于普通同步。\n\n继续吗？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
-        self._rebuild_success_message = "世界书已从当前活跃章节正文重新提取。"
+        self._rebuild_success_message = "世界书已从全部活跃路径正文重新提取。"
         self._details.setPlainText("正在从活跃章节正文重新提取世界书，请稍候...")
-        threading.Thread(target=self._run_force_extract_world_bible, daemon=True).start()
+        threading.Thread(target=self._run_force_extract_all_world_bible, daemon=True).start()
 
-    def _run_force_extract_world_bible(self) -> None:
+    def _run_force_extract_all_world_bible(self) -> None:
         try:
             report = self._novel_manager.rebuild_world_bible_from_active(
                 self._client.raw_client,
@@ -484,6 +502,108 @@ class ChapterTreeDialog(QDialog):
             self.rebuild_done.emit(report)
         except Exception as exc:
             self.rebuild_failed.emit(str(exc))
+
+    def _force_extract_current_world_bible(self) -> None:
+        node = self._selected_node()
+        if not node or node.get("virtual"):
+            QMessageBox.warning(self, "未选择章节", "请先选择一个正文章节节点。")
+            return
+        if not self._client:
+            QMessageBox.warning(self, "无法提取", "当前没有可用的模型客户端。")
+            return
+        reply = QMessageBox.question(
+            self,
+            "提取当前章节世界书",
+            f"只重新提取第{node.get('chapter_num')}章 v{node.get('version')} 的世界书快照，"
+            "然后按活跃路径重新合并世界书。\n\n继续吗？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        self._rebuild_success_message = (
+            f"第{node.get('chapter_num')}章 v{node.get('version')} 世界书快照已刷新。"
+        )
+        self._details.setPlainText("正在提取当前章节世界书，请稍候...")
+        threading.Thread(
+            target=self._run_force_extract_current_world_bible,
+            args=(node["id"],),
+            daemon=True,
+        ).start()
+
+    def _run_force_extract_current_world_bible(self, node_id: str) -> None:
+        try:
+            report = self._novel_manager.extract_world_bible_for_node(
+                self._client.raw_client,
+                self._book_title,
+                node_id,
+                model=self._client.model,
+                global_user_prompt=self._client.global_user_prompt,
+            )
+            self.rebuild_done.emit(report)
+        except Exception as exc:
+            self.rebuild_failed.emit(str(exc))
+
+    def _regenerate_summary(self) -> None:
+        node = self._selected_node()
+        if not node or node.get("virtual"):
+            QMessageBox.warning(self, "未选择章节", "请先选择一个正文章节节点。")
+            return
+        if not self._client:
+            QMessageBox.warning(self, "无法生成", "当前没有可用的模型客户端。")
+            return
+        self._summary_btn.setEnabled(False)
+        self._details.setPlainText("正在重新生成当前章节摘要，请稍候...")
+        threading.Thread(
+            target=self._run_regenerate_summary,
+            args=(dict(node),),
+            daemon=True,
+        ).start()
+
+    def _run_regenerate_summary(self, node: dict) -> None:
+        old_summary = ""
+        try:
+            content = self._novel_manager.read_chapter_node(self._book_title, node["id"]) or ""
+            if not content.strip():
+                raise ValueError("当前章节正文为空。")
+            chapter_num = int(node.get("chapter_num", 0) or 0)
+            version = int(node.get("version", 0) or 0)
+            title = node.get("title") or f"第{chapter_num}章"
+            old_summary = self._novel_manager.get_chapter_node_summary(
+                self._book_title, chapter_num, version
+            )
+            summary = self._novel_manager.generate_summary(
+                self._client.raw_client,
+                content,
+                chapter_num,
+                title,
+                model=self._client.model,
+                global_user_prompt=self._client.global_user_prompt,
+                xp_mode=self._novel_manager.load_meta(self._book_title).xp_mode,
+                raise_on_error=True,
+            )
+            if not summary.strip():
+                raise RuntimeError("模型返回了空摘要。节点摘要未修改，也未保存任何新内容。")
+            self._novel_manager.set_chapter_node_summary(
+                self._book_title, chapter_num, version, summary
+            )
+            self._novel_manager.rebuild_plot_summary_from_tree(self._book_title)
+            self.summary_done.emit(f"第{chapter_num}章 v{version} 摘要已重新生成。")
+        except Exception as exc:
+            old_state = "原有摘要已保留" if old_summary else "节点摘要仍为空"
+            self.summary_failed.emit(
+                f"{exc}\n\n{old_state}；本次未修改、未保存摘要。"
+            )
+
+    def _on_summary_done(self, message: str) -> None:
+        self._summary_btn.setEnabled(True)
+        self._load_tree()
+        QMessageBox.information(self, "完成", message)
+
+    def _on_summary_failed(self, message: str) -> None:
+        self._summary_btn.setEnabled(True)
+        self._load_tree()
+        QMessageBox.warning(self, "摘要生成失败", message)
 
     def _edit_current(self) -> None:
         node = self._selected_node()
@@ -639,7 +759,8 @@ class ChapterTreeDialog(QDialog):
                 global_user_prompt=self._client.global_user_prompt,
                 xp_mode=self._novel_manager.load_meta(self._book_title).xp_mode,
             )
-            self._novel_manager.set_chapter_node_summary(self._book_title, chapter_num, version, summary)
+            if summary.strip():
+                self._novel_manager.set_chapter_node_summary(self._book_title, chapter_num, version, summary)
             self._novel_manager.rebuild_plot_summary_from_tree(self._book_title)
             self._novel_manager.save_generation_record(
                 self._book_title,
@@ -696,3 +817,6 @@ class ChapterTreeDialog(QDialog):
         self._rebuild_success_message = "章节子树已删除，剧情记忆和世界书已按剩余活跃路径同步。"
         self._details.setPlainText("正在同步删除后的剧情记忆和世界书，请稍候...")
         threading.Thread(target=self._run_rebuild_memory, daemon=True).start()
+
+
+
