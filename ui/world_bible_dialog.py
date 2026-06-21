@@ -3,6 +3,7 @@
 提供标签页结构展示 WorldBible 的各部分内容，用户可直接编辑保存
 """
 
+import copy
 import json
 import os
 import re
@@ -44,6 +45,8 @@ class WorldBibleDialog(QDialog):
         """
         super().__init__(parent)
         self._bible = world_bible
+        from core.world_bible import _flat_view_dict
+        self._original_view = copy.deepcopy(_flat_view_dict(world_bible))
         self._save_callback = save_callback
         self._active_chapters = active_chapters or set()
         self._saved = False
@@ -56,8 +59,10 @@ class WorldBibleDialog(QDialog):
         layout = QVBoxLayout(self)
 
         # 说明
+        load_state = getattr(self._bible, "diagnostics", {}).get("load_state", "loaded")
+        state_text = {"missing": "尚无世界书文件", "error": "世界书加载失败（原文件已保护）", "loaded": "已加载"}.get(load_state, load_state)
         hint = QLabel(
-            "以下是从已生成章节中自动提取的世界观设定。修改后点击保存生效。"
+            f"世界书 schema v{getattr(self._bible, 'schema_version', 1)} · {state_text}。人工修改会保存为可重放修订，不会在分支重建时丢失。"
         )
         hint.setStyleSheet("color: #888; font-size: 12px; padding: 4px 0;")
         layout.addWidget(hint)
@@ -76,7 +81,14 @@ class WorldBibleDialog(QDialog):
             self._tabs.addTab(self._build_kind_cards_tab(kind), kind)
 
         self._advanced_edit = self._make_tab("高级 JSON", json.dumps(asdict(self._bible), ensure_ascii=False, indent=2))
+        self._snapshot_view = self._make_tab("章节快照", "")
+        self._snapshot_view.setReadOnly(True)
+        self._override_view = self._make_tab("人工修订", "")
+        self._override_view.setReadOnly(True)
+        self._diagnostic_view = self._make_tab("运行诊断", "")
+        self._diagnostic_view.setReadOnly(True)
         self._refresh_kind_cards()
+        self._refresh_v2_tabs()
 
         layout.addWidget(self._tabs)
 
@@ -93,12 +105,24 @@ class WorldBibleDialog(QDialog):
         source_btn.clicked.connect(self._on_view_source_chapter)
         add_fs_btn = QPushButton("添加伏笔")
         add_fs_btn.clicked.connect(self._on_add_foreshadowing)
+        preview_btn = QPushButton("注入预览")
+        preview_btn.clicked.connect(self._on_preview_retrieval)
+        facts_btn = QPushButton("事实历史")
+        facts_btn.clicked.connect(self._on_view_fact_history)
+        duplicate_btn = QPushButton("重复候选")
+        duplicate_btn.clicked.connect(self._on_review_duplicate)
+        undo_merge_btn = QPushButton("撤销合并")
+        undo_merge_btn.clicked.connect(self._on_undo_merge)
         tool_row.addWidget(merge_btn)
         tool_row.addWidget(resolve_btn)
         tool_row.addWidget(lock_btn)
         tool_row.addWidget(hide_btn)
         tool_row.addWidget(source_btn)
         tool_row.addWidget(add_fs_btn)
+        tool_row.addWidget(preview_btn)
+        tool_row.addWidget(facts_btn)
+        tool_row.addWidget(duplicate_btn)
+        tool_row.addWidget(undo_merge_btn)
         layout.addLayout(tool_row)
 
         # 按钮
@@ -192,7 +216,7 @@ class WorldBibleDialog(QDialog):
         elif kind == "冲突提醒":
             entries = []
             for idx, item in enumerate(self._bible.consistency_warnings):
-                severity_text = {"major": "严重", "minor": "一般", "info": "提示"}.get(
+                severity_text = {"error": "阻断", "major": "严重", "minor": "一般", "info": "提示"}.get(
                     item.get("severity", ""), item.get("severity", "")
                 )
                 entries.append({
@@ -521,7 +545,7 @@ class WorldBibleDialog(QDialog):
 
     def _render_warning_card(self, layout: QVBoxLayout, data: dict) -> None:
         severity = data.get("severity", "minor")
-        severity_label = {"major": "严重", "minor": "一般", "info": "提示"}.get(severity, severity)
+        severity_label = {"error": "阻断", "major": "严重", "minor": "一般", "info": "提示"}.get(severity, severity)
         color = {"major": "#6f3131", "minor": "#66552a", "info": "#2f4e68"}.get(severity, "#3c3c3c")
         row = QHBoxLayout()
         row.addWidget(self._make_badge(severity_label, color, "#ffffff"))
@@ -641,11 +665,14 @@ class WorldBibleDialog(QDialog):
         """)
         right_layout.addWidget(self._card_detail, stretch=1)
         action_row = QHBoxLayout()
+        form_btn = QPushButton("表单编辑")
+        form_btn.clicked.connect(self._on_edit_card_form)
         edit_btn = QPushButton("编辑 JSON")
         edit_btn.clicked.connect(self._on_edit_card_json)
         delete_btn = QPushButton("删除条目")
         delete_btn.clicked.connect(self._on_delete_card)
         action_row.addStretch()
+        action_row.addWidget(form_btn)
         action_row.addWidget(edit_btn)
         action_row.addWidget(delete_btn)
         right_layout.addLayout(action_row)
@@ -890,7 +917,11 @@ class WorldBibleDialog(QDialog):
             data = {k: v for k, v in payload.items() if k in LocationEntry.__dataclass_fields__}
             self._bible.locations[index] = LocationEntry(**data)
         elif kind == "规则":
-            self._bible.rules[index] = str(payload.get("rule", "")).strip()
+            value = str(payload.get("rule", "")).strip()
+            self._bible.rules[index] = value
+            if index < len(getattr(self._bible, "world_rules", [])):
+                self._bible.world_rules[index].content = value
+                self._bible.world_rules[index].name = value[:40]
         elif kind == "时间线":
             from core.world_bible import TimelineEntry
             data = {k: v for k, v in payload.items() if k in TimelineEntry.__dataclass_fields__}
@@ -909,24 +940,88 @@ class WorldBibleDialog(QDialog):
             self._bible.consistency_warnings[index] = payload
 
     def _edit_card(self, kind: str, index: int) -> None:
+        self._edit_card_form(kind, index)
+
+    def _on_edit_card_form(self) -> None:
+        key = self._current_card_key()
+        if not key:
+            QMessageBox.warning(self, "未选择条目", "请先选择一个世界书条目。")
+            return
+        self._edit_card_form(*key)
+
+    def _edit_card_form(self, kind: str, index: int) -> None:
         obj = self._get_card_data(kind, index)
         if obj is None:
             QMessageBox.warning(self, "条目不存在", "该条目可能已被删除。")
             return
         payload = dict(obj) if isinstance(obj, dict) else asdict(obj)
-        text = json.dumps(payload, ensure_ascii=False, indent=2)
-        new_text, ok = QInputDialog.getMultiLineText(self, f"编辑{kind}", "JSON：", text)
-        if not ok:
+        field_map = {
+            "角色": ["name", "traits", "status", "importance", "motivation", "arc", "current_location", "current_goal", "current_emotion", "recent_action", "knowledge_state", "current_age", "life_stage"],
+            "地点": ["name", "description", "significance", "atmosphere"],
+            "剧情线": ["name", "status", "importance", "description", "expected_payoff", "payoff_hint"],
+            "设定": ["topic", "passage", "knowledge_type", "confidence", "locked", "hidden"],
+            "伏笔": ["hint", "relates_to", "status", "next_step", "reveal_rule", "hidden"],
+            "规则": ["rule"],
+            "时间状态": ["current_date", "time_of_day", "elapsed_time", "story_phase", "calendar_system"],
+        }
+        fields = field_map.get(kind)
+        if not fields:
+            self._on_edit_card_json()
             return
-        try:
-            new_payload = json.loads(new_text)
-            if not isinstance(new_payload, dict):
-                raise ValueError("必须是 JSON 对象")
-            self._replace_card_data(kind, index, new_payload)
-            self._audit_and_refresh()
-        except Exception as exc:
-            QMessageBox.critical(self, "JSON 格式错误", str(exc))
-
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"表单编辑 · {kind}")
+        dialog.resize(620, 520)
+        layout = QVBoxLayout(dialog)
+        form = QFormLayout()
+        editors = {}
+        for field_name in fields:
+            value = payload.get(field_name, "")
+            if field_name in {"status", "importance", "knowledge_type"}:
+                editor = QComboBox(dialog)
+                choices = {
+                    "status": ["alive", "dead", "missing", "transformed", "active", "dormant", "resolved", "open", "noticed", "advanced"],
+                    "importance": ["major", "normal", "minor"],
+                    "knowledge_type": ["canon", "constraint", "inference", "author_plan"],
+                }[field_name]
+                editor.addItems(list(dict.fromkeys([str(value), *choices])))
+                editor.setCurrentText(str(value))
+            elif field_name in {"locked", "hidden"}:
+                editor = QComboBox(dialog)
+                editor.addItems(["false", "true"])
+                editor.setCurrentText("true" if value else "false")
+            elif field_name in {"traits", "description", "passage", "motivation", "arc", "knowledge_state", "expected_payoff", "payoff_hint", "next_step", "reveal_rule"}:
+                editor = QTextEdit(dialog)
+                editor.setPlainText(str(value or ""))
+                editor.setMaximumHeight(90)
+            else:
+                editor = QLineEdit(dialog)
+                editor.setText(str(value or ""))
+            editors[field_name] = editor
+            form.addRow(self._field_label(field_name), editor)
+        layout.addLayout(form)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel, dialog)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        for field_name, editor in editors.items():
+            if isinstance(editor, QTextEdit):
+                value = editor.toPlainText().strip()
+            elif isinstance(editor, QComboBox):
+                value = editor.currentText()
+            else:
+                value = editor.text().strip()
+            if field_name in {"locked", "hidden"}:
+                value = value == "true"
+            elif isinstance(payload.get(field_name), float):
+                try:
+                    value = float(value)
+                except ValueError:
+                    value = payload.get(field_name)
+            payload[field_name] = value
+        self._replace_card_data(kind, index, payload)
+        self._audit_and_refresh()
     def _delete_card(self, kind: str, index: int) -> None:
         reply = QMessageBox.question(self, "确认删除", f"删除这个{kind}条目？")
         if reply != QMessageBox.StandardButton.Yes:
@@ -1217,7 +1312,7 @@ class WorldBibleDialog(QDialog):
             return "未发现明显冲突/提醒。"
         for item in warnings:
             severity = item.get("severity", "minor")
-            severity_label = {"major": "严重", "minor": "一般", "info": "提示"}.get(severity, severity)
+            severity_label = {"error": "阻断", "major": "严重", "minor": "一般", "info": "提示"}.get(severity, severity)
             issue_type = item.get("type", "冲突")
             message = item.get("message", "")
             related = "、".join(str(x) for x in item.get("related", []) if x)
@@ -1628,6 +1723,7 @@ class WorldBibleDialog(QDialog):
             pass
         self._advanced_edit.setPlainText(json.dumps(asdict(self._bible), ensure_ascii=False, indent=2))
         self._refresh_kind_cards()
+        self._refresh_v2_tabs()
         if hasattr(self, "_card_list"):
             self._refresh_card_list()
 
@@ -1888,14 +1984,125 @@ class WorldBibleDialog(QDialog):
         self._audit_and_refresh()
         QMessageBox.information(self, "已添加", "伏笔已添加到世界书。")
 
+    def _refresh_v2_tabs(self) -> None:
+        if hasattr(self, "_snapshot_view"):
+            snapshots = getattr(self._bible, "chapter_snapshots", {}) or {}
+            summary = {
+                key: {
+                    "chapter": value.get("chapter"),
+                    "version": value.get("version"),
+                    "categories": {
+                        name: len(value.get("data", {}).get(name, []))
+                        for name in ("characters", "locations", "rules", "timeline", "plot_threads")
+                    },
+                }
+                for key, value in snapshots.items() if isinstance(value, dict)
+            }
+            self._snapshot_view.setPlainText(json.dumps(summary, ensure_ascii=False, indent=2))
+        if hasattr(self, "_override_view"):
+            self._override_view.setPlainText(json.dumps([asdict(item) for item in getattr(self._bible, "manual_overrides", [])], ensure_ascii=False, indent=2))
+        if hasattr(self, "_diagnostic_view"):
+            payload = {
+                "migration": getattr(self._bible, "migration_info", {}),
+                "diagnostics": getattr(self._bible, "diagnostics", {}),
+                "facts": len(getattr(self._bible, "facts", [])),
+                "rules": len(getattr(self._bible, "world_rules", [])),
+                "pending_duplicates": len([item for item in getattr(self._bible, "duplicate_candidates", []) if item.get("status", "pending") == "pending"]),
+                "merge_history": [asdict(item) for item in getattr(self._bible, "merge_history", [])],
+            }
+            self._diagnostic_view.setPlainText(json.dumps(payload, ensure_ascii=False, indent=2))
+
+    def _capture_manual_changes(self) -> None:
+        from core.world_bible import _flat_view_dict, record_manual_view_changes
+        record_manual_view_changes(self._bible, self._original_view)
+        self._original_view = copy.deepcopy(_flat_view_dict(self._bible))
+        self._refresh_v2_tabs()
+
+    def _show_text_dialog(self, title: str, text: str) -> None:
+        dialog = QDialog(self)
+        dialog.setWindowTitle(title)
+        dialog.resize(760, 620)
+        layout = QVBoxLayout(dialog)
+        edit = QTextEdit(dialog)
+        edit.setReadOnly(True)
+        edit.setPlainText(text)
+        layout.addWidget(edit)
+        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Ok, dialog)
+        buttons.accepted.connect(dialog.accept)
+        layout.addWidget(buttons)
+        dialog.exec()
+
+    def _on_preview_retrieval(self) -> None:
+        query, ok = QInputDialog.getMultiLineText(self, "世界书注入预览", "输入章节标题、情节或要求：")
+        if not ok:
+            return
+        from core.world_bible import format_relevant_world_bible_for_prompt
+        text, diagnostics = format_relevant_world_bible_for_prompt(
+            self._bible,
+            query,
+            active_chapters=self._active_chapters,
+            target_chapter=max(self._active_chapters or {getattr(self._bible, "last_updated_chapter", 0)}),
+            return_diagnostics=True,
+        )
+        self._refresh_v2_tabs()
+        self._show_text_dialog("世界书注入预览", text + "\n\n--- 检索诊断 ---\n" + json.dumps(diagnostics, ensure_ascii=False, indent=2))
+
+    def _on_view_fact_history(self) -> None:
+        key = self._current_card_key()
+        entity_id = ""
+        title = "全部事实"
+        if key:
+            obj = self._get_card_data(*key)
+            if isinstance(obj, dict):
+                entity_id = str(obj.get("id", ""))
+                title = str(obj.get("name") or obj.get("topic") or obj.get("hint") or title)
+            elif obj is not None:
+                entity_id = str(getattr(obj, "id", ""))
+                title = str(getattr(obj, "name", title))
+        facts = [asdict(item) for item in getattr(self._bible, "facts", []) if not entity_id or item.subject_id == entity_id]
+        self._show_text_dialog(f"事实历史 · {title}", json.dumps(facts, ensure_ascii=False, indent=2))
+
+    def _on_review_duplicate(self) -> None:
+        candidate = next((item for item in getattr(self._bible, "duplicate_candidates", []) if item.get("status", "pending") == "pending"), None)
+        if not candidate:
+            QMessageBox.information(self, "重复候选", "当前没有待确认的重复实体。")
+            return
+        names = "、".join(candidate.get("names", []))
+        reply = QMessageBox.question(
+            self,
+            "确认重复实体",
+            f"疑似重复：{names}\n置信度：{candidate.get('confidence', 0):.0%}\n\n确认合并？选择“否”将拒绝此候选。",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Cancel,
+        )
+        if reply == QMessageBox.StandardButton.Cancel:
+            return
+        if reply == QMessageBox.StandardButton.No:
+            candidate["status"] = "rejected"
+        else:
+            from core.world_bible import confirm_duplicate_candidate
+            if not confirm_duplicate_candidate(self._bible, candidate.get("id", "")):
+                QMessageBox.warning(self, "合并失败", "候选实体已变化，无法安全合并。")
+                return
+        self._audit_and_refresh()
+
+    def _on_undo_merge(self) -> None:
+        from core.world_bible import undo_entity_merge
+        if not undo_entity_merge(self._bible):
+            QMessageBox.information(self, "撤销合并", "没有可撤销的实体合并。")
+            return
+        self._audit_and_refresh()
+        QMessageBox.information(self, "撤销合并", "最近一次实体合并已撤销。")
     def get_bible(self):
         """返回修改后的 WorldBible 对象（在 exec 返回 Accepted 后调用）"""
+        self._capture_manual_changes()
         return self._bible
 
     def _on_save(self):
         """保存所有标签页的修改回 WorldBible"""
         try:
             self._sync_from_editors()
+            self._capture_manual_changes()
 
             try:
                 from core.world_bible import audit_world_bible_consistency

@@ -5,25 +5,105 @@
 """
 
 import difflib
+import copy
 import json
 import os
 import re
+import uuid
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
 
 # ========== 数据结构 ==========
 
+WORLD_BIBLE_SCHEMA_VERSION = 2
+_ENTITY_NAMESPACE = uuid.UUID("a464fcbe-2f2c-4b04-b83b-40ab4863a67a")
+
+
+def _stable_id(kind: str, name: str, chapter: int = 0, salt: str = "") -> str:
+    """Return a deterministic entity id across aggregate rebuilds."""
+    normalized = re.sub(r"\s+", "", str(name or "")).lower()
+    seed = f"{kind}:{normalized}:{int(chapter or 0)}:{salt}"
+    return f"{kind}_{uuid.uuid5(_ENTITY_NAMESPACE, seed).hex[:16]}"
+
+
+@dataclass
+class SourceRef:
+    chapter: int = 0
+    version: int = 0
+    snapshot_key: str = ""
+    excerpt: str = ""
+
+
+@dataclass
+class WorldFact:
+    id: str = ""
+    subject_id: str = ""
+    predicate: str = ""
+    value: object = ""
+    valid_from: int = 0
+    valid_to: int = 0
+    source_refs: list[dict] = field(default_factory=list)
+    knowledge_type: str = "canon"
+    confidence: float = 1.0
+    supersedes: str = ""
+    locked: bool = False
+
+
+@dataclass
+class WorldRule:
+    id: str = ""
+    name: str = ""
+    content: str = ""
+    category: str = "general"
+    priority: int = 50
+    source_refs: list[dict] = field(default_factory=list)
+    knowledge_type: str = "constraint"
+    confidence: float = 1.0
+    locked: bool = False
+    hidden: bool = False
+    valid_from: int = 0
+    valid_to: int = 0
+    exceptions: list[str] = field(default_factory=list)
+    supersedes: str = ""
+    conflicts_with: list[str] = field(default_factory=list)
+
+
+@dataclass
+class ManualOverride:
+    id: str = ""
+    operation: str = "patch"
+    entity_type: str = ""
+    entity_id: str = ""
+    payload: dict = field(default_factory=dict)
+    created_at: str = ""
+    note: str = ""
+
+
+@dataclass
+class EntityMerge:
+    id: str = ""
+    entity_type: str = ""
+    target_id: str = ""
+    source_ids: list[str] = field(default_factory=list)
+    aliases_added: list[str] = field(default_factory=list)
+    reversible_snapshot: dict = field(default_factory=dict)
+    created_at: str = ""
+    reverted: bool = False
+
+
 
 @dataclass
 class Relationship:
     target: str = ""
+    target_id: str = ""
     type: str = ""          # friend/enemy/family/master/student/ally/rival
     description: str = ""
 
 
 @dataclass
 class CharacterEntry:
+    id: str = ""
     name: str = ""
     aliases: list[str] = field(default_factory=list)
     traits: str = ""         # 性格、外貌、能力
@@ -54,8 +134,14 @@ class CharacterEntry:
     fact_sources: dict[str, list[dict]] = field(default_factory=dict)  # 字段级来源，兼容旧字段
 
 
+    knowledge_type: str = "canon"
+    confidence: float = 1.0
+    source_refs: list[dict] = field(default_factory=list)
+    locked: bool = False
+
 @dataclass
 class LocationEntry:
+    id: str = ""
     name: str = ""
     description: str = ""
     significance: str = ""
@@ -68,10 +154,15 @@ class LocationEntry:
     last_updated_version: int = 0
     hidden: bool = False
     fact_sources: dict[str, list[dict]] = field(default_factory=dict)
+    knowledge_type: str = "canon"
+    confidence: float = 1.0
+    source_refs: list[dict] = field(default_factory=list)
+    locked: bool = False
 
 
 @dataclass
 class TimelineEntry:
+    id: str = ""
     chapter: int = 0
     event: str = ""
     significance: str = ""
@@ -79,10 +170,15 @@ class TimelineEntry:
     key_passages: list[str] = field(default_factory=list)          # 原文引用的事件重要段落
     foreshadowing_hints: list[str] = field(default_factory=list)   # 该事件中埋下的伏笔
     source_version: int = 0
+    knowledge_type: str = "canon"
+    confidence: float = 1.0
+    source_refs: list[dict] = field(default_factory=list)
+    locked: bool = False
 
 
 @dataclass
 class PlotThread:
+    id: str = ""
     name: str = ""
     status: str = "active"   # active/resolved/dormant
     importance: str = "normal"  # major / normal / minor
@@ -99,10 +195,15 @@ class PlotThread:
     last_updated_version: int = 0
     hidden: bool = False
     fact_sources: dict[str, list[dict]] = field(default_factory=dict)
+    knowledge_type: str = "canon"
+    confidence: float = 1.0
+    source_refs: list[dict] = field(default_factory=list)
+    locked: bool = False
 
 
 @dataclass
 class WorldBible:
+    schema_version: int = WORLD_BIBLE_SCHEMA_VERSION
     characters: list[CharacterEntry] = field(default_factory=list)
     locations: list[LocationEntry] = field(default_factory=list)
     rules: list[str] = field(default_factory=list)
@@ -115,6 +216,15 @@ class WorldBible:
     global_foreshadowing: list[dict] = field(default_factory=list)        # [{hint, relates_to, status, introduced_chapter, last_touched_chapter, next_step, reveal_rule}]
     global_key_dialogues: list[dict] = field(default_factory=list)        # [{speaker, dialogue, context}]
     consistency_warnings: list[dict] = field(default_factory=list)         # [{severity, type, message, related}]
+    chapter_snapshots: dict[str, dict] = field(default_factory=dict)
+    manual_overrides: list[ManualOverride] = field(default_factory=list)
+    resolved_view: dict = field(default_factory=dict)
+    facts: list[WorldFact] = field(default_factory=list)
+    world_rules: list[WorldRule] = field(default_factory=list)
+    merge_history: list[EntityMerge] = field(default_factory=list)
+    duplicate_candidates: list[dict] = field(default_factory=list)
+    diagnostics: dict = field(default_factory=dict)
+    migration_info: dict = field(default_factory=dict)
 
 
 # ========== 序列化/反序列化 ==========
@@ -125,37 +235,306 @@ def _filter_fields(cls, data: dict) -> dict:
     return {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
 
 
+def _source_ref(chapter: int, version: int = 0, excerpt: str = "") -> dict:
+    return asdict(SourceRef(
+        chapter=int(chapter or 0),
+        version=int(version or 0),
+        snapshot_key=_chapter_world_entry_key(chapter, version) if chapter else "",
+        excerpt=str(excerpt or "")[:200],
+    ))
+
+
+def _ensure_entity_metadata(bible: WorldBible) -> None:
+    """Fill stable IDs and v2 authority metadata without changing visible content."""
+    for ch in bible.characters:
+        ch.id = ch.id or _stable_id("char", ch.name, ch.first_appearance)
+        if not ch.source_refs and (ch.source_chapter or ch.first_appearance):
+            ch.source_refs = [_source_ref(ch.source_chapter or ch.first_appearance, ch.source_version)]
+        for rel in ch.relationships:
+            target = _find_character_by_name_or_alias(bible.characters, rel.target, [])
+            if target:
+                rel.target_id = target.id
+    for loc in bible.locations:
+        loc.id = loc.id or _stable_id("loc", loc.name, loc.first_appearance)
+        if not loc.source_refs and (loc.source_chapter or loc.first_appearance):
+            loc.source_refs = [_source_ref(loc.source_chapter or loc.first_appearance, loc.source_version)]
+    for event in bible.timeline:
+        event.id = event.id or _stable_id("event", event.event, event.chapter)
+        if not event.source_refs and event.chapter:
+            event.source_refs = [_source_ref(event.chapter, event.source_version)]
+    for thread in bible.active_plot_threads:
+        thread.id = thread.id or _stable_id("thread", thread.name, thread.opened_chapter)
+        if not thread.source_refs and (thread.source_chapter or thread.opened_chapter):
+            thread.source_refs = [_source_ref(thread.source_chapter or thread.opened_chapter, thread.source_version)]
+    for item in bible.key_worldbuilding_passages:
+        item.setdefault("id", _stable_id("setting", item.get("topic", ""), item.get("chapter", 0)))
+        item.setdefault("knowledge_type", "constraint" if item.get("locked") else "canon")
+        item.setdefault("confidence", 1.0)
+        item.setdefault("source_refs", [_source_ref(item.get("chapter", 0), item.get("version", 0))] if item.get("chapter") else [])
+        item.setdefault("locked", bool(item.get("locked")))
+    for item in bible.global_foreshadowing:
+        item.setdefault("id", _stable_id("foreshadow", item.get("hint", ""), item.get("introduced_chapter", 0)))
+        item.setdefault("knowledge_type", "author_plan")
+        item.setdefault("confidence", 0.7)
+        item.setdefault("source_refs", [_source_ref(item.get("introduced_chapter", 0), item.get("introduced_version", 0))] if item.get("introduced_chapter") else [])
+        item.setdefault("locked", False)
+    for item in bible.global_key_dialogues:
+        item.setdefault("id", _stable_id("dialogue", item.get("dialogue", ""), item.get("chapter", 0)))
+        item.setdefault("knowledge_type", "canon")
+        item.setdefault("confidence", 1.0)
+        item.setdefault("source_refs", [_source_ref(item.get("chapter", 0), item.get("version", 0), item.get("dialogue", ""))] if item.get("chapter") else [])
+        item.setdefault("locked", False)
+
+    existing_rule_content = {_norm_key(rule.content) for rule in bible.world_rules}
+    for text in bible.rules:
+        content = str(text).strip()
+        if content and _norm_key(content) not in existing_rule_content:
+            bible.world_rules.append(WorldRule(
+                id=_stable_id("rule", content),
+                name=content[:40],
+                content=content,
+                knowledge_type="constraint",
+            ))
+            existing_rule_content.add(_norm_key(content))
+    bible.rules = [rule.content for rule in bible.world_rules if rule.content] or list(bible.rules)
+    bible.chapter_snapshots.update(bible.chapter_world_entries)
+    bible.chapter_world_entries.update(bible.chapter_snapshots)
+
+
+def _flat_view_dict(bible: WorldBible) -> dict:
+    return {
+        "characters": [asdict(item) for item in bible.characters],
+        "locations": [asdict(item) for item in bible.locations],
+        "rules": list(bible.rules),
+        "world_rules": [asdict(item) for item in bible.world_rules],
+        "timeline": [asdict(item) for item in bible.timeline],
+        "active_plot_threads": [asdict(item) for item in bible.active_plot_threads],
+        "story_clock": copy.deepcopy(bible.story_clock),
+        "last_updated_chapter": bible.last_updated_chapter,
+        "key_worldbuilding_passages": copy.deepcopy(bible.key_worldbuilding_passages),
+        "global_foreshadowing": copy.deepcopy(bible.global_foreshadowing),
+        "global_key_dialogues": copy.deepcopy(bible.global_key_dialogues),
+        "facts": [asdict(item) for item in bible.facts],
+    }
+
+
 def _from_dict(cls, data: dict):
-    """递归反序列化 dataclass"""
+    """Deserialize legacy or v2 data while preserving forward-compatible fields."""
     if cls == CharacterEntry:
-        rels = [Relationship(**r) for r in data.get("relationships", [])]
+        rels = [Relationship(**_filter_fields(Relationship, r)) for r in data.get("relationships", []) if isinstance(r, dict)]
         base = _filter_fields(cls, {k: v for k, v in data.items() if k != "relationships"})
         return CharacterEntry(relationships=rels, **base)
     if cls == WorldBible:
-        return WorldBible(
-            characters=[_from_dict(CharacterEntry, c) for c in data.get("characters", [])],
-            locations=[LocationEntry(**_filter_fields(LocationEntry, l)) for l in data.get("locations", [])],
-            rules=list(data.get("rules", [])),
-            timeline=[TimelineEntry(**_filter_fields(TimelineEntry, t)) for t in data.get("timeline", [])],
-            active_plot_threads=[PlotThread(**_filter_fields(PlotThread, p)) for p in data.get("active_plot_threads", [])],
+        snapshots = dict(data.get("chapter_snapshots") or data.get("chapter_world_entries") or {})
+        bible = WorldBible(
+            schema_version=WORLD_BIBLE_SCHEMA_VERSION,
+            characters=[_from_dict(CharacterEntry, c) for c in data.get("characters", []) if isinstance(c, dict)],
+            locations=[LocationEntry(**_filter_fields(LocationEntry, item)) for item in data.get("locations", []) if isinstance(item, dict)],
+            rules=[str(item) for item in data.get("rules", [])],
+            timeline=[TimelineEntry(**_filter_fields(TimelineEntry, item)) for item in data.get("timeline", []) if isinstance(item, dict)],
+            active_plot_threads=[PlotThread(**_filter_fields(PlotThread, item)) for item in data.get("active_plot_threads", []) if isinstance(item, dict)],
             story_clock=dict(data.get("story_clock", {})),
-            last_updated_chapter=data.get("last_updated_chapter", 0),
-            chapter_world_entries=dict(data.get("chapter_world_entries", {})),
-            key_worldbuilding_passages=list(data.get("key_worldbuilding_passages", [])),
-            global_foreshadowing=list(data.get("global_foreshadowing", [])),
-            global_key_dialogues=list(data.get("global_key_dialogues", [])),
-            consistency_warnings=list(data.get("consistency_warnings", [])),
+            last_updated_chapter=int(data.get("last_updated_chapter", 0) or 0),
+            chapter_world_entries=copy.deepcopy(snapshots),
+            chapter_snapshots=copy.deepcopy(snapshots),
+            key_worldbuilding_passages=copy.deepcopy(data.get("key_worldbuilding_passages", [])),
+            global_foreshadowing=copy.deepcopy(data.get("global_foreshadowing", [])),
+            global_key_dialogues=copy.deepcopy(data.get("global_key_dialogues", [])),
+            consistency_warnings=copy.deepcopy(data.get("consistency_warnings", [])),
+            manual_overrides=[ManualOverride(**_filter_fields(ManualOverride, item)) for item in data.get("manual_overrides", []) if isinstance(item, dict)],
+            resolved_view=copy.deepcopy(data.get("resolved_view", {})),
+            facts=[WorldFact(**_filter_fields(WorldFact, item)) for item in data.get("facts", []) if isinstance(item, dict)],
+            world_rules=[WorldRule(**_filter_fields(WorldRule, item)) for item in data.get("world_rules", []) if isinstance(item, dict)],
+            merge_history=[EntityMerge(**_filter_fields(EntityMerge, item)) for item in data.get("merge_history", []) if isinstance(item, dict)],
+            duplicate_candidates=copy.deepcopy(data.get("duplicate_candidates", [])),
+            diagnostics=copy.deepcopy(data.get("diagnostics", {})),
+            migration_info=copy.deepcopy(data.get("migration_info", {})),
         )
+        if int(data.get("schema_version", 1) or 1) < WORLD_BIBLE_SCHEMA_VERSION:
+            bible.migration_info.update({"migrated_from": int(data.get("schema_version", 1) or 1), "status": "migrated"})
+        _ensure_entity_metadata(bible)
+        bible.resolved_view = _flat_view_dict(bible)
+        return bible
     return cls(**_filter_fields(cls, data))
 
 
 def world_bible_to_dict(bible: WorldBible) -> dict:
+    _ensure_entity_metadata(bible)
+    bible.schema_version = WORLD_BIBLE_SCHEMA_VERSION
+    bible.chapter_snapshots.update(bible.chapter_world_entries)
+    bible.chapter_world_entries = copy.deepcopy(bible.chapter_snapshots)
+    bible.resolved_view = _flat_view_dict(bible)
     return asdict(bible)
 
 
 def dict_to_world_bible(data: dict) -> WorldBible:
+    if not isinstance(data, dict):
+        raise ValueError("World bible root must be a JSON object")
+    version = int(data.get("schema_version", 1) or 1)
+    if version > WORLD_BIBLE_SCHEMA_VERSION:
+        raise ValueError(f"Unsupported world bible schema version: {version}")
     return _from_dict(WorldBible, data)
 
+def _override_id(operation: str, entity_type: str, entity_id: str) -> str:
+    return _stable_id("override", f"{operation}:{entity_type}:{entity_id}")
+
+
+def _upsert_override(bible: WorldBible, override: ManualOverride) -> None:
+    bible.manual_overrides = [
+        item for item in bible.manual_overrides
+        if not (item.operation == override.operation and item.entity_type == override.entity_type and item.entity_id == override.entity_id)
+    ]
+    bible.manual_overrides.append(override)
+
+
+def record_manual_view_changes(bible: WorldBible, before_view: dict) -> None:
+    """Convert UI edits into durable, replayable overrides."""
+    _ensure_entity_metadata(bible)
+    after_view = _flat_view_dict(bible)
+    specs = (
+        ("character", "characters"),
+        ("location", "locations"),
+        ("timeline", "timeline"),
+        ("plot_thread", "active_plot_threads"),
+        ("setting", "key_worldbuilding_passages"),
+        ("foreshadowing", "global_foreshadowing"),
+        ("dialogue", "global_key_dialogues"),
+        ("rule", "world_rules"),
+    )
+    for entity_type, key in specs:
+        old_items = {str(item.get("id", "")): item for item in before_view.get(key, []) if isinstance(item, dict) and item.get("id")}
+        new_items = {str(item.get("id", "")): item for item in after_view.get(key, []) if isinstance(item, dict) and item.get("id")}
+        for entity_id in old_items.keys() - new_items.keys():
+            _upsert_override(bible, ManualOverride(
+                id=_override_id("delete", entity_type, entity_id),
+                operation="delete", entity_type=entity_type, entity_id=entity_id,
+            ))
+        for entity_id, payload in new_items.items():
+            if entity_id not in old_items:
+                _upsert_override(bible, ManualOverride(
+                    id=_override_id("add", entity_type, entity_id),
+                    operation="add", entity_type=entity_type, entity_id=entity_id,
+                    payload=copy.deepcopy(payload),
+                ))
+            elif payload != old_items[entity_id]:
+                _upsert_override(bible, ManualOverride(
+                    id=_override_id("patch", entity_type, entity_id),
+                    operation="patch", entity_type=entity_type, entity_id=entity_id,
+                    payload=copy.deepcopy(payload),
+                ))
+    if before_view.get("story_clock", {}) != after_view.get("story_clock", {}):
+        _upsert_override(bible, ManualOverride(
+            id=_override_id("patch", "story_clock", "story_clock"),
+            operation="patch", entity_type="story_clock", entity_id="story_clock",
+            payload=copy.deepcopy(after_view.get("story_clock", {})),
+        ))
+
+
+def _override_collection(bible: WorldBible, entity_type: str):
+    return {
+        "character": (bible.characters, CharacterEntry),
+        "location": (bible.locations, LocationEntry),
+        "timeline": (bible.timeline, TimelineEntry),
+        "plot_thread": (bible.active_plot_threads, PlotThread),
+        "setting": (bible.key_worldbuilding_passages, dict),
+        "foreshadowing": (bible.global_foreshadowing, dict),
+        "dialogue": (bible.global_key_dialogues, dict),
+        "rule": (bible.world_rules, WorldRule),
+    }.get(entity_type)
+
+
+def apply_manual_overrides(bible: WorldBible) -> WorldBible:
+    """Replay user authority after rebuilding the automatic aggregate."""
+    for override in bible.manual_overrides:
+        if override.entity_type == "story_clock" and override.operation == "patch":
+            bible.story_clock = copy.deepcopy(override.payload)
+            continue
+        spec = _override_collection(bible, override.entity_type)
+        if not spec:
+            continue
+        collection, cls = spec
+        existing_index = next((i for i, item in enumerate(collection) if (item.get("id") if isinstance(item, dict) else getattr(item, "id", "")) == override.entity_id), -1)
+        if override.operation == "delete":
+            if existing_index >= 0:
+                del collection[existing_index]
+            continue
+        payload = copy.deepcopy(override.payload)
+        if cls is CharacterEntry:
+            item = _from_dict(CharacterEntry, payload)
+        elif cls is dict:
+            item = payload
+        else:
+            item = cls(**_filter_fields(cls, payload))
+        if existing_index >= 0:
+            collection[existing_index] = item
+        elif override.operation in ("add", "patch"):
+            collection.append(item)
+    _ensure_entity_metadata(bible)
+    bible.rules = [rule.content for rule in bible.world_rules if rule.content and not rule.hidden]
+    bible.resolved_view = _flat_view_dict(bible)
+    return bible
+
+
+def _record_dynamic_fact(
+    bible: WorldBible,
+    subject_id: str,
+    predicate: str,
+    value,
+    chapter_num: int,
+    chapter_version: int = 0,
+    *,
+    knowledge_type: str = "canon",
+    confidence: float = 1.0,
+) -> None:
+    if not subject_id or not predicate or value in (None, "", []):
+        return
+    previous = next((item for item in reversed(bible.facts) if item.subject_id == subject_id and item.predicate == predicate and not item.valid_to), None)
+    if previous and previous.value == value:
+        if _source_ref(chapter_num, chapter_version) not in previous.source_refs:
+            previous.source_refs.append(_source_ref(chapter_num, chapter_version))
+        return
+    if previous and chapter_num:
+        previous.valid_to = max(previous.valid_from, chapter_num - 1)
+    fact = WorldFact(
+        id=_stable_id("fact", f"{subject_id}:{predicate}:{value}", chapter_num, str(chapter_version)),
+        subject_id=subject_id,
+        predicate=predicate,
+        value=copy.deepcopy(value),
+        valid_from=int(chapter_num or 0),
+        source_refs=[_source_ref(chapter_num, chapter_version)],
+        knowledge_type=knowledge_type,
+        confidence=float(confidence),
+        supersedes=previous.id if previous else "",
+    )
+    bible.facts.append(fact)
+
+
+def materialize_current_facts(bible: WorldBible, target_chapter: int = 0) -> None:
+    """Project the latest valid facts back to legacy current-state fields."""
+    target = int(target_chapter or bible.last_updated_chapter or 0)
+    by_subject: dict[tuple[str, str], WorldFact] = {}
+    for fact in bible.facts:
+        if fact.valid_from and target and fact.valid_from > target:
+            continue
+        if fact.valid_to and target and fact.valid_to < target:
+            continue
+        key = (fact.subject_id, fact.predicate)
+        current = by_subject.get(key)
+        if current is None or (fact.valid_from, fact.confidence) >= (current.valid_from, current.confidence):
+            by_subject[key] = fact
+    character_fields = {
+        "status", "current_location", "current_goal", "current_emotion", "recent_action",
+        "knowledge_state", "current_age", "life_stage", "age_basis", "birth_date",
+    }
+    for character in bible.characters:
+        for field_name in character_fields:
+            fact = by_subject.get((character.id, field_name))
+            if fact:
+                setattr(character, field_name, copy.deepcopy(fact.value))
+    for thread in bible.active_plot_threads:
+        fact = by_subject.get((thread.id, "status"))
+        if fact:
+            thread.status = str(fact.value)
 
 # ========== 格式化输出 ==========
 
@@ -313,6 +692,118 @@ def format_world_bible_for_prompt(bible: WorldBible, max_entries: int = 10) -> s
     return "\n".join(parts)
 
 
+def confirm_duplicate_candidate(bible: WorldBible, candidate_id: str) -> bool:
+    """Confirm a duplicate suggestion with a reversible snapshot and durable overrides."""
+    candidate = next((item for item in bible.duplicate_candidates if item.get("id") == candidate_id), None)
+    if not candidate or candidate.get("status", "pending") != "pending":
+        return False
+    entity_type = candidate.get("entity_type")
+    source_ids = list(candidate.get("entity_ids", []))
+    if len(source_ids) < 2:
+        return False
+    before = _flat_view_dict(bible)
+    if entity_type == "character":
+        collection = bible.characters
+        matched = [item for item in collection if item.id in source_ids]
+        if len(matched) < 2:
+            return False
+        matched.sort(key=lambda item: (item.importance == "major", len(item.traits), -item.first_appearance), reverse=True)
+        base = matched[0]
+        for other in matched[1:]:
+            _merge_character_entry(base, asdict(other), "", other.last_updated_chapter, other.last_updated_version)
+            if other.name not in base.aliases:
+                base.aliases.append(other.name)
+            for fact in bible.facts:
+                if fact.subject_id == other.id:
+                    fact.subject_id = base.id
+            for item in bible.characters:
+                for rel in item.relationships:
+                    if rel.target_id == other.id or _norm_key(rel.target) in _character_keys(other):
+                        rel.target_id = base.id
+                        rel.target = base.name
+        bible.characters = [item for item in collection if item is base or item.id not in source_ids]
+        target_id = base.id
+    elif entity_type == "location":
+        collection = bible.locations
+        matched = [item for item in collection if item.id in source_ids]
+        if len(matched) < 2:
+            return False
+        matched.sort(key=lambda item: len(item.description) + len(item.key_details) * 40, reverse=True)
+        base = matched[0]
+        for other in matched[1:]:
+            base.description = _append_text_unique(base.description, other.description, 1200)
+            base.significance = _append_text_unique(base.significance, other.significance, 600)
+            base.atmosphere = _append_text_unique(base.atmosphere, other.atmosphere, 500)
+            _merge_list_dedup(base.key_details, other.key_details)
+            for fact in bible.facts:
+                if fact.subject_id == other.id:
+                    fact.subject_id = base.id
+        bible.locations = [item for item in collection if item is base or item.id not in source_ids]
+        target_id = base.id
+    else:
+        return False
+    history = EntityMerge(
+        id=_stable_id("merge", candidate_id, len(bible.merge_history)),
+        entity_type=entity_type,
+        target_id=target_id,
+        source_ids=[item for item in source_ids if item != target_id],
+        reversible_snapshot={"view": before},
+    )
+    bible.merge_history.append(history)
+    candidate["status"] = "confirmed"
+    candidate["merge_id"] = history.id
+    record_manual_view_changes(bible, before)
+    bible.consistency_warnings = audit_world_bible_consistency(bible)
+    return True
+
+
+def undo_entity_merge(bible: WorldBible, merge_id: str = "") -> bool:
+    """Restore the last or selected non-reverted entity merge."""
+    history = next((item for item in reversed(bible.merge_history) if not item.reverted and (not merge_id or item.id == merge_id)), None)
+    if history is None:
+        return False
+    view = history.reversible_snapshot.get("view", {})
+    if history.entity_type == "character":
+        bible.characters = [_from_dict(CharacterEntry, item) for item in view.get("characters", [])]
+    elif history.entity_type == "location":
+        bible.locations = [LocationEntry(**_filter_fields(LocationEntry, item)) for item in view.get("locations", [])]
+    else:
+        return False
+    bible.facts = [WorldFact(**_filter_fields(WorldFact, item)) for item in view.get("facts", [])]
+    affected = {history.target_id, *history.source_ids}
+    bible.manual_overrides = [item for item in bible.manual_overrides if item.entity_id not in affected]
+    history.reverted = True
+    for candidate in bible.duplicate_candidates:
+        if candidate.get("merge_id") == history.id:
+            candidate["status"] = "pending"
+            candidate.pop("merge_id", None)
+    _ensure_entity_metadata(bible)
+    bible.consistency_warnings = audit_world_bible_consistency(bible)
+    return True
+
+def _estimate_prompt_tokens(text: str) -> int:
+    """Local deterministic token estimate suitable for enforcing a hard context budget."""
+    chinese = len(re.findall(r"[\u4e00-\u9fff]", text or ""))
+    ascii_chunks = re.findall(r"[A-Za-z0-9_]+|[^\s\u4e00-\u9fff]", text or "")
+    return chinese + sum(max(1, (len(chunk) + 3) // 4) for chunk in ascii_chunks)
+
+
+def _fit_lines_to_token_budget(lines: list[str], budget: int) -> tuple[str, int, int]:
+    selected: list[str] = []
+    used = 0
+    omitted = 0
+    for line in lines:
+        cost = _estimate_prompt_tokens(line + "\n")
+        if selected and used + cost > budget:
+            omitted += 1
+            continue
+        if not selected and cost > budget:
+            line = line[:max(80, budget)]
+            cost = _estimate_prompt_tokens(line)
+        selected.append(line)
+        used += cost
+    return "\n".join(selected).strip(), used, omitted
+
 def format_relevant_world_bible_for_prompt(
     bible: WorldBible,
     query_text: str = "",
@@ -321,262 +812,216 @@ def format_relevant_world_bible_for_prompt(
     max_locations: int = 5,
     max_threads: int = 6,
     active_chapters: set[int] | None = None,
-) -> str:
-    """
-    根据本章标题/剧情走向检索相关世界书条目。
-
-    世界书变大后不应机械注入前 N 项；这里用轻量关键词评分优先保留相关角色、
-    地点、活跃剧情线和待回收伏笔。没有命中时退回重要性排序。
-    """
+    target_chapter: int = 0,
+    token_budget: int = 4000,
+    return_diagnostics: bool = False,
+):
+    """Local hybrid retrieval with authority separation and a deterministic token budget."""
+    _ensure_entity_metadata(bible)
+    materialize_current_facts(bible, target_chapter)
     query = _norm_key(query_text)
     active_chapters = {int(ch) for ch in (active_chapters or set()) if int(ch or 0) > 0}
 
-    def in_active_scope(data: dict) -> bool:
+    def in_scope(data: dict) -> bool:
         if not active_chapters:
             return True
-        chapter_values = {
-            data.get("last_updated_chapter"),
-            data.get("source_chapter"),
-            data.get("first_appearance"),
-            data.get("last_touched_chapter"),
-            data.get("introduced_chapter"),
-            data.get("opened_chapter"),
-            data.get("chapter"),
+        values = {
+            data.get("last_updated_chapter"), data.get("source_chapter"),
+            data.get("first_appearance"), data.get("last_touched_chapter"),
+            data.get("introduced_chapter"), data.get("opened_chapter"), data.get("chapter"),
         }
-        entry_chapters = {int(value) for value in chapter_values if str(value).isdigit()}
-        return bool(entry_chapters & active_chapters)
+        chapters = {int(value) for value in values if str(value).isdigit()}
+        return not chapters or bool(chapters & active_chapters)
 
-    def score_text(*values: str) -> int:
+    def text_score(*values) -> int:
         score = 0
         for value in values:
-            value = value or ""
-            norm = _norm_key(value)
-            if not norm:
+            text = str(value or "")
+            normalized = _norm_key(text)
+            if not normalized:
                 continue
-            if norm in query:
-                score += 8
-            if query and query in norm:
-                score += 5
-            for token in re.findall(r"[\u4e00-\u9fff]{2,}|[A-Za-z0-9_]+", value):
-                token_norm = _norm_key(token)
-                if len(token_norm) >= 2 and token_norm in query:
+            if normalized in query:
+                score += 10
+            if query and query in normalized:
+                score += 6
+            for token in re.findall(r"[\u4e00-\u9fff]{2,}|[A-Za-z0-9_]+", text):
+                if len(_norm_key(token)) >= 2 and _norm_key(token) in query:
                     score += 2
         return score
 
-    imp_score = {"major": 4, "normal": 2, "minor": 0}
-    status_score = {"active": 4, "dormant": 1, "resolved": 0}
+    importance = {"major": 6, "normal": 3, "minor": 0}
+    visible_chars = [item for item in bible.characters if not item.hidden and in_scope(item.__dict__)]
+    visible_locs = [item for item in bible.locations if not item.hidden and in_scope(item.__dict__)]
+    visible_threads = [item for item in bible.active_plot_threads if not item.hidden and in_scope(item.__dict__)]
+    visible_settings = [item for item in bible.key_worldbuilding_passages if not item.get("hidden") and in_scope(item)]
+    visible_foreshadowing = [item for item in bible.global_foreshadowing if not item.get("hidden") and in_scope(item)]
 
-    def char_score(c: CharacterEntry) -> int:
-        return (
-            score_text(
-                c.name,
-                " ".join(c.aliases),
-                c.traits,
-                c.current_goal,
-                c.current_location,
-                c.recent_action,
-                c.knowledge_state,
-                " ".join(c.unresolved_conflicts),
-            )
-            + imp_score.get(c.importance, 2)
-            + (2 if c.current_goal or c.current_location or c.recent_action else 0)
-        )
-
-    def loc_score(l: LocationEntry) -> int:
-        return score_text(l.name, l.description, l.significance, l.atmosphere) + (2 if l.key_details else 0)
-
-    def thread_score(p: PlotThread) -> int:
-        return (
-            score_text(
-                p.name,
-                p.description,
-                " ".join(p.involved_characters),
-                " ".join(p.foreshadowing_related),
-                p.expected_payoff,
-                p.payoff_hint,
-            )
-            + imp_score.get(p.importance, 2)
-            + status_score.get(p.status, 0)
-            + (2 if p.last_touched_chapter and p.last_touched_chapter >= bible.last_updated_chapter - 3 else 0)
-        )
-
-    visible_characters = [
-        c for c in bible.characters
-        if not getattr(c, "hidden", False) and in_active_scope(c.__dict__)
-    ]
-    visible_locations = [
-        l for l in bible.locations
-        if not getattr(l, "hidden", False) and in_active_scope(l.__dict__)
-    ]
-    visible_threads = [
-        p for p in bible.active_plot_threads
-        if not getattr(p, "hidden", False) and in_active_scope(p.__dict__)
-    ]
-    visible_passages = [p for p in bible.key_worldbuilding_passages if not p.get("hidden") and in_active_scope(p)]
-    visible_foreshadowing = [f for f in bible.global_foreshadowing if not f.get("hidden")]
-    visible_foreshadowing = [f for f in visible_foreshadowing if in_active_scope(f)]
-
-    char_ranked = sorted(visible_characters, key=lambda c: (char_score(c), c.last_updated_chapter, c.first_appearance), reverse=True)
-    loc_ranked = sorted(visible_locations, key=lambda l: (loc_score(l), l.last_updated_chapter, l.first_appearance), reverse=True)
-    thread_ranked = sorted(visible_threads, key=lambda p: (thread_score(p), p.last_touched_chapter), reverse=True)
-
-    core_chars = [c for c in visible_characters if c.importance == "major"][:4]
-    core_rules = bible.rules[:5]
-    core_passages = sorted(
-        visible_passages,
-        key=lambda item: (1 if item.get("locked") else 0, int(item.get("chapter", 0) or 0)),
+    base_char_scores = {
+        item.id: text_score(
+            item.name, " ".join(item.aliases), item.traits, item.current_goal,
+            item.current_location, item.recent_action, item.knowledge_state,
+            " ".join(item.unresolved_conflicts),
+        ) + importance.get(item.importance, 3)
+        for item in visible_chars
+    }
+    direct_ids = {entity_id for entity_id, score in base_char_scores.items() if score >= 8}
+    related_names = {
+        _norm_key(rel.target)
+        for item in visible_chars if item.id in direct_ids
+        for rel in item.relationships if rel.target
+    }
+    related_ids = {
+        item.id for item in visible_chars
+        if _norm_key(item.name) in related_names or any(_norm_key(alias) in related_names for alias in item.aliases)
+    }
+    char_ranked = sorted(
+        visible_chars,
+        key=lambda item: (
+            base_char_scores[item.id] + (7 if item.id in related_ids else 0)
+            + (3 if item.current_goal or item.current_location or item.recent_action else 0),
+            item.last_updated_chapter,
+        ),
         reverse=True,
-    )[:4]
-
-    selected_char_names = {_norm_key(c.name) for c in core_chars}
-    relevant_chars = [c for c in char_ranked if _norm_key(c.name) not in selected_char_names][:max_characters]
-    relevant_locs = loc_ranked[:max_locations]
-    active_threads = [p for p in thread_ranked if p.status == "active"][:max_threads]
-    non_active_threads = [p for p in thread_ranked if p.status != "active"][:3]
-    recent_events = bible.timeline[-5:]
-    open_foreshadowing = [
-        f for f in visible_foreshadowing
-        if f.get("status", "open") not in ("resolved", "已回收")
-    ][:8]
-
-    def source_suffix(obj) -> str:
-        chapter = getattr(obj, "last_updated_chapter", 0) or getattr(obj, "source_chapter", 0)
-        version = getattr(obj, "last_updated_version", 0) or getattr(obj, "source_version", 0)
-        if chapter and version:
-            return f"（源：第{chapter}章v{version}）"
-        if chapter:
-            return f"（源：第{chapter}章）"
-        return ""
-
-    def format_char(c: CharacterEntry) -> str:
-        state = []
-        if c.current_age:
-            state.append(f"年龄={c.current_age[:30]}")
-        if c.life_stage:
-            state.append(f"人生阶段={c.life_stage[:40]}")
-        if c.birth_date:
-            state.append(f"出生={c.birth_date[:30]}")
-        if c.age_basis:
-            state.append(f"年龄依据={c.age_basis[:50]}")
-        if c.current_location:
-            state.append(f"位置={c.current_location[:40]}")
-        if c.current_goal:
-            state.append(f"目标={c.current_goal[:50]}")
-        if c.current_emotion:
-            state.append(f"状态={c.current_emotion[:40]}")
-        if c.knowledge_state:
-            state.append(f"已知={c.knowledge_state[:50]}")
-        if c.recent_action:
-            state.append(f"近况={c.recent_action[:60]}")
-        if c.unresolved_conflicts:
-            state.append("未解冲突=" + "；".join(c.unresolved_conflicts[:2]))
-        line = f"- {c.name}：{c.traits[:100]}"
-        if c.status != "alive":
-            line += f" [{c.status}]"
-        if c.motivation:
-            line += f" | 动机：{c.motivation[:50]}"
-        if state:
-            line += " | 当前：" + "；".join(state)
-        return line + source_suffix(c)
-
-    def format_loc(l: LocationEntry) -> str:
-        line = f"- {l.name}：{l.description[:100]}"
-        if l.atmosphere:
-            line += f" | 氛围：{l.atmosphere[:40]}"
-        if l.significance:
-            line += f" | 作用：{l.significance[:60]}"
-        return line + source_suffix(l)
-
-    def format_thread(p: PlotThread) -> str:
-        line = f"- {p.name} [{p.status}]：{p.description[:120]}"
-        if p.involved_characters:
-            line += f" | 角色：{', '.join(p.involved_characters[:4])}"
-        if p.expected_payoff:
-            line += f" | 预期回收：{p.expected_payoff[:60]}"
-        if p.payoff_hint:
-            line += f" | 推进提示：{p.payoff_hint[:60]}"
-        if p.last_touched_chapter:
-            line += f" | 最近触达：第{p.last_touched_chapter}章"
-        return line + source_suffix(p)
-
-    parts = []
-    clock = bible.story_clock or {}
-    clock_parts = []
-    for key, label in (("current_date", "当前日期"), ("time_of_day", "当前时段"), ("elapsed_time", "累计流逝"), ("story_phase", "所处阶段"), ("calendar_system", "纪年体系")):
-        value = str(clock.get(key, "")).strip()
-        if value:
-            clock_parts.append(f"{label}={value}")
-    if clock_parts:
-        parts.append("【故事时钟（硬约束）】")
-        parts.append("- " + "；".join(clock_parts))
-        parts.append("- 除非正文明确发生时间跳跃或生日，人物年龄与人生阶段不得静默变化。")
-    if core_chars or core_rules or core_passages:
-        parts.append("【核心设定（长期约束，除非正文明确改写否则不可违背）】")
-        for c in core_chars:
-            parts.append(format_char(c))
-        for rule in core_rules:
-            parts.append(f"- 规则：{rule[:160]}")
-        for item in core_passages:
-            src = f"（第{item.get('chapter')}章v{item.get('version')}）" if item.get("version") else f"（第{item.get('chapter', '?')}章）"
-            parts.append(f"- 设定·{item.get('topic', '')}：{item.get('passage', '')[:120]}{src}")
-
-    if relevant_chars or relevant_locs or open_foreshadowing:
-        parts.append("\n【当前章节相关设定（优先用于本章）】")
-        for c in relevant_chars:
-            parts.append(format_char(c))
-        for l in relevant_locs:
-            parts.append(format_loc(l))
-        for f in open_foreshadowing:
-            line = f"- 伏笔：{f.get('hint', '')[:80]} [{f.get('status', 'open')}]"
-            if f.get("relates_to"):
-                line += f" | 关联：{f.get('relates_to', '')[:40]}"
-            if f.get("next_step"):
-                line += f" | 推进：{f.get('next_step', '')[:60]}"
-            if f.get("reveal_rule"):
-                line += f" | 限制：{f.get('reveal_rule', '')[:60]}"
-            parts.append(line)
-
-    if active_threads or recent_events or non_active_threads:
-        parts.append("\n【近期活跃剧情线与事件（保持承接）】")
-        for p in active_threads:
-            parts.append(format_thread(p))
-        for t in recent_events:
-            line = f"- 第{t.chapter}章：{t.event[:100]}"
-            if t.significance:
-                line += f" | 影响：{t.significance[:60]}"
-            if t.source_version:
-                line += f"（v{t.source_version}）"
-            parts.append(line)
-        for p in non_active_threads:
-            parts.append(format_thread(p))
-
-    archive_counts = []
-    if len(visible_characters) > len(core_chars) + len(relevant_chars):
-        archive_counts.append(f"角色{len(visible_characters) - len(core_chars) - len(relevant_chars)}")
-    if len(visible_locations) > len(relevant_locs):
-        archive_counts.append(f"地点{len(visible_locations) - len(relevant_locs)}")
-    if len(visible_threads) > len(active_threads) + len(non_active_threads):
-        archive_counts.append(f"剧情线{len(visible_threads) - len(active_threads) - len(non_active_threads)}")
-    hidden_count = (
-        len(bible.characters) - len(visible_characters)
-        + len(bible.locations) - len(visible_locations)
-        + len(bible.active_plot_threads) - len(visible_threads)
-        + len(bible.key_worldbuilding_passages) - len(visible_passages)
-        + len(bible.global_foreshadowing) - len(visible_foreshadowing)
     )
-    if hidden_count:
-        archive_counts.append(f"已隐藏{hidden_count}")
-    if archive_counts:
-        parts.append("\n【低优先级档案】")
-        parts.append("- 未注入全文，只保留索引：" + "、".join(archive_counts) + "；如本章点名相关对象，应优先遵循上方相关设定。")
+    selected_chars: list[CharacterEntry] = []
+    for item in [*[c for c in char_ranked if c.importance == "major"][:4], *char_ranked]:
+        if item.id not in {old.id for old in selected_chars}:
+            selected_chars.append(item)
+        if len(selected_chars) >= max_characters:
+            break
+    selected_names = {_norm_key(item.name) for item in selected_chars}
+    selected_locations = sorted(
+        visible_locs,
+        key=lambda item: (
+            text_score(item.name, item.description, item.significance, item.atmosphere)
+            + (8 if _norm_key(item.name) in {_norm_key(c.current_location) for c in selected_chars} else 0),
+            item.last_updated_chapter,
+        ),
+        reverse=True,
+    )[:max_locations]
+    selected_threads = sorted(
+        visible_threads,
+        key=lambda item: (
+            text_score(item.name, item.description, " ".join(item.involved_characters), " ".join(item.foreshadowing_related))
+            + importance.get(item.importance, 3)
+            + (6 if item.status == "active" else 0)
+            + (5 if any(_norm_key(name) in selected_names for name in item.involved_characters) else 0),
+            item.last_touched_chapter,
+        ),
+        reverse=True,
+    )[:max_threads]
+    selected_rules = sorted(
+        [
+            item for item in bible.world_rules
+            if not item.hidden
+            and (not target_chapter or not item.valid_from or item.valid_from <= target_chapter)
+            and (not target_chapter or not item.valid_to or item.valid_to >= target_chapter)
+        ],
+        key=lambda item: (item.locked, item.priority, text_score(item.name, item.content, " ".join(item.exceptions))),
+        reverse=True,
+    )[:8]
+    selected_settings = sorted(
+        visible_settings,
+        key=lambda item: (bool(item.get("locked")), text_score(item.get("topic"), item.get("passage")), int(item.get("chapter", 0) or 0)),
+        reverse=True,
+    )[:5]
+    selected_foreshadowing = sorted(
+        [item for item in visible_foreshadowing if item.get("status", "open") not in ("resolved", "已回收")],
+        key=lambda item: (text_score(item.get("hint"), item.get("relates_to")), int(item.get("last_touched_chapter", 0) or 0)),
+        reverse=True,
+    )[:8]
+
+    lines: list[str] = []
+    clock = bible.story_clock or {}
+    clock_text = "；".join(
+        f"{label}={clock.get(key)}" for key, label in (
+            ("current_date", "当前日期"), ("time_of_day", "当前时段"),
+            ("elapsed_time", "累计流逝"), ("story_phase", "故事阶段"),
+            ("calendar_system", "纪年体系"),
+        ) if clock.get(key)
+    )
+    if clock_text or selected_rules or selected_settings:
+        lines.append("【硬约束 / Canon 规则】")
+        if clock_text:
+            lines.append(f"- 故事时钟：{clock_text}")
+        for rule in selected_rules:
+            text = f"- 规则：{rule.content[:180]}"
+            if rule.exceptions:
+                text += " | 例外：" + "；".join(rule.exceptions[:2])
+            lines.append(text)
+        for item in selected_settings:
+            if item.get("locked") or item.get("knowledge_type") == "constraint":
+                lines.append(f"- 设定·{item.get('topic', '')}：{item.get('passage', '')[:160]}")
+
+    if selected_chars or selected_locations or selected_threads:
+        lines.append("\n【当前章节相关 Canon 事实】")
+        for item in selected_chars:
+            states = []
+            for label, value in (
+                ("状态", item.status), ("位置", item.current_location), ("目标", item.current_goal),
+                ("情绪", item.current_emotion), ("已知", item.knowledge_state), ("近况", item.recent_action),
+                ("年龄", item.current_age), ("阶段", item.life_stage),
+            ):
+                if value and not (label == "状态" and value == "alive"):
+                    states.append(f"{label}={str(value)[:60]}")
+            lines.append(f"- 角色·{item.name}：{item.traits[:100]}" + (" | " + "；".join(states) if states else ""))
+        for item in selected_locations:
+            lines.append(f"- 地点·{item.name}：{item.description[:120]}" + (f" | 氛围={item.atmosphere[:50]}" if item.atmosphere else ""))
+        for item in selected_threads:
+            lines.append(f"- 剧情线·{item.name} [{item.status}]：{item.description[:130]}")
+        for event in bible.timeline[-5:]:
+            if in_scope(event.__dict__):
+                lines.append(f"- 第{event.chapter}章事件：{event.event[:120]}")
+
+    inference_lines = []
+    for item in selected_chars:
+        if item.motivation or item.arc:
+            inference_lines.append(f"- {item.name}：动机={item.motivation[:70]}；弧光={item.arc[:70]}")
+    if inference_lines:
+        lines.append("\n【推断信息（可参考，不是既定事实）】")
+        lines.extend(inference_lines[:6])
+
+    plan_lines = []
+    for item in selected_threads:
+        if item.expected_payoff or item.payoff_hint:
+            plan_lines.append(f"- {item.name}：预期回收={item.expected_payoff[:70]}；推进建议={item.payoff_hint[:70]}")
+    for item in selected_foreshadowing:
+        plan_lines.append(
+            f"- 伏笔·{item.get('hint', '')[:60]} [{item.get('status', 'open')}]"
+            f"：推进={item.get('next_step', '')[:70]}；限制={item.get('reveal_rule', '')[:70]}"
+        )
+    if plan_lines:
+        lines.append("\n【作者规划（未来建议，不得写成已经发生）】")
+        lines.extend(plan_lines[:10])
 
     if bible.consistency_warnings:
-        parts.append("\n【世界书冲突提醒】")
+        lines.append("\n【一致性风险】")
         for warning in bible.consistency_warnings[:5]:
-            parts.append(f"- [{warning.get('severity', 'minor')}] {warning.get('type', '冲突')}：{warning.get('message', '')[:120]}")
+            lines.append(f"- [{warning.get('severity', 'minor')}] {warning.get('type', '冲突')}：{warning.get('message', '')[:130]}")
 
-    return "\n".join(parts).strip()
-
+    text, estimated_tokens, omitted_lines = _fit_lines_to_token_budget(lines, max(256, int(token_budget or 4000)))
+    diagnostics = {
+        "query": query_text,
+        "target_chapter": int(target_chapter or 0),
+        "token_budget": int(token_budget or 4000),
+        "estimated_tokens": estimated_tokens,
+        "omitted_lines": omitted_lines,
+        "selected": {
+            "characters": [item.id for item in selected_chars],
+            "locations": [item.id for item in selected_locations],
+            "threads": [item.id for item in selected_threads],
+            "rules": [item.id for item in selected_rules],
+            "settings": [item.get("id", "") for item in selected_settings],
+            "foreshadowing": [item.get("id", "") for item in selected_foreshadowing],
+        },
+        "reasons": {
+            "direct_character_ids": sorted(direct_ids),
+            "relationship_expansion_ids": sorted(related_ids),
+            "active_scope": sorted(active_chapters),
+        },
+    }
+    bible.diagnostics["last_retrieval"] = diagnostics
+    return (text, diagnostics) if return_diagnostics else text
 
 # ========== AI 提取与合并 ==========
 
@@ -1410,7 +1855,71 @@ def audit_world_bible_consistency(bible: WorldBible) -> list[dict]:
             add("minor", "规则重复", f"世界观规则可能重复：{rule[:80]}", [rule[:40]])
         rule_seen.add(key)
 
-    order = {"major": 0, "minor": 1, "info": 2}
+    # v2 schema, reference integrity and fact-state checks
+    entity_objects = [*bible.characters, *bible.locations, *bible.timeline, *bible.active_plot_threads, *bible.world_rules]
+    id_counts: dict[str, int] = {}
+    for entity in entity_objects:
+        entity_id = getattr(entity, "id", "")
+        if not entity_id:
+            add("error", "实体 ID 缺失", f"{type(entity).__name__} 缺少稳定 ID。")
+            continue
+        id_counts[entity_id] = id_counts.get(entity_id, 0) + 1
+    for entity_id, count in id_counts.items():
+        if count > 1:
+            add("error", "实体 ID 冲突", f"稳定 ID {entity_id} 被 {count} 个实体重复使用。", [entity_id])
+
+    character_ids = {item.id for item in bible.characters}
+    character_names = {_norm_key(name) for item in bible.characters for name in [item.name, *item.aliases] if name}
+    for item in bible.characters:
+        for rel in item.relationships:
+            if rel.target_id and rel.target_id not in character_ids:
+                add("major", "关系引用悬空", f"角色「{item.name}」关系指向不存在的 ID：{rel.target_id}。", [item.id, rel.target_id])
+            elif rel.target and _norm_key(rel.target) not in character_names:
+                add("minor", "关系对象缺失", f"角色「{item.name}」引用了尚无角色条目的「{rel.target}」。", [item.id, rel.target])
+    for thread in bible.active_plot_threads:
+        missing = [name for name in thread.involved_characters if _norm_key(name) not in character_names]
+        if missing:
+            add("minor", "剧情线角色缺失", f"剧情线「{thread.name}」引用不存在的角色：{'、'.join(missing)}。", [thread.id, *missing])
+
+    all_entity_ids = set(id_counts)
+    for fact in bible.facts:
+        if fact.subject_id not in all_entity_ids:
+            add("major", "事实主体缺失", f"事实 {fact.id or fact.predicate} 指向不存在的主体 {fact.subject_id}。", [fact.subject_id])
+        if fact.valid_to and fact.valid_from and fact.valid_to < fact.valid_from:
+            add("error", "事实时间范围无效", f"事实 {fact.id} 的 valid_to 早于 valid_from。", [fact.subject_id])
+    active_fact_keys: dict[tuple[str, str], list[WorldFact]] = {}
+    for fact in bible.facts:
+        if not fact.valid_to:
+            active_fact_keys.setdefault((fact.subject_id, fact.predicate), []).append(fact)
+    for (subject_id, predicate), facts in active_fact_keys.items():
+        canon_values = {json.dumps(item.value, ensure_ascii=False, sort_keys=True) for item in facts if item.locked or item.knowledge_type in ("canon", "constraint")}
+        if len(canon_values) > 1:
+            add("major", "Canon 事实冲突", f"主体 {subject_id} 的 {predicate} 同时存在多个有效值。", [subject_id])
+
+    rule_ids = {item.id for item in bible.world_rules}
+    rule_content: dict[str, str] = {}
+    for rule in bible.world_rules:
+        if rule.valid_to and rule.valid_from and rule.valid_to < rule.valid_from:
+            add("error", "规则时间范围无效", f"规则「{rule.name}」失效章早于生效章。", [rule.id])
+        missing_conflicts = [item for item in rule.conflicts_with if item not in rule_ids]
+        if missing_conflicts:
+            add("minor", "规则冲突引用悬空", f"规则「{rule.name}」引用不存在的冲突规则。", [rule.id, *missing_conflicts])
+        content_key = _norm_key(rule.content)
+        if content_key and content_key in rule_content and rule_content[content_key] != rule.id:
+            add("minor", "结构化规则重复", f"规则「{rule.name}」与另一规则内容重复。", [rule.id, rule_content[content_key]])
+        elif content_key:
+            rule_content[content_key] = rule.id
+
+    pending_candidates = [item for item in bible.duplicate_candidates if item.get("status", "pending") == "pending"]
+    if pending_candidates:
+        add("info", "待确认重复实体", f"有 {len(pending_candidates)} 组疑似重复实体等待确认。", [item.get("id", "") for item in pending_candidates])
+    if bible.chapter_snapshots != bible.chapter_world_entries:
+        add("major", "快照镜像不一致", "chapter_snapshots 与兼容字段 chapter_world_entries 不一致。")
+    for warning in warnings:
+        warning.setdefault("entity_ids", list(warning.get("related", [])))
+        warning.setdefault("source_refs", [])
+        warning.setdefault("suggestion", "检查相关来源并人工确认。")
+    order = {"error": 0, "major": 1, "minor": 2, "info": 3}
     warnings.sort(key=lambda item: order.get(item.get("severity", "info"), 3))
     return warnings[:40]
 
@@ -1561,6 +2070,41 @@ def _chapter_world_entry_key(chapter_num: int, chapter_version: int = 0) -> str:
     return f"ch{int(chapter_num):04d}_v{int(chapter_version or 0):03d}"
 
 
+def validate_extracted_world_bible_data(data: dict) -> list[str]:
+    """Validate the extraction wire shape while retaining usable categories."""
+    errors: list[str] = []
+    if not isinstance(data, dict):
+        return ["root must be an object"]
+    list_fields = ("characters", "locations", "rules", "timeline", "plot_threads", "key_worldbuilding", "global_key_dialogues", "global_foreshadowing")
+    for field_name in list_fields:
+        if field_name in data and not isinstance(data.get(field_name), list):
+            errors.append(f"{field_name} must be a list")
+    if "story_clock" in data and not isinstance(data.get("story_clock"), dict):
+        errors.append("story_clock must be an object")
+    for index, item in enumerate(data.get("characters", []) if isinstance(data.get("characters", []), list) else []):
+        if not isinstance(item, dict):
+            errors.append(f"characters[{index}] must be an object")
+        elif not str(item.get("name", "")).strip():
+            errors.append(f"characters[{index}].name is required")
+        elif item.get("status", "alive") not in ("alive", "dead", "missing", "transformed"):
+            errors.append(f"characters[{index}].status is invalid")
+    for index, item in enumerate(data.get("plot_threads", []) if isinstance(data.get("plot_threads", []), list) else []):
+        if not isinstance(item, dict):
+            errors.append(f"plot_threads[{index}] must be an object")
+        elif item.get("status", "active") not in ("active", "resolved", "dormant"):
+            errors.append(f"plot_threads[{index}].status is invalid")
+    return errors
+
+
+def _sanitize_extracted_world_bible_data(data: dict) -> dict:
+    clean = copy.deepcopy(data) if isinstance(data, dict) else {}
+    for field_name in ("characters", "locations", "rules", "timeline", "plot_threads", "key_worldbuilding", "global_key_dialogues", "global_foreshadowing"):
+        if not isinstance(clean.get(field_name, []), list):
+            clean[field_name] = []
+    if not isinstance(clean.get("story_clock", {}), dict):
+        clean["story_clock"] = {}
+    return clean
+
 def merge_extracted_world_bible_data(
     existing_bible: WorldBible | None,
     data: dict,
@@ -1576,8 +2120,15 @@ def merge_extracted_world_bible_data(
 ) -> WorldBible:
     """将已提取出的章节世界书 JSON 合并进 WorldBible。"""
     bible = existing_bible or WorldBible()
-    if not isinstance(data, dict):
-        data = {}
+    _ensure_entity_metadata(bible)
+    validation_errors = validate_extracted_world_bible_data(data)
+    data = _sanitize_extracted_world_bible_data(data)
+    bible.diagnostics["last_validation"] = {
+        "valid": not validation_errors,
+        "errors": validation_errors,
+        "chapter": int(chapter_num or 0),
+        "version": int(chapter_version or 0),
+    }
 
     if store_chapter_entry and chapter_num:
         key = _chapter_world_entry_key(chapter_num, chapter_version)
@@ -1586,6 +2137,7 @@ def merge_extracted_world_bible_data(
             "version": int(chapter_version or 0),
             "data": data,
         }
+        bible.chapter_snapshots[key] = copy.deepcopy(bible.chapter_world_entries[key])
 
     incoming_clock = data.get("story_clock", {})
     if isinstance(incoming_clock, dict):
@@ -1612,6 +2164,7 @@ def merge_extracted_world_bible_data(
             _merge_character_entry(existing, ch_data, chapter_content, chapter_num, chapter_version)
         else:
             entry = CharacterEntry(
+                id=_stable_id("char", name, chapter_num),
                 name=name,
                 aliases=ch_data.get("aliases", []),
                 traits=ch_data.get("traits", "")[:500],
@@ -1647,6 +2200,14 @@ def merge_extracted_world_bible_data(
             ):
                 _record_fact_source(entry, field_name, getattr(entry, field_name, None), chapter_num, chapter_version)
             bible.characters.append(entry)
+        subject = existing if existing else entry
+        for field_name in (
+            "status", "birth_date", "current_age", "age_basis", "life_stage",
+            "current_location", "current_goal", "current_emotion", "recent_action", "knowledge_state",
+        ):
+            value = ch_data.get(field_name)
+            if value not in (None, "", []):
+                _record_dynamic_fact(bible, subject.id, field_name, value, chapter_num, chapter_version)
 
     # === 合并地点 ===
     existing_locs = {l.name for l in bible.locations}
@@ -1674,6 +2235,7 @@ def merge_extracted_world_bible_data(
                     break
         else:
             entry = LocationEntry(
+                id=_stable_id("loc", name, chapter_num),
                 name=name,
                 description=loc_data.get("description", "")[:300],
                 significance=loc_data.get("significance", "")[:200],
@@ -1693,9 +2255,32 @@ def merge_extracted_world_bible_data(
 
     # === 合并规则 ===
     for rule in data.get("rules", []):
-        r = str(rule).strip()
-        if r and r not in bible.rules:
-            bible.rules.append(r)
+        if isinstance(rule, dict):
+            content = str(rule.get("content") or rule.get("text") or "").strip()
+            rule_data = rule
+        else:
+            content = str(rule).strip()
+            rule_data = {}
+        if not content:
+            continue
+        existing_rule = next((item for item in bible.world_rules if _norm_key(item.content) == _norm_key(content)), None)
+        if existing_rule is None:
+            bible.world_rules.append(WorldRule(
+                id=str(rule_data.get("id") or _stable_id("rule", content)),
+                name=str(rule_data.get("name") or content[:40]),
+                content=content,
+                category=str(rule_data.get("category") or "general"),
+                priority=int(rule_data.get("priority", 50) or 50),
+                source_refs=[_source_ref(chapter_num, chapter_version)] if chapter_num else [],
+                knowledge_type="constraint",
+                confidence=float(rule_data.get("confidence", 1.0) or 1.0),
+                locked=bool(rule_data.get("locked", False)),
+                valid_from=int(rule_data.get("valid_from", chapter_num) or 0),
+                valid_to=int(rule_data.get("valid_to", 0) or 0),
+                exceptions=[str(item) for item in rule_data.get("exceptions", [])],
+            ))
+        if content not in bible.rules:
+            bible.rules.append(content)
 
     # === 合并时间线 ===
     for t_data in data.get("timeline", []):
@@ -1723,6 +2308,7 @@ def merge_extracted_world_bible_data(
                 existing.source_version = chapter_version or existing.source_version
             else:
                 entry = TimelineEntry(
+                    id=_stable_id("event", event, chapter_num),
                     chapter=chapter_num,
                     event=event[:200],
                     significance=t_data.get("significance", "")[:200],
@@ -1746,6 +2332,7 @@ def merge_extracted_world_bible_data(
             _merge_plot_thread(existing, pt_data, chapter_content, chapter_num, chapter_version)
         else:
             entry = PlotThread(
+                id=_stable_id("thread", name, chapter_num),
                 name=name,
                 status=pt_data.get("status", "active"),
                 importance=pt_data.get("importance", "normal"),
@@ -1769,6 +2356,11 @@ def merge_extracted_world_bible_data(
             ):
                 _record_fact_source(entry, field_name, getattr(entry, field_name, None), chapter_num, chapter_version)
             bible.active_plot_threads.append(entry)
+        subject = existing if existing else entry
+        _record_dynamic_fact(
+            bible, subject.id, "status", pt_data.get("status", "active"),
+            chapter_num, chapter_version,
+        )
 
     # === 合并顶层字段：世界观设定、全局伏笔、关键对话 ===
     for item in data.get("key_worldbuilding", []):
@@ -1777,10 +2369,16 @@ def merge_extracted_world_bible_data(
         if topic and passage:
             if not any(ex.get("topic") == topic for ex in bible.key_worldbuilding_passages):
                 bible.key_worldbuilding_passages.append({
+                    "id": _stable_id("setting", topic, chapter_num),
                     "chapter": chapter_num,
                     "version": chapter_version,
                     "topic": topic,
                     "passage": passage[:300],
+                    "knowledge_type": "canon",
+                    "confidence": 1.0,
+                    "source_refs": [_source_ref(chapter_num, chapter_version, passage)],
+                    "locked": False,
+                    "hidden": False,
                 })
 
     for item in data.get("global_key_dialogues", []):
@@ -1810,8 +2408,78 @@ def merge_extracted_world_bible_data(
 
     if chapter_num:
         bible.last_updated_chapter = chapter_num
+    _ensure_entity_metadata(bible)
+    materialize_current_facts(bible, chapter_num)
+    apply_manual_overrides(bible)
     bible.consistency_warnings = audit_world_bible_consistency(bible)
+    bible.resolved_view = _flat_view_dict(bible)
+    bible.diagnostics.update({
+        "schema_version": WORLD_BIBLE_SCHEMA_VERSION,
+        "last_merged_chapter": int(chapter_num or 0),
+        "snapshot_count": len(bible.chapter_snapshots),
+        "fact_count": len(bible.facts),
+        "override_count": len(bible.manual_overrides),
+        "warning_count": len(bible.consistency_warnings),
+    })
     return bible
+
+
+def _split_chapter_for_world_extraction(text: str, max_chars: int = 16000) -> list[str]:
+    """Split all chapter content on paragraph boundaries; never discard the ending."""
+    text = str(text or "")
+    if len(text) <= max_chars:
+        return [text]
+    paragraphs = re.split(r"(\n\s*\n)", text)
+    chunks: list[str] = []
+    current = ""
+    for part in paragraphs:
+        if len(part) > max_chars:
+            if current.strip():
+                chunks.append(current.strip())
+                current = ""
+            for offset in range(0, len(part), max_chars):
+                chunks.append(part[offset:offset + max_chars])
+            continue
+        if current and len(current) + len(part) > max_chars:
+            chunks.append(current.strip())
+            current = part
+        else:
+            current += part
+    if current.strip():
+        chunks.append(current.strip())
+    return chunks or [text]
+
+
+def _parse_extraction_response(raw: str) -> dict:
+    json_str = (raw or "").strip()
+    if "```json" in json_str:
+        json_str = json_str.split("```json", 1)[1].split("```", 1)[0].strip()
+    elif "```" in json_str:
+        json_str = json_str.split("```", 1)[1].split("```", 1)[0].strip()
+    last_error = None
+    for candidate in (json_str, _repair_json(json_str), _repair_json(_repair_truncated_json(json_str))):
+        try:
+            data = json.loads(candidate)
+            if isinstance(data, dict):
+                return data
+        except json.JSONDecodeError as exc:
+            last_error = exc
+    raise last_error or ValueError("Extraction response is not a JSON object")
+
+
+def _world_bible_to_extracted_data(bible: WorldBible) -> dict:
+    return {
+        "characters": [asdict(item) for item in bible.characters],
+        "story_clock": copy.deepcopy(bible.story_clock),
+        "locations": [asdict(item) for item in bible.locations],
+        "rules": [item.content for item in bible.world_rules if item.content] or list(bible.rules),
+        "world_rules": [asdict(item) for item in bible.world_rules],
+        "timeline": [asdict(item) for item in bible.timeline],
+        "plot_threads": [asdict(item) for item in bible.active_plot_threads],
+        "key_worldbuilding": copy.deepcopy(bible.key_worldbuilding_passages),
+        "global_key_dialogues": copy.deepcopy(bible.global_key_dialogues),
+        "global_foreshadowing": copy.deepcopy(bible.global_foreshadowing),
+    }
 
 
 def extract_and_merge_world_bible(
@@ -1828,30 +2496,8 @@ def extract_and_merge_world_bible(
     writing_demand: str = "",
     xp_mode: bool = False,
 ) -> WorldBible:
-    """
-    分析章节内容，提取世界观信息并与现有世界书合并
-
-    Args:
-        client: OpenAI 客户端
-        chapter_content: 章节正文
-        chapter_num: 当前章节编号
-        existing_bible: 现有的世界书，None 表示新建
-        model: 模型名称
-        global_user_prompt: 用户全局提示词（偏好参考）
-        story_context: 前文摘要（用于批量导入时逐章积累）
-        background_story: 世界观设定背景
-        protagonist_bio: 主角描述
-        writing_demand: 写作要求
-
-    Returns:
-        合并后的 WorldBible
-    """
+    """Extract every chapter chunk, retain partial success, then merge one canonical snapshot."""
     bible = existing_bible or WorldBible()
-
-    # 截取前 40000 字符分析
-    content_sample = chapter_content[:40000]
-
-    # 如果有故事背景上下文，构建 prompt 前缀
     ctx_parts = []
     if background_story or protagonist_bio or story_context or writing_demand:
         ctx_parts.append("【故事背景】")
@@ -1865,58 +2511,57 @@ def extract_and_merge_world_bible(
             ctx_parts.append(f"写作要求：{writing_demand[:300]}")
     prompt_prefix = ("\n".join(ctx_parts) + "\n\n") if ctx_parts else ""
 
-    user_content = prompt_prefix + EXTRACT_PROMPT + content_sample
-    if xp_mode:
-        from utils.prompts import Prompts
-        user_content += f"\n\n{Prompts.XP_WORLD_BIBLE_GUIDE}"
-    if global_user_prompt.strip():
-        user_content += f"\n\n用户偏好参考: {global_user_prompt}"
-
-    # 首次尝试，设较高的 max_tokens 避免截断
-    max_extract_tokens = 16384
-    last_error = None
-
-    for attempt in range(2):
-        try:
-            response = client.chat.completions.create(
-                model=model,
-                messages=[{"role": "user", "content": user_content}],
-                max_tokens=max_extract_tokens,
-                temperature=0.1,
-            )
-            raw = response.choices[0].message.content or ""
-        except Exception as e:
-            raise RuntimeError(f"世界书提取 API 调用失败: {e}")
-
-        # 解析 JSON
-        json_str = raw.strip()
-        if "```json" in json_str:
-            json_str = json_str.split("```json")[1].split("```")[0].strip()
-        elif "```" in json_str:
-            json_str = json_str.split("```")[1].split("```")[0].strip()
-
-        # 尝试修复并解析
-        for repair_step in [json_str, _repair_json(json_str), _repair_json(_repair_truncated_json(json_str))]:
+    chunks = _split_chapter_for_world_extraction(chapter_content)
+    snapshot_bible = WorldBible()
+    errors: list[dict] = []
+    covered_chars = 0
+    for index, chunk in enumerate(chunks, 1):
+        user_content = (
+            prompt_prefix
+            + f"【章节分块】{index}/{len(chunks)}。这是同一章节的一部分，请只提取本块明确出现的信息。\n\n"
+            + EXTRACT_PROMPT
+            + chunk
+        )
+        if xp_mode:
+            from utils.prompts import Prompts
+            user_content += f"\n\n{Prompts.XP_WORLD_BIBLE_GUIDE}"
+        if global_user_prompt.strip():
+            user_content += f"\n\n用户偏好参考: {global_user_prompt}"
+        data = None
+        last_error = None
+        for max_tokens in (16384, 32768):
             try:
-                data = json.loads(repair_step)
-                break  # 解析成功
-            except json.JSONDecodeError:
-                continue
-        else:
-            # 全部修复尝试均失败
-            if attempt == 0:
-                # 首次失败 → 增大 max_tokens 重试
-                max_extract_tokens = 32768
-                user_content += "\n\n注意：请确保输出完整、合法的 JSON，不要被截断。"
-                continue
-            raise RuntimeError(
-                f"世界书提取返回的 JSON 解析失败。原始响应 (前500字):\n{raw[:500]}"
-            )
-        break  # 成功解析后跳出重试循环
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=[{"role": "user", "content": user_content}],
+                    max_tokens=max_tokens,
+                    temperature=0.1,
+                )
+                data = _parse_extraction_response(response.choices[0].message.content or "")
+                break
+            except Exception as exc:
+                last_error = exc
+                user_content += "\n\n请只输出完整、合法的 JSON，不要添加解释。"
+        if data is None:
+            errors.append({"chunk": index, "chars": len(chunk), "error": str(last_error)})
+            continue
+        covered_chars += len(chunk)
+        snapshot_bible = merge_extracted_world_bible_data(
+            snapshot_bible,
+            data,
+            chapter_content=chunk,
+            chapter_num=chapter_num,
+            chapter_version=chapter_version,
+            run_dedup=False,
+            store_chapter_entry=False,
+        )
+    if not covered_chars:
+        raise RuntimeError(f"世界书提取全部分块失败: {errors}")
 
-    return merge_extracted_world_bible_data(
+    combined_data = _world_bible_to_extracted_data(snapshot_bible)
+    result = merge_extracted_world_bible_data(
         bible,
-        data,
+        combined_data,
         chapter_content=chapter_content,
         chapter_num=chapter_num,
         chapter_version=chapter_version,
@@ -1926,3 +2571,14 @@ def extract_and_merge_world_bible(
         store_chapter_entry=True,
         run_dedup=True,
     )
+    result.diagnostics["last_extraction"] = {
+        "chapter": int(chapter_num or 0),
+        "version": int(chapter_version or 0),
+        "chunk_count": len(chunks),
+        "successful_chunks": len(chunks) - len(errors),
+        "failed_chunks": errors,
+        "input_chars": len(chapter_content or ""),
+        "covered_chars": covered_chars,
+        "complete": not errors and covered_chars >= len(chapter_content or ""),
+    }
+    return result

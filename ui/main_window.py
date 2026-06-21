@@ -4759,6 +4759,8 @@ class DeepSeekChatGUI(QMainWindow):
                         int(node.get("chapter_num", 0) or 0)
                         for node in self._novel_manager.get_active_path_nodes(title)
                     },
+                    target_chapter=chapter_num,
+                    token_budget=4000,
                 )
         except Exception:
             pass
@@ -5257,6 +5259,8 @@ class DeepSeekChatGUI(QMainWindow):
                             int(node.get("chapter_num", 0) or 0)
                             for node in self._novel_manager.get_active_path_nodes(book_title)
                         },
+                        target_chapter=chapter_num,
+                        token_budget=4000,
                     )
                     if wb_text.strip():
                         user_parts.append(f"【世界书（已建立设定库）】\n{wb_text}\n")
@@ -6017,6 +6021,10 @@ class DeepSeekChatGUI(QMainWindow):
             QMessageBox.warning(self, "提示", "请先选择或创建一本小说。")
             return
         bible = self._novel_manager.load_world_bible(title)
+        load_error = self._novel_manager.world_bible_load_error(title)
+        if load_error:
+            QMessageBox.critical(self, "世界书加载失败", load_error)
+            return
         try:
             active_chapters = {
                 int(node.get("chapter_num", 0) or 0)
@@ -6027,9 +6035,11 @@ class DeepSeekChatGUI(QMainWindow):
             active_chapters = set()
         dlg = WorldBibleDialog(self, bible, active_chapters=active_chapters)
         if dlg.exec() == QDialog.DialogCode.Accepted:
-            self._novel_manager.save_world_bible(title, dlg.get_bible())
-            QMessageBox.information(self, "提示", "世界书已保存。")
-
+            try:
+                self._novel_manager.save_world_bible(title, dlg.get_bible())
+                QMessageBox.information(self, "提示", "世界书已保存。")
+            except Exception as exc:
+                QMessageBox.critical(self, "世界书保存失败", str(exc))
     def _check_book_empty(self, title: str) -> bool:
         """检查目标书是否完全空（无章节、无设定、无世界书），非空时弹警告并返回 False"""
         chapters = self._novel_manager.list_chapters(title)
@@ -7047,6 +7057,8 @@ class DeepSeekChatGUI(QMainWindow):
                                     int(node.get("chapter_num", 0) or 0)
                                     for node in self._novel_mgr.get_active_path_nodes(self._book_title)
                                 },
+                                target_chapter=chapter_num,
+                                token_budget=4000,
                             )
                             if wb_text.strip():
                                 messages.append({"role": "system", "content": f"【世界书（已建立设定库）】\n{wb_text}"})

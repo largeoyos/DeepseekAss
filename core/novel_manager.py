@@ -1,4 +1,4 @@
-﻿"""
+"""
 小说管理器模块
 负责：
 - 书架管理（创建/列出/删除小说项目）
@@ -8,6 +8,7 @@
 - 智能前情提要选取算法（长篇小说自动压缩早期章节）
 """
 
+import copy
 import json
 import os
 import shutil
@@ -105,6 +106,7 @@ class NovelManager:
         self._enc_key = enc_key
         # 书名 → UUID 目录名缓存（仅加密模式使用）
         self._book_cache: dict[str, str] | None = None
+        self._world_bible_load_errors: dict[str, str] = {}
         os.makedirs(self._bookshelf_root, exist_ok=True)
 
     # ========== 加密文件 I/O 辅助 ==========
@@ -155,6 +157,30 @@ class NovelManager:
         else:
             self._crypto.encrypt_json(self._enc_key, enc_path, data)
 
+    def _write_encrypted_json_atomic(self, path: str, data: dict) -> None:
+        """Write through a sibling temporary file and atomically replace the target."""
+        actual_path = self._encrypt_path(path)
+        os.makedirs(os.path.dirname(actual_path), exist_ok=True)
+        temp_base = path + f".tmp-{uuid.uuid4().hex}"
+        temp_actual = self._encrypt_path(temp_base)
+        try:
+            self._write_encrypted_json(temp_base, data)
+            os.replace(temp_actual, actual_path)
+        finally:
+            if os.path.exists(temp_actual):
+                try:
+                    os.remove(temp_actual)
+                except OSError:
+                    pass
+
+    def _backup_encrypted_file(self, path: str, reason: str = "migration") -> str:
+        actual_path = self._encrypt_path(path)
+        if not os.path.exists(actual_path):
+            return ""
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        backup_path = f"{actual_path}.backup-{reason}-{stamp}"
+        shutil.copy2(actual_path, backup_path)
+        return backup_path
     def _encrypted_file_exists(self, path: str) -> bool:
         """检查加密文件是否存在"""
         return os.path.exists(self._encrypt_path(path))
@@ -886,8 +912,14 @@ class NovelManager:
 
         bible = self.load_world_bible(title)
         key = _chapter_world_entry_key(chapter_num, version)
+        removed = False
         if key in getattr(bible, "chapter_world_entries", {}):
             del bible.chapter_world_entries[key]
+            removed = True
+        if key in getattr(bible, "chapter_snapshots", {}):
+            del bible.chapter_snapshots[key]
+            removed = True
+        if removed:
             self.save_world_bible(title, bible)
 
     def delete_chapter_version(
@@ -1115,8 +1147,21 @@ class NovelManager:
         )
 
         existing_bible = self.load_world_bible(title)
-        snapshots = dict(getattr(existing_bible, "chapter_world_entries", {}) or {})
-        bible = WorldBible(chapter_world_entries=snapshots)
+        snapshots = copy.deepcopy(
+            getattr(existing_bible, "chapter_snapshots", {})
+            or getattr(existing_bible, "chapter_world_entries", {})
+            or {}
+        )
+        manual_overrides = copy.deepcopy(getattr(existing_bible, "manual_overrides", []) or [])
+        merge_history = copy.deepcopy(getattr(existing_bible, "merge_history", []) or [])
+        duplicate_candidates = copy.deepcopy(getattr(existing_bible, "duplicate_candidates", []) or [])
+        bible = WorldBible(
+            chapter_world_entries=copy.deepcopy(snapshots),
+            chapter_snapshots=copy.deepcopy(snapshots),
+            manual_overrides=copy.deepcopy(manual_overrides),
+            merge_history=copy.deepcopy(merge_history),
+            duplicate_candidates=copy.deepcopy(duplicate_candidates),
+        )
         nodes = self.get_active_path_nodes(title)
         report = {
             "active_chapters": len(nodes),
@@ -1128,6 +1173,13 @@ class NovelManager:
             "failed_chapters": [],
         }
         if not nodes:
+            report.update({
+                "override_count": len(manual_overrides),
+                "fact_count": len(bible.facts),
+                "warning_count": 0,
+                "duplicate_candidate_count": len([item for item in duplicate_candidates if item.get("status", "pending") == "pending"]),
+                "schema_version": getattr(bible, "schema_version", 2),
+            })
             self.save_world_bible(title, bible)
             return report
 
@@ -1202,6 +1254,14 @@ class NovelManager:
                 "summary": summary,
             })
 
+        from core.world_bible import apply_manual_overrides, audit_world_bible_consistency, materialize_current_facts
+        bible.manual_overrides = manual_overrides
+        bible.merge_history = merge_history
+        bible.duplicate_candidates = duplicate_candidates
+        materialize_current_facts(bible)
+        apply_manual_overrides(bible)
+        bible.consistency_warnings = audit_world_bible_consistency(bible)
+
         for item in report["missing_chapters"]:
             bible.consistency_warnings.append({
                 "severity": "info",
@@ -1216,6 +1276,13 @@ class NovelManager:
                 "message": f"第{item['chapter']}章 v{item['version']} 世界书提取失败，未保留旧分支聚合信息。",
                 "related": [f"第{item['chapter']}章 v{item['version']}"],
             })
+        report.update({
+            "override_count": len(bible.manual_overrides),
+            "fact_count": len(bible.facts),
+            "warning_count": len(bible.consistency_warnings),
+            "duplicate_candidate_count": len([item for item in bible.duplicate_candidates if item.get("status", "pending") == "pending"]),
+            "schema_version": getattr(bible, "schema_version", 2),
+        })
         self.save_world_bible(title, bible)
         return report
 
@@ -1242,8 +1309,17 @@ class NovelManager:
         chapter_num = int(node.get("chapter_num", 0) or 0)
         version = int(node.get("version", 0) or 0)
         existing = self.load_world_bible(title)
+        snapshot_data = copy.deepcopy(
+            getattr(existing, "chapter_snapshots", {})
+            or getattr(existing, "chapter_world_entries", {})
+            or {}
+        )
         snapshot_holder = WorldBible(
-            chapter_world_entries=dict(getattr(existing, "chapter_world_entries", {}) or {})
+            chapter_world_entries=copy.deepcopy(snapshot_data),
+            chapter_snapshots=copy.deepcopy(snapshot_data),
+            manual_overrides=copy.deepcopy(getattr(existing, "manual_overrides", []) or []),
+            merge_history=copy.deepcopy(getattr(existing, "merge_history", []) or []),
+            duplicate_candidates=copy.deepcopy(getattr(existing, "duplicate_candidates", []) or []),
         )
         extract_and_merge_world_bible(
             client,
@@ -1720,24 +1796,54 @@ class NovelManager:
         return os.path.join(self._book_dir(title), "world_bible.json")
 
     def load_world_bible(self, title: str):
-        """加载小说的世界书，返回 WorldBible 对象，不存在则返回空 WorldBible"""
-        from core.world_bible import WorldBible, dict_to_world_bible
+        """Load and migrate a world bible while protecting corrupted source data."""
+        from core.world_bible import (
+            WORLD_BIBLE_SCHEMA_VERSION,
+            WorldBible,
+            dict_to_world_bible,
+            world_bible_to_dict,
+        )
         wb_path = self._world_bible_path(title)
+        if not self._encrypted_file_exists(wb_path):
+            self._world_bible_load_errors.pop(title, None)
+            bible = WorldBible()
+            bible.diagnostics["load_state"] = "missing"
+            return bible
         try:
             data = self._read_encrypted_json(wb_path)
-            if data is not None:
-                return dict_to_world_bible(data)
-        except Exception:
-            return WorldBible()
-        return WorldBible()
+            if data is None:
+                raise ValueError("World bible file exists but returned no data")
+            old_version = int(data.get("schema_version", 1) or 1)
+            bible = dict_to_world_bible(data)
+            bible.diagnostics["load_state"] = "loaded"
+            if old_version < WORLD_BIBLE_SCHEMA_VERSION:
+                backup_path = self._backup_encrypted_file(wb_path, "schema-v2")
+                bible.migration_info.update({
+                    "status": "migrated",
+                    "migrated_from": old_version,
+                    "backup_path": backup_path,
+                    "migrated_at": datetime.now().isoformat(timespec="seconds"),
+                })
+                self._write_encrypted_json_atomic(wb_path, world_bible_to_dict(bible))
+            self._world_bible_load_errors.pop(title, None)
+            return bible
+        except Exception as exc:
+            message = f"世界书加载失败，原文件已保护且不会被自动覆盖：{exc}"
+            self._world_bible_load_errors[title] = message
+            bible = WorldBible()
+            bible.diagnostics.update({"load_state": "error", "load_error": message})
+            return bible
 
-    def save_world_bible(self, title: str, bible) -> None:
-        """保存世界书到文件"""
-        from core.world_bible import world_bible_to_dict
+    def save_world_bible(self, title: str, bible, *, force: bool = False) -> None:
+        """Atomically save; refuse corrupt-source and error-level consistency overwrites."""
+        from core.world_bible import audit_world_bible_consistency, world_bible_to_dict
+        if title in self._world_bible_load_errors and not force:
+            raise RuntimeError(self._world_bible_load_errors[title])
+        blocking = [item for item in audit_world_bible_consistency(bible) if item.get("severity") == "error"]
+        if blocking and not force:
+            raise RuntimeError("世界书存在阻断性一致性错误：" + "；".join(item.get("message", "") for item in blocking[:3]))
         wb_path = self._world_bible_path(title)
-        os.makedirs(os.path.dirname(wb_path), exist_ok=True)
-        data = world_bible_to_dict(bible)
-        self._write_encrypted_json(wb_path, data)
-
-
-
+        self._write_encrypted_json_atomic(wb_path, world_bible_to_dict(bible))
+        self._world_bible_load_errors.pop(title, None)
+    def world_bible_load_error(self, title: str) -> str:
+        return self._world_bible_load_errors.get(title, "")
