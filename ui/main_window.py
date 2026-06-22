@@ -952,6 +952,7 @@ class DeepSeekChatGUI(QMainWindow):
                                 content_preview=rec.get("content_preview", ""),
                                 requirement=rec.get("requirement", ""),
                                 plot=rec.get("plot", ""),
+                                supervision_report=rec.get("supervision_report"),
                             )
                         except Exception as e:
                             print(f"[迁移] 历史记录迁移失败: {e}")
@@ -4862,6 +4863,61 @@ class DeepSeekChatGUI(QMainWindow):
             self._stream_signals.token.emit(f"⚠️ 连贯性检查跳过: {e}\n")
         return content
 
+    def _supervise_chapter_content(
+        self, *, chapter_num: int, chapter_title: str, content: str,
+        context: str, chapter_outline: str, requirements: str,
+        target_words: int, xp_mode: bool, operation_prefix: str,
+    ) -> tuple[str, dict]:
+        """Run the chapter supervision quality gate and return content plus report."""
+        if not content.strip():
+            return content, {"status": "warning", "audit_failed": True, "error": "empty chapter"}
+        try:
+            from utils.supervision import supervise_chapter
+
+            def progress(stage: str) -> None:
+                messages = {
+                    "audit": "\n[Supervision] Auditing outline, constraints, and continuity...\n",
+                    "repair": "[Supervision] Repairing failed checks...\n",
+                    "reaudit": "[Supervision] Re-auditing repaired chapter...\n",
+                }
+                self._stream_signals.token.emit(messages.get(stage, ""))
+
+            final_content, result = supervise_chapter(
+                lambda action: self._usage_logged_client(f"{operation_prefix}_supervision_{action}"),
+                chapter_content=content,
+                chapter_title=f"Chapter {chapter_num}: {chapter_title}",
+                chapter_outline=chapter_outline,
+                requirements=requirements,
+                continuity_context=context,
+                target_words=target_words,
+                model=self._client.model,
+                temperature=min(float(getattr(self._client, "temperature", 0.7)), 0.5),
+                global_user_prompt=self._client.global_user_prompt,
+                xp_mode=xp_mode,
+                max_repair_rounds=2,
+                progress=progress,
+            )
+            fulfilled = sum(1 for item in result.outline_items if item.get("status") == "fulfilled")
+            total = len(result.outline_items)
+            coverage = f", outline coverage {fulfilled}/{total}" if total else ""
+            if result.status == "passed":
+                self._stream_signals.token.emit(
+                    f"[Supervision] Passed{coverage}; repair rounds: {result.repair_rounds}.\n"
+                )
+            else:
+                self._stream_signals.token.emit(
+                    f"[Supervision] Completed{coverage}; {len(result.unresolved_issues)} risks remain. "
+                    f"Keeping the last valid chapter after {result.repair_rounds} repair rounds.\n"
+                )
+            return final_content, result.to_dict()
+        except Exception as e:
+            self._stream_signals.token.emit(f"[Supervision] Skipped after error: {e}\n")
+            return content, {
+                "status": "warning", "audit_failed": True, "error": str(e),
+                "outline_items": [], "hard_constraint_issues": [],
+                "continuity_issues": [], "repair_rounds": 0,
+            }
+
     def _run_chapter_generation(
         self,
         title: str,
@@ -4912,12 +4968,14 @@ class DeepSeekChatGUI(QMainWindow):
                 self._stream_signals.finished.emit()
                 return
 
-            content = self._audit_and_repair_chapter_content(
-                title=title,
+            content, supervision_report = self._supervise_chapter_content(
                 chapter_num=chapter_num,
                 chapter_title=chapter_title,
                 content=content,
                 context=user_prompt,
+                chapter_outline=plot_content,
+                requirements=getattr(strategy, "writing_demand", ""),
+                target_words=target_words,
                 xp_mode=xp_mode,
                 operation_prefix="novel_chapter",
             )
@@ -4970,6 +5028,7 @@ class DeepSeekChatGUI(QMainWindow):
                 max_tokens=self._client.max_tokens,
                 frequency_penalty=self._client.frequency_penalty,
                 content_preview=content_preview,
+                supervision_report=supervision_report,
                 plot=plot_content,
             )
 
@@ -5355,12 +5414,14 @@ class DeepSeekChatGUI(QMainWindow):
                 self._stream_signals.finished.emit()
                 return
 
-            content = self._audit_and_repair_chapter_content(
-                title=book_title,
+            content, supervision_report = self._supervise_chapter_content(
                 chapter_num=chapter_num,
                 chapter_title=chapter_title,
                 content=content,
                 context=user_prompt,
+                chapter_outline=plot,
+                requirements=requirement,
+                target_words=word_count,
                 xp_mode=xp_mode,
                 operation_prefix="continuation",
             )
@@ -5400,6 +5461,7 @@ class DeepSeekChatGUI(QMainWindow):
                 frequency_penalty=self._client.frequency_penalty,
                 content_preview=content.replace("\n", " "),
                 requirement=requirement,
+                supervision_report=supervision_report,
                 plot=plot,
             )
 
@@ -7121,11 +7183,13 @@ class DeepSeekChatGUI(QMainWindow):
                         self._regenerate_error_signal.emit("已取消生成。")
                         return
 
-                    content = parent._audit_and_repair_chapter_content(
-                        title=self._book_title,
+                    content, supervision_report = parent._supervise_chapter_content(
                         chapter_num=chapter_num,
                         chapter_title=chapter_title,
                         content=content,
+                        chapter_outline=plot,
+                        requirements=req,
+                        target_words=target_words,
                         context=prompt_text,
                         xp_mode=xp_mode,
                         operation_prefix="chapter_regenerate",
@@ -7136,6 +7200,23 @@ class DeepSeekChatGUI(QMainWindow):
                         self._book_title, chapter_num, chapter_title, content,
                         version=new_version,
                     )
+                    self._novel_mgr.save_generation_record(
+                        title=self._book_title,
+                        chapter_num=chapter_num,
+                        chapter_title=chapter_title,
+                        version=saved_version,
+                        prompt=prompt_text,
+                        model=self._client.model,
+                        temperature=self._client.temperature,
+                        top_p=self._client.top_p,
+                        max_tokens=self._client.max_tokens,
+                        frequency_penalty=self._client.frequency_penalty,
+                        content_preview=content.replace("\n", " "),
+                        requirement=req,
+                        plot=plot,
+                        supervision_report=supervision_report,
+                    )
+
 
                     summary = self._novel_mgr.generate_summary(
                         self._client.raw_client,

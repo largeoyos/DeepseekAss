@@ -1664,6 +1664,7 @@ class NovelManager:
         content_preview: str,
         requirement: str = "",
         plot: str = "",
+        supervision_report: dict | None = None,
     ) -> str:
         """
         保存一次生成的完整配置记录（独立文件）
@@ -1682,6 +1683,7 @@ class NovelManager:
             content_preview: 生成内容前 500 字（用于摘要参考）
             requirement: 续写要求（续写模式专用，用于重新生成时还原）
             plot: 续写剧情走向 / AI 建议方向 / 已定情节（用于重新生成时还原）
+            supervision_report: Optional final chapter supervision report
 
         Returns:
             保存的文件路径
@@ -1706,6 +1708,8 @@ class NovelManager:
             record["requirement"] = requirement
         if plot:
             record["plot"] = plot
+        if supervision_report is not None:
+            record["supervision_report"] = supervision_report
 
         filename = f"ch{chapter_num:04d}_v{version:03d}.json"
         file_path = os.path.join(history_dir, filename)
