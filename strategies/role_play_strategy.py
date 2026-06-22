@@ -70,10 +70,16 @@ class RolePlayStrategy(BaseStrategy):
                     if profile.character_id in self.required_responder_ids:
                         required_names.append(profile.name)
                 parts.append(
-                    "\n\n【聊天类型】\n群聊"
-                    "\n\n【群聊规则】\n"
-                    "你需要同时维护所有参与角色的人设、关系和当前状态。"
-                    "每个角色的每段发言必须以「角色名：」开头；旁白必须以「旁白：」开头。"
+                    "\n\n【聊天类型】\n发送者与多个角色聊天"
+                    "\n\n【多人聊天核心规则】\n"
+                    f"1. 当前真实聊天发送者是「{self.sender_name or '用户'}」。"
+                    "用户的最新输入是发送者刚刚发出的消息；本轮所有角色发言都应优先回应这条消息。"
+                    "\n2. 你只代演角色，不得替发送者补写台词、动作、心理、决定或未提供的信息。"
+                    "\n3. 每个 JSON 消息对象只表示一个角色发给发送者的一条回复。"
+                    "不要在同一个 content 中继续编写其他角色的台词，也不要自行展开角色之间的连续对戏。"
+                    "\n4. 角色可以简短提及或回应其他角色已经说过的话，但回复重心仍是发送者。"
+                    "只有发送者明确要求角色互相讨论、争论或演出场景时，才允许角色之间连续互动。"
+                    "\n5. 同时维护所有参与角色的人设、关系、当前状态和独立知识边界。"
                     "不要让角色知道其人物书中没有获得的信息。"
                 )
                 if self.reply_mode == self.REPLY_MODE_NARRATOR:
@@ -90,7 +96,8 @@ class RolePlayStrategy(BaseStrategy):
                     parts.append(
                         "\n\n【本轮强制回复角色】\n"
                         + "、".join(required_names)
-                        + "\n以上角色本轮都必须各自至少发言一次，其他参与角色可按情境决定是否发言。"
+                        + f"\n以上角色本轮都必须各自至少向「{self.sender_name or '用户'}」回复一次，"
+                        "其他参与角色可按情境决定是否回复。"
                     )
                 policy = self.turn_policy
                 name_by_id = {profile.character_id: profile.name for profile in self.character_book.profiles}
@@ -144,7 +151,9 @@ class RolePlayStrategy(BaseStrategy):
             parts.append(
                 "\n\n【输出格式】\n只输出合法 JSON，不要使用 Markdown 代码块："
                 '{"messages":[{"speaker_id":"角色ID或narrator","speaker_name":"角色名或旁白",'
-                '"content":"发言内容","action":"可选动作"}]}'
+                '"content":"该角色对发送者的回复","action":"仅填写该角色自己的可选动作"}]}'
+                "\nmessages 中禁止出现 user/sender 类型消息，禁止生成发送者的回复，"
+                "禁止把多个角色的发言合并在一个 content 中。"
             )
 
         if self.character_description.strip():
@@ -156,7 +165,7 @@ class RolePlayStrategy(BaseStrategy):
     def get_welcome_message(self) -> str:
         return (
             "🎭 === 角色扮演模式 ===\n"
-            "可以创建多个全局角色档案，并发起单人私聊或多人群聊。\n"
+            "可以创建多个全局角色档案，并发起单角色聊天或与多个角色聊天。\n"
             "对话推进后，角色经历、关系、状态会自动同步到人物书；每个对话保留独立时间线。\n"
         )
 

@@ -26,6 +26,7 @@ from core.chat_domain import (
     state_to_dict,
 )
 from core.conversation_manager import ConversationManager
+from strategies.role_play_strategy import RolePlayStrategy
 
 
 class ChatDomainTests(unittest.TestCase):
@@ -57,6 +58,23 @@ class ChatDomainTests(unittest.TestCase):
             ["character-a", "character-b"],
             [message.speaker_id for message in messages],
         )
+    def test_multi_character_chat_targets_sender(self):
+        strategy = RolePlayStrategy()
+        strategy.chat_type = "group"
+        strategy.sender_name = "Player"
+        strategy.character_book = CharacterBook(
+            profiles=[
+                CharacterProfile(character_id="a", name="A"),
+                CharacterProfile(character_id="b", name="B"),
+            ]
+        )
+        strategy.participant_character_ids = ["a", "b"]
+        strategy.required_responder_ids = ["a", "b"]
+        prompt = strategy.get_system_prompt()
+        self.assertIn("本轮所有角色发言都应优先回应这条消息", prompt)
+        self.assertIn("不得替发送者补写台词", prompt)
+        self.assertIn("各自至少向「Player」回复一次", prompt)
+        self.assertIn("禁止生成发送者的回复", prompt)
     def test_branch_round_trip_is_independent(self):
         state = ChatSessionState()
         main = state.active_branch()

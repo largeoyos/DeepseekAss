@@ -1574,7 +1574,7 @@ class DeepSeekChatGUI(QMainWindow):
         layout.setSpacing(4)
         layout.setContentsMargins(8, 4, 8, 4)
 
-        layout.addWidget(QLabel("👥 选择角色（私聊选 1 个，群聊可选多个）"))
+        layout.addWidget(QLabel("👥 选择角色（单角色聊天选 1 个，多角色聊天可选多个）"))
         self._character_list = QListWidget()
         self._character_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
         self._character_list.setMinimumHeight(120)
@@ -1594,7 +1594,7 @@ class DeepSeekChatGUI(QMainWindow):
 
         chat_btn_row = QHBoxLayout()
         private_btn = QPushButton("新建私聊")
-        group_btn = QPushButton("新建群聊")
+        group_btn = QPushButton("新建多角色聊天")
         timeline_btn = QPushButton("时间线")
         control_btn = QPushButton("控制中心")
         private_btn.clicked.connect(self._on_new_private_chat)
@@ -1624,7 +1624,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._sender_profile_edit.textChanged.connect(self._on_sender_profile_changed)
         layout.addWidget(self._sender_profile_edit)
 
-        layout.addWidget(QLabel("✅ 群聊本轮必须回复"))
+        layout.addWidget(QLabel("✅ 本轮必须回复发送者的角色"))
         self._required_responder_list = QListWidget()
         self._required_responder_list.setSelectionMode(QAbstractItemView.SelectionMode.MultiSelection)
         self._required_responder_list.setMaximumHeight(100)
@@ -3846,7 +3846,7 @@ class DeepSeekChatGUI(QMainWindow):
         if not hasattr(self, "_role_session_label"):
             return
         names = self._character_names(self._participant_character_ids)
-        chat_type = "群聊" if self._current_chat_type == "group" else "私聊"
+        chat_type = "多角色聊天" if self._current_chat_type == "group" else "单角色聊天"
         if names:
             self._role_session_label.setText(
                 f"当前会话：{chat_type} | 角色：{'、'.join(names)} | 时间线 {len(self._chat_timeline)} 条"
@@ -3916,7 +3916,7 @@ class DeepSeekChatGUI(QMainWindow):
             QMessageBox.warning(self, "私聊角色", "私聊需要且只能选择一个角色。")
             return
         if chat_type == "group" and len(ids) < 2:
-            QMessageBox.warning(self, "群聊角色", "群聊至少选择两个角色。")
+            QMessageBox.warning(self, "多角色聊天", "多角色聊天至少选择两个角色。")
             return
         previous_sender_profile_id = self._chat_state.sender_profile_id
         available_sender_ids = {
@@ -3949,7 +3949,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._client.clear_context(keep_system=True)
         self._reset_display()
         names = "、".join(self._character_names(ids))
-        self._append_user_message(f"已创建{'群聊' if chat_type == 'group' else '私聊'}：{names}")
+        self._append_user_message(f"已创建{'多角色聊天' if chat_type == 'group' else '单角色聊天'}：{names}")
 
     def _on_new_private_chat(self) -> None:
         self._start_character_chat("private")
@@ -5949,7 +5949,8 @@ class DeepSeekChatGUI(QMainWindow):
             message.startswith("人物书同步完成")
             and isinstance(self._client.strategy, RolePlayStrategy)
         ):
-            self._sync_role_strategy()
+            # 不在后台同步完成时改写客户端消息历史。
+            # 下一次发送前 _on_send() 会统一加载最新人物书和提示词。
             self._mark_conversation_dirty()
 
     def _on_stream_token(self, token: str) -> None:
@@ -6040,7 +6041,7 @@ class DeepSeekChatGUI(QMainWindow):
         if not isinstance(self._client.strategy, RolePlayStrategy):
             return "助手"
         if self._current_chat_type == "group":
-            return "群聊"
+            return "多角色聊天"
         names = self._character_names([self._primary_character_id])
         return names[0] if names else "角色"
 
@@ -6161,15 +6162,31 @@ class DeepSeekChatGUI(QMainWindow):
             f"<html><head>{CURRENT_HTML_STYLE}</head><body>{''.join(body_parts)}"
             f"<script>{REPLY_JUMP_NAV_SCRIPT}rebuildReplyJumpNav();</script></body></html>"
         )
-        if callback:
-            def on_loaded(ok):
-                try:
-                    self._display.loadFinished.disconnect(on_loaded)
-                except (TypeError, RuntimeError):
-                    pass
-                callback(ok)
+        def on_loaded(ok):
+            try:
+                self._display.loadFinished.disconnect(on_loaded)
+            except (TypeError, RuntimeError):
+                pass
+            scroll_script = """
+                (function() {
+                    var messages = document.querySelectorAll('[data-message-id]');
+                    var latest = messages.length ? messages[messages.length - 1] : null;
+                    if (latest) {
+                        latest.scrollIntoView({block: 'end'});
+                    }
+                    window.scrollTo(0, document.body.scrollHeight);
+                    return true;
+                })();
+            """
+            if callback:
+                self._display.page().runJavaScript(
+                    scroll_script,
+                    lambda _result: callback(ok),
+                )
+            else:
+                self._display.page().runJavaScript(scroll_script)
 
-            self._display.loadFinished.connect(on_loaded)
+        self._display.loadFinished.connect(on_loaded)
         self._display.setHtml(full_html)
 
     @staticmethod
