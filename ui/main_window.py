@@ -82,6 +82,13 @@ from core.chat_domain import (
     state_to_dict,
     structured_to_legacy_messages,
 )
+from core.app_services import (
+    ChapterGenerationService,
+    ContinuationService,
+    ImportExportService,
+    RoleplayService,
+    TaskRunner,
+)
 from core.settings_manager import SettingsManager
 from core.token_log_manager import TokenLogManager
 from strategies import (
@@ -100,6 +107,11 @@ from utils.export import (
 from ui.world_bible_dialog import WorldBibleDialog
 from ui.character_book_dialog import CharacterBookDialog, CharacterProfileDialog
 from ui.chat_control_dialog import ChatControlDialog
+from ui.architecture_dialogs import (
+    ContextPreviewDialog,
+    ProjectVersionsDialog,
+    WorldContextPolicyDialog,
+)
 from ui.presets import PRESETS, CUSTOM_LABEL
 from ui.settings_dialog import SettingsDialog
 from ui.token_log_dialog import TokenLogDialog
@@ -728,6 +740,19 @@ class DeepSeekChatGUI(QMainWindow):
             enc_key=self._enc_key,
         )
         self._settings = self._settings_manager.load()
+        self._chapter_service = ChapterGenerationService(self._novel_manager)
+        self._continuation_service = ContinuationService(self._novel_manager)
+        self._roleplay_service = RoleplayService()
+        self._import_export_service = ImportExportService()
+        self._task_runner = TaskRunner(self._on_application_task_event)
+
+        self._snapshot_timer = QTimer(self)
+        self._snapshot_timer.timeout.connect(self._on_timed_snapshot)
+        snapshot_minutes = max(5, int(self._settings.get("snapshot_interval_minutes", 30)))
+        self._snapshot_timer.setInterval(snapshot_minutes * 60 * 1000)
+        if self._settings.get("snapshot_timed_enabled", True):
+            self._snapshot_timer.start()
+
         self._presets = self._settings.get("presets", PRESETS).copy()
         self._model_options = self._build_model_options()
         self._current_conversation_id: str | None = None
@@ -2007,6 +2032,16 @@ class DeepSeekChatGUI(QMainWindow):
         world_bible_btn.clicked.connect(self._on_world_bible)
         tool_row.addWidget(world_bible_btn)
         layout.addLayout(tool_row)
+        context_preview_btn = QPushButton("\u4e0a\u4e0b\u6587\u9884\u89c8")
+        context_preview_btn.clicked.connect(self._on_context_preview)
+        tool_row.addWidget(context_preview_btn)
+        context_policy_btn = QPushButton("\u52a0\u8f7d\u7b56\u7565")
+        context_policy_btn.clicked.connect(self._on_context_policies)
+        tool_row.addWidget(context_policy_btn)
+        versions_btn = QPushButton("\u9879\u76ee\u7248\u672c")
+        versions_btn.clicked.connect(self._on_project_versions)
+        tool_row.addWidget(versions_btn)
+
 
         # ── 导出按钮 ──
         export_label = QLabel("导出")
@@ -3277,6 +3312,25 @@ class DeepSeekChatGUI(QMainWindow):
             f"书籍: {book} | 状态: {state}"
         )
 
+    def _on_timed_snapshot(self) -> None:
+        if self._streaming:
+            return
+        title = self._get_current_book_title()
+        if not title:
+            return
+        self._task_runner.start(
+            "Timed project snapshot",
+            lambda _handle: self._novel_manager.snapshot_service(title).create_if_changed(source="timer"),
+        )
+
+    def _on_application_task_event(self, event) -> None:
+        if event.type == "failed":
+            self._stream_signals.error.emit(event.message)
+        elif event.type == "started":
+            self._stream_signals.token.emit(f"\n[{event.message}] started...\n")
+        elif event.type == "cancelled":
+            self._stream_signals.token.emit("\nTask cancelled.\n")
+
     def _api_operation_label(self, operation: str) -> str:
         labels = {
             "chat": "生成聊天回复",
@@ -3782,7 +3836,7 @@ class DeepSeekChatGUI(QMainWindow):
         if not change_set:
             return
         book = self._load_character_book()
-        apply_memory_change_set(book, change_set)
+        self._roleplay_service.apply_memory(book, change_set)
         book.change_history.append({
             "change_set_id": change_set.change_set_id,
             "status": change_set.status,
@@ -3840,7 +3894,7 @@ class DeepSeekChatGUI(QMainWindow):
         if not change_set or change_set.status != "applied":
             return
         book = self._load_character_book()
-        revert_memory_change_set(book, change_set)
+        self._roleplay_service.revert_memory(book, change_set)
         self._character_book_manager.save(book)
         self._snapshot_active_branch(book)
         self._sync_role_strategy()
@@ -3869,7 +3923,7 @@ class DeepSeekChatGUI(QMainWindow):
         branch = self._chat_state.active_branch()
         if not branch.messages:
             return
-        new_branch = fork_branch(self._chat_state, branch.messages[-1].message_id)
+        new_branch = self._roleplay_service.fork(self._chat_state, branch.messages[-1].message_id)
         if new_branch.character_state_snapshot:
             self._character_book_manager.save(dict_to_character_book(new_branch.character_state_snapshot))
         self._sync_role_strategy()
@@ -3885,7 +3939,7 @@ class DeepSeekChatGUI(QMainWindow):
             return
         message = branch.messages[index]
         if operation == "fork":
-            new_branch = fork_branch(self._chat_state, message_id)
+            new_branch = self._roleplay_service.fork(self._chat_state, message_id)
             self._render_structured_conversation(new_branch.messages)
             self._mark_conversation_dirty()
             return
@@ -4915,18 +4969,21 @@ class DeepSeekChatGUI(QMainWindow):
         chapter_num = chapter_num or self._novel_manager.get_active_generation_target(title)["chapter_num"]
 
         # 智能前情提要（剧情摘要）
-        client = self._usage_logged_client("novel_context_summary") if hasattr(self, '_client') else None
-        summary = self._novel_manager.load_smart_summary(
+        context_report = self._chapter_service.build_context(
             title,
-            client=client,
-            next_chapter_num=chapter_num,
-            max_recent=3,
-            global_user_prompt=self._client.global_user_prompt,
+            chapter_num,
+            chapter_title,
+            plot_content,
+            global_prompt=self._client.global_user_prompt,
+            client=self._usage_logged_client("novel_context_summary"),
+            model=self._client.model,
         )
+        summary = context_report.render()
 
         # 历史记录总结（前面各章的生成配置与风格参考）
-        history = self._novel_manager.build_history_summary(title, exclude_chapter=chapter_num)
+        history = ""
 
+        history = ""
         # 从策略对象读取（已在主线程中同步完毕），避免后台线程访问 QWidget
         strategy = self._client.strategy
         if isinstance(strategy, NovelStrategy):
@@ -4943,7 +5000,7 @@ class DeepSeekChatGUI(QMainWindow):
         world_bible_text = ""
         try:
             bible = self._novel_manager.load_world_bible(title)
-            if bible and (bible.characters or bible.locations or bible.rules or bible.active_plot_threads):
+            if not context_report.sections and bible and (bible.characters or bible.locations or bible.rules or bible.active_plot_threads):
                 from core.world_bible import format_relevant_world_bible_for_prompt
                 world_bible_text = format_relevant_world_bible_for_prompt(
                     bible,
@@ -4963,17 +5020,17 @@ class DeepSeekChatGUI(QMainWindow):
             contract = self._novel_manager.build_continuity_contract(
                 title, chapter_num, chapter_title, plot_content
             )
-            if contract:
+            if contract and not context_report.sections:
                 parts.append(f"{contract}\n")
         except Exception:
             pass
         try:
             author_plan = self._novel_manager.build_author_planning_prompt(title)
-            if author_plan:
+            if author_plan and not context_report.sections:
                 parts.append(f"{author_plan}\n")
         except Exception:
             pass
-        if world_bible_text:
+        if world_bible_text and not context_report.sections:
             parts.append(f"【世界书（已建立设定库）】：\n{world_bible_text}\n")
         if history and history != "暂无历史记录。" and history != "暂无历史记录（排除当前章节后）。":
             parts.append(f"【历史生成记录参考（前面各章风格/配置）】：\n{history}\n")
@@ -4987,7 +5044,7 @@ class DeepSeekChatGUI(QMainWindow):
         if plot_content:
             parts.append(f"【本章已定情节（请严格据此扩展）】\n{plot_content}\n")
 
-        global_prompt = self._client.global_user_prompt
+        global_prompt = ""
         if global_prompt.strip():
             parts.append(f"【用户偏好提示】: \n{global_prompt}\n")
         if xp_mode:
@@ -5265,6 +5322,12 @@ class DeepSeekChatGUI(QMainWindow):
             except Exception as wb_e:
                 self._stream_signals.token.emit(f"⚠️ 世界书更新跳过: {wb_e}\n")
 
+            try:
+                self._chapter_service.create_auto_snapshot(title, chapter_num, saved_version)
+                self._stream_signals.token.emit("Project snapshot saved.\n")
+            except Exception as snapshot_error:
+                self._stream_signals.token.emit(f"Snapshot skipped: {snapshot_error}\n")
+
             self._refresh_chapter_info_display(title)
             next_ch = self._novel_manager.get_active_generation_target(title)["chapter_num"]
 
@@ -5480,19 +5543,32 @@ class DeepSeekChatGUI(QMainWindow):
         try:
             generation_target = generation_target or self._novel_manager.get_active_generation_target(book_title)
             # ── 构建 User Prompt（含前情提要 + 世界书 + 设定） ──
-            user_parts = []
-            if source_text:
+            context_report = self._continuation_service.build_context(
+                book_title,
+                chapter_num,
+                chapter_title,
+                source_text,
+                requirement,
+                plot,
+                global_prompt=self._client.global_user_prompt,
+                client=self._usage_logged_client("continuation_context_summary"),
+                model=self._client.model,
+            )
+            user_parts = [context_report.render()]
+            if source_text and not context_report.sections:
                 user_parts.append(f"【原文内容】\n{source_text}\n")
 
             # 加载前情提要（复用小说模式的智能摘要算法）
             try:
-                summary = self._novel_manager.load_smart_summary(
+                summary = "" if context_report.sections else self._novel_manager.load_smart_summary(
                     book_title, self._usage_logged_client("continuation_context_summary"),
                     next_chapter_num=chapter_num,
                     max_recent=10,
                     model=self._client.model,
                     global_user_prompt=self._client.global_user_prompt,
                 )
+                if context_report.sections:
+                    summary = ""
                 if summary and "故事刚刚开始" not in summary:
                     user_parts.append(f"【前情提要】\n{summary}\n")
             except Exception:
@@ -5502,7 +5578,7 @@ class DeepSeekChatGUI(QMainWindow):
             try:
                 from core.world_bible import format_relevant_world_bible_for_prompt
                 bible = self._novel_manager.load_world_bible(book_title)
-                if bible:
+                if bible and not context_report.sections:
                     wb_text = format_relevant_world_bible_for_prompt(
                         bible,
                         f"{chapter_title}\n{requirement}\n{plot}\n{source_text[-2000:]}",
@@ -5522,13 +5598,13 @@ class DeepSeekChatGUI(QMainWindow):
                 contract = self._novel_manager.build_continuity_contract(
                     book_title, chapter_num, chapter_title, plot
                 )
-                if contract:
+                if contract and not context_report.sections:
                     user_parts.append(f"{contract}\n")
             except Exception:
                 pass
             try:
                 author_plan = self._novel_manager.build_author_planning_prompt(book_title)
-                if author_plan:
+                if author_plan and not context_report.sections:
                     user_parts.append(f"{author_plan}\n")
             except Exception:
                 pass
@@ -5557,7 +5633,7 @@ class DeepSeekChatGUI(QMainWindow):
             if plot:
                 user_parts.append(f"【续写剧情走向】\n{plot}\n")
 
-            global_prompt = self._client.global_user_prompt
+            global_prompt = ""
             if global_prompt.strip():
                 user_parts.append(f"【用户偏好提示】: \n{global_prompt}\n")
             if xp_mode:
@@ -5697,6 +5773,12 @@ class DeepSeekChatGUI(QMainWindow):
                     )
             except Exception as wb_e:
                 self._stream_signals.token.emit(f"⚠️ 世界书更新跳过: {wb_e}\n")
+
+            try:
+                self._continuation_service.create_auto_snapshot(book_title, chapter_num, saved_version)
+                self._stream_signals.token.emit("Project snapshot saved.\n")
+            except Exception as snapshot_error:
+                self._stream_signals.token.emit(f"Snapshot skipped: {snapshot_error}\n")
 
             self._stream_signals.refresh_chapter_info.emit(book_title)
             self._stream_signals.token.emit(
@@ -6185,7 +6267,7 @@ class DeepSeekChatGUI(QMainWindow):
                     low_set = copy.deepcopy(change_set)
                     low_set.change_set_id = new_id("changeset")
                     low_set.changes = low_changes
-                    apply_memory_change_set(book, low_set)
+                    self._roleplay_service.apply_memory(book, low_set)
                     self._chat_state.memory_change_sets.append(low_set)
                     applied_count = len(low_changes)
                 if high_changes:
@@ -6556,6 +6638,56 @@ class DeepSeekChatGUI(QMainWindow):
         self._refresh_top_status()
 
     # ========== 📖 世界书对话框 ==========
+
+    def _on_context_preview(self) -> None:
+        title = self._get_current_book_title()
+        if not title:
+            QMessageBox.warning(self, "Notice", "Please select a book first.")
+            return
+        try:
+            target = self._novel_manager.get_active_generation_target(title)
+            chapter_num = int(target["chapter_num"])
+            if self._continuation_panel.isVisible():
+                chapter_title = self._cont_chapter_title_edit.text().strip() or f"Chapter {chapter_num}"
+                source_text = self._read_continuation_source()
+                report = self._continuation_service.build_context(
+                    title,
+                    chapter_num,
+                    chapter_title,
+                    source_text,
+                    self._cont_demand_edit.toPlainText().strip(),
+                    self._continue_plot.toPlainText().strip(),
+                    global_prompt=self._client.global_user_prompt,
+                    model=self._client.model,
+                )
+            else:
+                chapter_title = self._chapter_title_edit.text().strip() or f"Chapter {chapter_num}"
+                report = self._chapter_service.build_context(
+                    title,
+                    chapter_num,
+                    chapter_title,
+                    self._plot_edit.toPlainText().strip(),
+                    global_prompt=self._client.global_user_prompt,
+                    model=self._client.model,
+                )
+            ContextPreviewDialog(self, report).exec()
+        except Exception as exc:
+            QMessageBox.critical(self, "Context preview failed", str(exc))
+
+    def _on_context_policies(self) -> None:
+        title = self._get_current_book_title()
+        if not title:
+            QMessageBox.warning(self, "Notice", "Please select a book first.")
+            return
+        WorldContextPolicyDialog(self, self._novel_manager, title).exec()
+
+    def _on_project_versions(self) -> None:
+        title = self._get_current_book_title()
+        if not title:
+            QMessageBox.warning(self, "Notice", "Please select a book first.")
+            return
+        ProjectVersionsDialog(self, self._novel_manager, title).exec()
+        self._refresh_chapter_info_display(title)
 
     def _on_world_bible(self) -> None:
         """打开世界书编辑对话框"""
@@ -7818,7 +7950,7 @@ class DeepSeekChatGUI(QMainWindow):
         if not output_path:
             return
         try:
-            result = export_chapter(self._novel_manager, title, ch["num"], fmt, output_path)
+            result = self._import_export_service.export_chapter(self._novel_manager, title, ch["num"], fmt, output_path)
             QMessageBox.information(self, "导出成功", f"章节已导出到：\n{result}")
         except Exception as e:
             QMessageBox.critical(self, "导出失败", f"导出出错：{e}")
@@ -7835,7 +7967,7 @@ class DeepSeekChatGUI(QMainWindow):
         if not output_path:
             return
         try:
-            result = export_book(self._novel_manager, title, fmt, output_path)
+            result = self._import_export_service.export_book(self._novel_manager, title, fmt, output_path)
             QMessageBox.information(self, "导出成功", f"全书已导出到：\n{result}")
         except Exception as e:
             QMessageBox.critical(self, "导出失败", f"导出出错：{e}")
@@ -7857,7 +7989,7 @@ class DeepSeekChatGUI(QMainWindow):
         if not output_path:
             return
         try:
-            result = export_chapter(self._novel_manager, title, ch["num"], fmt, output_path)
+            result = self._import_export_service.export_chapter(self._novel_manager, title, ch["num"], fmt, output_path)
             QMessageBox.information(self, "导出成功", f"章节已导出到：\n{result}")
         except Exception as e:
             QMessageBox.critical(self, "导出失败", f"导出出错：{e}")
@@ -7874,7 +8006,7 @@ class DeepSeekChatGUI(QMainWindow):
         if not output_path:
             return
         try:
-            result = export_book(self._novel_manager, title, fmt, output_path)
+            result = self._import_export_service.export_book(self._novel_manager, title, fmt, output_path)
             QMessageBox.information(self, "导出成功", f"全书已导出到：\n{result}")
         except Exception as e:
             QMessageBox.critical(self, "导出失败", f"导出出错：{e}")

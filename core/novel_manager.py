@@ -107,7 +107,47 @@ class NovelManager:
         # 书名 → UUID 目录名缓存（仅加密模式使用）
         self._book_cache: dict[str, str] | None = None
         self._world_bible_load_errors: dict[str, str] = {}
+        self._workspace_cache: dict[str, object] = {}
+        self._workspace_errors: dict[str, str] = {}
         os.makedirs(self._bookshelf_root, exist_ok=True)
+
+    def get_workspace(self, title: str):
+        from core.workspace import BookWorkspace
+        book_dir = self._book_dir(title)
+        workspace = self._workspace_cache.get(book_dir)
+        if workspace is None:
+            workspace = BookWorkspace(book_dir, crypto=self._crypto, enc_key=self._enc_key)
+            self._workspace_cache[book_dir] = workspace
+        return workspace
+
+    def ensure_workspace(self, title: str):
+        workspace = self.get_workspace(title)
+        try:
+            data = self._read_encrypted_json(self._meta_path(title)) or {}
+            manifest = workspace.ensure_manifest(book_id=str(data.get("book_id", "")))
+            self._workspace_errors.pop(title, None)
+            return manifest
+        except Exception as exc:
+            self._workspace_errors[title] = (
+                f"Workspace metadata is damaged; writes are blocked: {exc}"
+            )
+            raise RuntimeError(self._workspace_errors[title]) from exc
+
+    def workspace_error(self, title: str) -> str:
+        return self._workspace_errors.get(title, "")
+
+    def _assert_workspace_writable(self, title: str) -> None:
+        if title in self._workspace_errors:
+            raise RuntimeError(self._workspace_errors[title])
+
+    def context_assembler(self):
+        from core.context_assembler import ContextAssembler
+        return ContextAssembler(self)
+
+    def snapshot_service(self, title: str):
+        from core.snapshots import EncryptedSnapshotService
+        self.ensure_workspace(title)
+        return EncryptedSnapshotService(self.get_workspace(title))
 
     # ========== 加密文件 I/O 辅助 ==========
 
@@ -304,6 +344,7 @@ class NovelManager:
         summary_path = self._summary_path(title)
         if not self._encrypted_file_exists(summary_path):
             self._write_encrypted_text(summary_path, "故事刚刚开始。\n")
+        self.ensure_workspace(title)
         return book_dir
 
     def delete_book(self, title: str) -> bool:
@@ -365,7 +406,13 @@ class NovelManager:
                 return NovelMeta(title=title)
             valid_fields = NovelMeta.__dataclass_fields__
             filtered = {k: v for k, v in data.items() if k in valid_fields}
-            return NovelMeta(**filtered)
+            meta = NovelMeta(**filtered)
+            try:
+                self.ensure_workspace(title)
+            except RuntimeError:
+                # Keep legacy data readable while write protection remains active.
+                pass
+            return meta
         except Exception:
             return NovelMeta(title=title)
 
@@ -381,8 +428,9 @@ class NovelManager:
         return meta
 
     def _save_meta(self, title: str, meta: NovelMeta) -> None:
+        self._assert_workspace_writable(title)
         meta_path = self._meta_path(title)
-        self._write_encrypted_json(meta_path, asdict(meta))
+        self._write_encrypted_json_atomic(meta_path, asdict(meta))
 
     # ========== 章节树兼容层 ==========
 

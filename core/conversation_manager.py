@@ -33,6 +33,11 @@ class ConversationManager:
                  crypto=None, enc_key: bytes | None = None) -> None:
         self._root_dir = root_dir or CONVERSATIONS_DIR
         self._crypto = crypto
+        from core.repositories import ConversationRepository
+        from core.storage import EncryptedStorage
+        self._repository = ConversationRepository(
+            EncryptedStorage(self._root_dir, crypto=crypto, enc_key=enc_key)
+        )
         self._enc_key = enc_key
         os.makedirs(self._root_dir, exist_ok=True)
 
@@ -44,22 +49,11 @@ class ConversationManager:
         return path + ".enc"
 
     def _read_encrypted_json(self, path: str) -> dict | None:
-        enc_path = self._encrypt_path(path)
-        if not os.path.exists(enc_path):
-            return None
-        if self._enc_key is None:
-            with open(enc_path, "r", encoding="utf-8") as f:
-                return json.load(f)
-        return self._crypto.decrypt_json(self._enc_key, enc_path)
+        return self._repository.storage.read_json(os.path.relpath(path, self._root_dir).replace("\\", "/"))
 
     def _write_encrypted_json(self, path: str, data: dict) -> None:
-        enc_path = self._encrypt_path(path)
-        os.makedirs(os.path.dirname(enc_path), exist_ok=True)
-        if self._enc_key is None:
-            with open(enc_path, "w", encoding="utf-8") as f:
-                json.dump(data, f, ensure_ascii=False, indent=2)
-        else:
-            self._crypto.encrypt_json(self._enc_key, enc_path, data)
+        relative = os.path.relpath(path, self._root_dir).replace("\\", "/")
+        self._repository.storage.write_json(relative, data)
 
     def _encrypted_file_exists(self, path: str) -> bool:
         return os.path.exists(self._encrypt_path(path))

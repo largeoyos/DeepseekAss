@@ -25,6 +25,9 @@ DEFAULT_SETTINGS = {
     "current_preset": "狂野",
     "presets": DEFAULT_PRESETS,
     "theme": "dark",
+    "snapshot_timed_enabled": True,
+    "snapshot_interval_minutes": 30,
+    "controlled_agent_enabled": False,
 }
 
 
