@@ -76,6 +76,16 @@ class RolePlayStrategy(BaseStrategy):
                     "每个角色的每段发言必须以「角色名：」开头；旁白必须以「旁白：」开头。"
                     "不要让角色知道其人物书中没有获得的信息。"
                 )
+                if self.reply_mode == self.REPLY_MODE_NARRATOR:
+                    parts.append(
+                        "\n\n【群聊叙述视角】\n每个消息块使用第三人称叙述，"
+                        "可包含对应角色的台词，但不要把整段写成角色第一人称独白。"
+                    )
+                else:
+                    parts.append(
+                        "\n\n【群聊叙述视角】\n每个角色的 content 以该角色的第一人称表达，"
+                        "动作和神态可用括号或星号补充，不要改成全知第三人称旁白。"
+                    )
                 if required_names:
                     parts.append(
                         "\n\n【本轮强制回复角色】\n"

@@ -128,7 +128,7 @@ class ChatControlDialog(QDialog):
         tab = QWidget()
         layout = QVBoxLayout(tab)
         self.sender_combo = QComboBox()
-        layout.addWidget(QLabel("当前会话绑定的玩家身份"))
+        layout.addWidget(QLabel("当前会话绑定的玩家身份（与 AI 角色档案相互独立）"))
         layout.addWidget(self.sender_combo)
         row = QHBoxLayout()
         add_btn = QPushButton("新建身份")
@@ -149,7 +149,7 @@ class ChatControlDialog(QDialog):
     def _refresh_senders(self):
         self.sender_combo.blockSignals(True)
         self.sender_combo.clear()
-        self.sender_combo.addItem("临时身份", "")
+        self.sender_combo.addItem("临时身份（主界面发送者）", "")
         for profile in self.sender_profiles:
             self.sender_combo.addItem(profile.name or "未命名身份", profile.sender_profile_id)
         index = self.sender_combo.findData(self.state.sender_profile_id)

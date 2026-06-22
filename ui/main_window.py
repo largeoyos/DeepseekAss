@@ -148,6 +148,8 @@ class StreamSignals(QObject):
     directions_ready = pyqtSignal(list, str, str, int)  # directions, setting, plot, word_count
     novel_imported = pyqtSignal(str)               # 从源文档导入小说完成，参数：标题
     refresh_chapter_info = pyqtSignal(str)          # 安全刷新章节信息，参数：书名
+    character_book_sync_status = pyqtSignal(str)   # 后台人物书同步状态
+    character_book_sync_status = pyqtSignal(str)   # 后台人物书同步状态
 
 
 # ========== 模式配置 ==========
@@ -602,6 +604,12 @@ class DeepSeekChatGUI(QMainWindow):
         self._stream_signals.directions_ready.connect(self._show_direction_selector)
         self._stream_signals.novel_imported.connect(self._on_cont_novel_imported)
         self._stream_signals.refresh_chapter_info.connect(self._refresh_chapter_info_display)
+        self._stream_signals.character_book_sync_status.connect(
+            self._on_character_book_sync_status
+        )
+        self._stream_signals.character_book_sync_status.connect(
+            self._on_character_book_sync_status
+        )
 
         # 认证与加密
         self._auth = None
@@ -703,6 +711,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._sender_profiles = self._sender_profile_manager.load()
         self._scene_presets = self._scene_preset_manager.load()
         self._last_structured_assistant_messages: list[ChatMessage] = []
+        self._character_book_sync_lock = threading.Lock()
 
         # Step 2: 获取 API Key（加密存储或弹窗输入）
         api_key, base_url = self._load_encrypted_config()
@@ -3525,6 +3534,35 @@ class DeepSeekChatGUI(QMainWindow):
         self._client.update_system_prompt()
         self._update_role_session_label()
 
+    def _apply_sender_profile_to_runtime(self, sender_profile_id: str) -> None:
+        sender = next(
+            (
+                item for item in self._sender_profiles
+                if item.sender_profile_id == sender_profile_id
+            ),
+            None,
+        )
+        if not sender:
+            return
+        self._sender_name = sender.name or "你"
+        self._sender_profile = "\n".join(
+            value for value in (
+                sender.identity,
+                sender.personality,
+                sender.appearance,
+                sender.background,
+                sender.relationships,
+                sender.knowledge_state,
+                sender.notes,
+            ) if value
+        )
+        if hasattr(self, "_sender_name_edit"):
+            self._sender_name_edit.blockSignals(True)
+            self._sender_profile_edit.blockSignals(True)
+            self._sender_name_edit.setText(self._sender_name)
+            self._sender_profile_edit.setPlainText(self._sender_profile)
+            self._sender_name_edit.blockSignals(False)
+            self._sender_profile_edit.blockSignals(False)
     def _on_chat_control_center(self) -> None:
         self._chat_state.turn_policy.required_speaker_ids = list(
             self._required_responder_ids
@@ -3549,22 +3587,9 @@ class DeepSeekChatGUI(QMainWindow):
             return
         self._sender_profile_manager.save(self._sender_profiles)
         self._scene_preset_manager.save(self._scene_presets)
-        sender = next(
-            (
-                item for item in self._sender_profiles
-                if item.sender_profile_id == self._chat_state.sender_profile_id
-            ),
-            None,
+        self._apply_sender_profile_to_runtime(
+            self._chat_state.sender_profile_id
         )
-        if sender:
-            self._sender_name = sender.name or "你"
-            self._sender_profile = sender.identity or sender.background
-            self._sender_name_edit.blockSignals(True)
-            self._sender_profile_edit.blockSignals(True)
-            self._sender_name_edit.setText(self._sender_name)
-            self._sender_profile_edit.setPlainText(self._sender_profile)
-            self._sender_name_edit.blockSignals(False)
-            self._sender_profile_edit.blockSignals(False)
         self._required_responder_ids = list(self._chat_state.turn_policy.required_speaker_ids)
         new_scene = state_to_dict(self._chat_state).get("scene_state", {})
         if old_scene != new_scene and (new_scene.get("location") or new_scene.get("description")):
@@ -3893,12 +3918,24 @@ class DeepSeekChatGUI(QMainWindow):
         if chat_type == "group" and len(ids) < 2:
             QMessageBox.warning(self, "群聊角色", "群聊至少选择两个角色。")
             return
+        previous_sender_profile_id = self._chat_state.sender_profile_id
+        available_sender_ids = {
+            profile.sender_profile_id for profile in self._sender_profiles
+        }
+        if previous_sender_profile_id not in available_sender_ids:
+            previous_sender_profile_id = (
+                self._sender_profiles[0].sender_profile_id
+                if self._sender_profiles else ""
+            )
         self._current_chat_type = chat_type
         self._participant_character_ids = ids
         self._primary_character_id = ids[0] if ids else ""
         self._required_responder_ids = list(ids) if chat_type == "group" else list(ids[:1])
         self._chat_timeline = []
-        self._chat_state = ChatSessionState()
+        self._chat_state = ChatSessionState(
+            sender_profile_id=previous_sender_profile_id
+        )
+        self._apply_sender_profile_to_runtime(previous_sender_profile_id)
         branch = self._chat_state.active_branch()
         branch.character_state_snapshot = character_book_to_dict(self._load_character_book())
         self._chat_state.scene_state.present_character_ids = list(ids)
@@ -5597,14 +5634,29 @@ class DeepSeekChatGUI(QMainWindow):
             ]
             assistant_content = assistant_messages[-1] if assistant_messages else ""
             if isinstance(self._client.strategy, RolePlayStrategy):
+                branch = self._chat_state.active_branch()
+                message_count_before_parse = len(branch.messages)
                 try:
                     structured = self._parse_and_store_assistant_messages(assistant_content)
                     assistant_content = "\n\n".join(
                         f"{message.speaker_name}：{message.content}" for message in structured
                     )
                 except Exception as responder_error:
+                    if assistant_content.strip() and len(branch.messages) == message_count_before_parse:
+                        fallback = ChatMessage(
+                            message_id=new_id("msg"),
+                            branch_id=branch.branch_id,
+                            role="assistant",
+                            speaker_id="assistant",
+                            speaker_name="群聊回复",
+                            content=assistant_content.strip(),
+                            turn_index=self._current_turn_index(),
+                            created_at=now_text(),
+                        )
+                        branch.messages.append(fallback)
+                        self._last_structured_assistant_messages = [fallback]
                     self._stream_signals.token.emit(
-                        f"\n\n⚠️ 结构化群聊处理失败，已保留原回复：{responder_error}\n"
+                        f"\n\n⚠️ 结构化群聊处理失败，已按原文显示：{responder_error}\n"
                     )
             self._token_log_manager.add_entry(
                 operation="chat",
@@ -5614,9 +5666,37 @@ class DeepSeekChatGUI(QMainWindow):
                 content=assistant_content,
                 usage=usage,
             )
-            if isinstance(self._client.strategy, RolePlayStrategy):
-                self._sync_character_book_after_chat(user_input, assistant_content)
+            should_sync_character_book = (
+                isinstance(self._client.strategy, RolePlayStrategy)
+                and bool(self._participant_character_ids)
+                and bool(assistant_content.strip())
+            )
+            sync_context = None
+            if should_sync_character_book:
+                branch = self._chat_state.active_branch()
+                turn_index = self._current_turn_index()
+                sync_context = {
+                    "branch_id": branch.branch_id,
+                    "turn_index": turn_index,
+                    "participant_ids": list(self._participant_character_ids),
+                    "present_character_ids": list(
+                        self._chat_state.scene_state.present_character_ids
+                    ),
+                    "timeline": copy.deepcopy(self._chat_timeline),
+                    "source_message_ids": [
+                        message.message_id for message in branch.messages
+                        if message.turn_index == turn_index
+                    ],
+                    "sender_name": self._sender_name,
+                    "sender_profile": self._sender_profile,
+                }
             self._stream_signals.finished.emit()
+            if sync_context:
+                threading.Thread(
+                    target=self._sync_character_book_after_chat,
+                    args=(user_input, assistant_content, sync_context),
+                    daemon=True,
+                ).start()
         except Exception as e:
             self._stream_signals.error.emit(str(e))
 
@@ -5645,6 +5725,12 @@ class DeepSeekChatGUI(QMainWindow):
             for profile in book.profiles
             if profile.character_id in self._participant_character_ids
         }
+        for profile in book.profiles:
+            if profile.character_id not in self._participant_character_ids:
+                continue
+            for alias in profile.aliases:
+                if alias:
+                    name_to_id[alias] = profile.character_id
         messages = parse_structured_reply(raw, branch.branch_id, turn_index, name_to_id)
         if self._current_chat_type == "private":
             profile = find_profile(book, self._primary_character_id)
@@ -5690,24 +5776,29 @@ class DeepSeekChatGUI(QMainWindow):
                 + "。输出合法 JSON："
                 '{"messages":[{"speaker_id":"角色ID","speaker_name":"角色名","content":"内容","action":""}]}'
             )
-            response = self._client.raw_client.chat.completions.create(
-                model=self._client.model,
-                messages=[
-                    {"role": "system", "content": self._client.strategy.get_system_prompt()},
-                    {"role": "assistant", "content": raw},
-                    {"role": "user", "content": prompt},
-                ],
-                temperature=self._client.temperature,
-                max_tokens=min(self._client.max_tokens, 2048),
-            )
-            supplement_raw = response.choices[0].message.content or ""
-            supplement = parse_structured_reply(
-                supplement_raw, branch.branch_id, turn_index, name_to_id
-            )
-            messages.extend(
-                message for message in supplement
-                if message.speaker_id in missing
-            )
+            try:
+                response = self._client.raw_client.chat.completions.create(
+                    model=self._client.model,
+                    messages=[
+                        {"role": "system", "content": self._client.strategy.get_system_prompt()},
+                        {"role": "assistant", "content": raw},
+                        {"role": "user", "content": prompt},
+                    ],
+                    temperature=self._client.temperature,
+                    max_tokens=min(self._client.max_tokens, 2048),
+                )
+                supplement_raw = response.choices[0].message.content or ""
+                supplement = parse_structured_reply(
+                    supplement_raw, branch.branch_id, turn_index, name_to_id
+                )
+                messages.extend(
+                    message for message in supplement
+                    if message.speaker_id in missing
+                )
+            except Exception as error:
+                self._chat_state.consistency_warnings.append(
+                    f"必回角色补全失败：{error}"
+                )
         if policy.speaker_order:
             order = {speaker_id: index for index, speaker_id in enumerate(policy.speaker_order)}
             messages.sort(key=lambda message: order.get(message.speaker_id, len(order)))
@@ -5722,6 +5813,20 @@ class DeepSeekChatGUI(QMainWindow):
                     kept_speakers.append(message.speaker_id)
                 filtered.append(message)
             messages = filtered
+        if not messages and raw.strip():
+            messages = [ChatMessage(
+                message_id=new_id("msg"),
+                branch_id=branch.branch_id,
+                role="assistant",
+                speaker_id="assistant",
+                speaker_name="群聊回复",
+                content=raw.strip(),
+                turn_index=turn_index,
+                created_at=now_text(),
+            )]
+            self._chat_state.consistency_warnings.append(
+                "本轮回复无法匹配当前角色或发言规则，已按原文显示。"
+            )
         branch.messages.extend(messages)
         self._audit_character_knowledge(messages, book)
         self._last_structured_assistant_messages = messages
@@ -5748,21 +5853,49 @@ class DeepSeekChatGUI(QMainWindow):
                     if warning not in self._chat_state.consistency_warnings:
                         self._chat_state.consistency_warnings.append(warning)
 
-    def _sync_character_book_after_chat(self, user_input: str, assistant_content: str) -> None:
-        if not self._participant_character_ids or not assistant_content.strip():
+    def _sync_character_book_after_chat(
+        self,
+        user_input: str,
+        assistant_content: str,
+        context: dict,
+    ) -> None:
+        if not context.get("participant_ids") or not assistant_content.strip():
             return
+        self._stream_signals.character_book_sync_status.emit("人物书后台同步中…")
         try:
-            branch = self._chat_state.active_branch()
-            turn_index = self._current_turn_index()
-            source_messages = [
-                message for message in branch.messages
-                if message.turn_index == turn_index
-            ]
+            with self._character_book_sync_lock:
+                self._sync_character_book_after_chat_locked(
+                    user_input, assistant_content, context
+                )
+        except Exception as e:
+            self._stream_signals.character_book_sync_status.emit(
+                f"人物书同步失败：{e}"
+            )
+
+    def _sync_character_book_after_chat_locked(
+        self,
+        user_input: str,
+        assistant_content: str,
+        context: dict,
+    ) -> None:
+        try:
+            branch = next(
+                (
+                    item for item in self._chat_state.branches
+                    if item.branch_id == context.get("branch_id")
+                ),
+                None,
+            )
+            if branch is None:
+                self._stream_signals.character_book_sync_status.emit(
+                    "人物书同步已跳过：原会话已切换。"
+                )
+                return
+            turn_index = int(context.get("turn_index", 0))
             book = self._load_character_book()
             extraction_participants = (
-                list(self._chat_state.scene_state.present_character_ids)
-                if self._chat_state.scene_state.present_character_ids
-                else list(self._participant_character_ids)
+                list(context.get("present_character_ids", []))
+                or list(context.get("participant_ids", []))
             )
             change_set, new_events = extract_character_book_changes(
                 self._usage_logged_client("character_book_update"),
@@ -5771,13 +5904,13 @@ class DeepSeekChatGUI(QMainWindow):
                 extraction_participants,
                 user_input,
                 assistant_content,
-                self._chat_timeline,
+                context.get("timeline", []),
                 turn_index,
                 branch.branch_id,
-                [message.message_id for message in source_messages],
+                list(context.get("source_message_ids", [])),
                 global_user_prompt=self._client.global_user_prompt,
-                sender_name=self._sender_name,
-                sender_profile=self._sender_profile,
+                sender_name=context.get("sender_name", ""),
+                sender_profile=context.get("sender_profile", ""),
             )
             applied_count = 0
             pending_count = 0
@@ -5796,20 +5929,28 @@ class DeepSeekChatGUI(QMainWindow):
                     self._chat_state.memory_change_sets.append(change_set)
                     pending_count = len(high_changes)
             self._character_book_manager.save(book)
+            branch_timeline = list(context.get("timeline", []))
             if new_events:
-                self._chat_timeline.extend(new_events)
-                branch.timeline = timeline_to_dict(self._chat_timeline)
-                if isinstance(self._client.strategy, RolePlayStrategy):
-                    self._client.strategy.character_book = book
-                    self._client.strategy.timeline = list(self._chat_timeline)
-                    self._client.update_system_prompt()
-            self._snapshot_active_branch(book)
-            self._stream_signals.token.emit(
-                f"\n\n📘 人物书同步：自动应用 {applied_count} 项，"
-                f"待审核 {pending_count} 项，新增时间线 {len(new_events)} 条。\n"
+                branch_timeline.extend(new_events)
+            branch.timeline = timeline_to_dict(branch_timeline)
+            branch.character_state_snapshot = character_book_to_dict(book)
+            if self._chat_state.active_branch_id == branch.branch_id:
+                self._chat_timeline = branch_timeline
+            self._stream_signals.character_book_sync_status.emit(
+                f"人物书同步完成：自动应用 {applied_count} 项，"
+                f"待审核 {pending_count} 项，新增时间线 {len(new_events)} 条。"
             )
-        except Exception as e:
-            self._stream_signals.token.emit(f"\n\n⚠️ 人物书同步失败，已保留本轮对话：{e}\n")
+        except Exception:
+            raise
+
+    def _on_character_book_sync_status(self, message: str) -> None:
+        self.statusBar().showMessage(message, 6000)
+        if (
+            message.startswith("人物书同步完成")
+            and isinstance(self._client.strategy, RolePlayStrategy)
+        ):
+            self._sync_role_strategy()
+            self._mark_conversation_dirty()
 
     def _on_stream_token(self, token: str) -> None:
         """主线程：接收一个 token"""

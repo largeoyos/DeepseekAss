@@ -285,6 +285,11 @@ def parse_structured_reply(
     name_to_id: dict[str, str],
 ) -> list[ChatMessage]:
     text = (raw or "").strip()
+    id_to_name: dict[str, str] = {}
+    for name, character_id in name_to_id.items():
+        if character_id and name:
+            id_to_name.setdefault(character_id, name)
+    valid_ids = set(id_to_name)
     parsed = None
     candidate = text
     if "```json" in candidate:
@@ -300,15 +305,32 @@ def parse_structured_reply(
     for item in entries:
         if not isinstance(item, dict):
             continue
-        speaker_name = str(item.get("speaker_name") or item.get("speaker") or "").strip()
+        raw_speaker_id = str(item.get("speaker_id") or "").strip()
+        speaker_name = str(
+            item.get("speaker_name")
+            or item.get("speaker")
+            or id_to_name.get(raw_speaker_id)
+            or raw_speaker_id
+        ).strip()
         content = str(item.get("content", "")).strip()
         if not speaker_name or not content:
             continue
+        if raw_speaker_id == "narrator" or speaker_name == "旁白":
+            speaker_id = "narrator"
+            speaker_name = "旁白"
+        else:
+            speaker_id = (
+                name_to_id.get(speaker_name)
+                or (raw_speaker_id if raw_speaker_id in valid_ids else "")
+                or name_to_id.get(raw_speaker_id)
+                or "assistant"
+            )
+            speaker_name = id_to_name.get(speaker_id, speaker_name)
         result.append(ChatMessage(
             message_id=new_id("msg"),
             branch_id=branch_id,
             role="assistant",
-            speaker_id=str(item.get("speaker_id") or name_to_id.get(speaker_name) or "narrator"),
+            speaker_id=speaker_id,
             speaker_name=speaker_name,
             content=content,
             action=str(item.get("action", "")),

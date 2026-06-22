@@ -45,6 +45,18 @@ class ChatDomainTests(unittest.TestCase):
         )
         self.assertEqual(["a", "b"], [message.speaker_id for message in messages])
 
+    def test_structured_reply_normalizes_name_based_speaker_ids(self):
+        messages = parse_structured_reply(
+            '{"messages":[{"speaker_id":"A","speaker_name":"A","content":"hello"},'
+            '{"speaker_id":"wrong-example-id","speaker_name":"B","content":"world"}]}',
+            "main",
+            1,
+            {"A": "character-a", "B": "character-b"},
+        )
+        self.assertEqual(
+            ["character-a", "character-b"],
+            [message.speaker_id for message in messages],
+        )
     def test_branch_round_trip_is_independent(self):
         state = ChatSessionState()
         main = state.active_branch()
