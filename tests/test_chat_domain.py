@@ -7,6 +7,7 @@ from core.character_book import (
     CharacterMemory,
     CharacterProfile,
     build_memory_change_set,
+    extract_character_book_changes,
 )
 from core.chat_domain import (
     ChatSessionState,
@@ -58,6 +59,52 @@ class ChatDomainTests(unittest.TestCase):
             ["character-a", "character-b"],
             [message.speaker_id for message in messages],
         )
+    def test_sender_behavior_is_a_distinct_structured_message(self):
+        messages = parse_structured_reply(
+            '{"messages":['
+            '{"speaker_id":"sender_behavior","speaker_name":"发送者行为",'
+            '"content":"She steadies her breathing."},'
+            '{"speaker_id":"A","speaker_name":"A","content":"Are you all right?"}'
+            ']}',
+            "main",
+            1,
+            {"A": "character-a"},
+        )
+        self.assertEqual(
+            ["sender_behavior", "character-a"],
+            [message.speaker_id for message in messages],
+        )
+
+    def test_sender_behavior_common_format_variants_are_normalized(self):
+        top_level = parse_structured_reply(
+            '{"sender_behavior":{"description":"She lowers her hand."},'
+            '"messages":[{"speaker_id":"A","speaker_name":"A","content":"Hello"}]}',
+            "main",
+            1,
+            {"A": "character-a"},
+        )
+        typed = parse_structured_reply(
+            '{"messages":[{"type":"user_action",'
+            '"speaker_name":"发送者行为描写","content":"She looks toward A."}]}',
+            "main",
+            1,
+            {"A": "character-a"},
+        )
+        text_format = parse_structured_reply(
+            "发送者行为：她轻轻点头。\nA：你好。",
+            "main",
+            1,
+            {"A": "character-a"},
+        )
+        self.assertEqual("sender_behavior", top_level[0].speaker_id)
+        self.assertEqual("sender_behavior", typed[0].speaker_id)
+        self.assertEqual("sender_behavior", text_format[0].speaker_id)
+    def test_private_chat_requests_sender_behavior_column(self):
+        strategy = RolePlayStrategy()
+        strategy.chat_type = "private"
+        prompt = strategy.get_system_prompt()
+        self.assertIn('"speaker_id":"sender_behavior"', prompt)
+        self.assertIn("不得替发送者编造台词", prompt)
     def test_multi_character_chat_targets_sender(self):
         strategy = RolePlayStrategy()
         strategy.chat_type = "group"
@@ -117,6 +164,43 @@ class ChatDomainTests(unittest.TestCase):
         self.assertEqual([], book.memories[0].experiences)
         self.assertEqual("old", book.profiles[0].identity)
 
+    def test_scene_update_is_extracted_and_validated(self):
+        class Completions:
+            @staticmethod
+            def create(**_kwargs):
+                message = type("Message", (), {
+                    "content": (
+                        '{"characters":[],"timeline":[],"scene_update":{'
+                        '"location":"garden","description":"The group reaches the garden.",'
+                        '"tags":["outdoor"],"present_character_ids":["a","invalid"],'
+                        '"reason":"They explicitly left the room."}}'
+                    )
+                })()
+                choice = type("Choice", (), {"message": message})()
+                return type("Response", (), {"choices": [choice]})()
+
+        client = type("Client", (), {
+            "chat": type("Chat", (), {"completions": Completions()})()
+        })()
+        book = CharacterBook(
+            profiles=[CharacterProfile(character_id="a", name="A")]
+        )
+        _changes, _events, scene_update = extract_character_book_changes(
+            client,
+            "model",
+            book,
+            ["a"],
+            "We walk into the garden.",
+            "A follows into the garden.",
+            [],
+            1,
+            "main",
+            ["message-1"],
+            current_scene={"location": "room"},
+        )
+        self.assertEqual("garden", scene_update["location"])
+        self.assertEqual(["a"], scene_update["present_character_ids"])
+        self.assertEqual(["outdoor"], scene_update["tags"])
     def test_schema_v4_and_sender_profile_round_trip(self):
         root = tempfile.mkdtemp()
         state = ChatSessionState()

@@ -147,14 +147,35 @@ class RolePlayStrategy(BaseStrategy):
                 parts.append("\n\n【角色视角隔离】\n" + "\n".join(knowledge_lines))
                 parts.append("\n任何角色不得使用未列在自己可知信息中的秘密或场外信息。")
 
-        if self.structured_output and self.chat_type == "group":
+        if self.structured_output:
+            if self.chat_type == "group":
+                reply_schema = (
+                    '{"speaker_id":"角色ID或narrator","speaker_name":"角色名或旁白",'
+                    '"content":"该角色对发送者的回复","action":"仅填写该角色自己的可选动作"}'
+                )
+            else:
+                reply_schema = (
+                    '{"speaker_id":"主角色ID","speaker_name":"主角色名",'
+                    '"content":"主角色对发送者的回复","action":"主角色自己的可选动作"}'
+                )
             parts.append(
-                "\n\n【输出格式】\n只输出合法 JSON，不要使用 Markdown 代码块："
-                '{"messages":[{"speaker_id":"角色ID或narrator","speaker_name":"角色名或旁白",'
-                '"content":"该角色对发送者的回复","action":"仅填写该角色自己的可选动作"}]}'
-                "\nmessages 中禁止出现 user/sender 类型消息，禁止生成发送者的回复，"
-                "禁止把多个角色的发言合并在一个 content 中。"
+                "\n\n【结构化输出与发送者行为描写】\n"
+                "只输出合法 JSON，不要使用 Markdown 代码块。messages 第一项必须是发送者行为描写："
+                '{"speaker_id":"sender_behavior","speaker_name":"发送者行为",'
+                '"content":"对发送者可观察动作、神态、姿态和现场反应的细致描写","action":""}。'
+                "该描写可以润色用户已经表达或场景中可直接观察的行为，但不得替发送者编造台词、"
+                "内心想法、关键决定、关系承诺或用户没有表达的重大动作。"
+                "其后再输出角色回复。完整格式："
+                '{"messages":[' +
+                '{"speaker_id":"sender_behavior","speaker_name":"发送者行为",'
+                '"content":"行为描写","action":""},' + reply_schema + ']}'
+                "\n角色回复和发送者行为必须拆成不同消息对象。"
             )
+            if self.chat_type == "group":
+                parts.append(
+                    "messages 中禁止出现 user/sender 类型消息，禁止生成发送者的回复，"
+                    "禁止把多个角色的发言合并在一个 content 中。"
+                )
 
         if self.character_description.strip():
             parts.append(f"\n\n【角色描述】\n{self.character_description.strip()}")

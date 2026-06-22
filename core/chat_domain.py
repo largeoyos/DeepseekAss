@@ -301,11 +301,41 @@ def parse_structured_reply(
     except (json.JSONDecodeError, TypeError):
         parsed = None
     entries = parsed.get("messages", []) if isinstance(parsed, dict) else parsed if isinstance(parsed, list) else []
+    if not isinstance(entries, list):
+        entries = []
+    if isinstance(parsed, dict):
+        behavior_value = (
+            parsed.get("sender_behavior")
+            or parsed.get("sender_action")
+            or parsed.get("user_behavior")
+        )
+        if behavior_value:
+            if isinstance(behavior_value, dict):
+                behavior_content = str(
+                    behavior_value.get("content")
+                    or behavior_value.get("description")
+                    or behavior_value.get("text")
+                    or ""
+                ).strip()
+            else:
+                behavior_content = str(behavior_value).strip()
+            if behavior_content:
+                entries = [{
+                    "speaker_id": "sender_behavior",
+                    "speaker_name": "发送者行为",
+                    "content": behavior_content,
+                    "action": "",
+                }, *entries]
     result: list[ChatMessage] = []
     for item in entries:
         if not isinstance(item, dict):
             continue
-        raw_speaker_id = str(item.get("speaker_id") or "").strip()
+        raw_speaker_id = str(
+            item.get("speaker_id")
+            or item.get("type")
+            or item.get("kind")
+            or ""
+        ).strip()
         speaker_name = str(
             item.get("speaker_name")
             or item.get("speaker")
@@ -315,7 +345,18 @@ def parse_structured_reply(
         content = str(item.get("content", "")).strip()
         if not speaker_name or not content:
             continue
-        if raw_speaker_id == "narrator" or speaker_name == "旁白":
+        normalized_speaker_id = raw_speaker_id.lower().replace("-", "_").replace(" ", "_")
+        is_sender_behavior = (
+            normalized_speaker_id in {
+                "sender_behavior", "sender_action", "user_behavior", "user_action"
+            }
+            or speaker_name.startswith("发送者行为")
+            or speaker_name.startswith("用户行为")
+        )
+        if is_sender_behavior:
+            speaker_id = "sender_behavior"
+            speaker_name = "发送者行为"
+        elif raw_speaker_id == "narrator" or speaker_name == "旁白":
             speaker_id = "narrator"
             speaker_name = "旁白"
         else:
@@ -341,7 +382,7 @@ def parse_structured_reply(
         return result
 
     names = sorted(name_to_id, key=len, reverse=True)
-    labels = [*names, "旁白"]
+    labels = [*names, "发送者行为描写", "发送者行为", "用户行为", "旁白"]
     pattern = re.compile(r"(?m)^\s*(" + "|".join(re.escape(name) for name in labels) + r")\s*[：:]\s*")
     matches = list(pattern.finditer(text))
     if matches:
@@ -354,8 +395,16 @@ def parse_structured_reply(
                     message_id=new_id("msg"),
                     branch_id=branch_id,
                     role="assistant",
-                    speaker_id=name_to_id.get(speaker_name, "narrator"),
-                    speaker_name=speaker_name,
+                    speaker_id=(
+                        "sender_behavior"
+                        if speaker_name.startswith(("发送者行为", "用户行为"))
+                        else name_to_id.get(speaker_name, "narrator")
+                    ),
+                    speaker_name=(
+                        "发送者行为"
+                        if speaker_name.startswith(("发送者行为", "用户行为"))
+                        else speaker_name
+                    ),
                     content=content,
                     turn_index=turn_index,
                     created_at=now_text(),

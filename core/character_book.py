@@ -268,8 +268,9 @@ def merge_character_book_data(
 
 
 EXTRACT_PROMPT = """你是聊天角色人物书整理器。请只输出合法 JSON，不要输出解释。
-从本轮对话中提取参与角色的经历、状态、关系、已知信息、行动、情绪目标变化、关键台词，以及本对话时间线事件。
+从本轮对话中提取参与角色的经历、状态、关系、已知信息、行动、情绪目标变化、关键台词、本对话时间线事件，以及当前场景变化。
 只记录已经发生或明确表达的信息，不要把猜测写成事实。
+场景更新规则：以输入中的 current_scene 为基准；只有对话明确显示发生变化时才输出对应字段；未变化或无法确定的字段不要输出；不得擅自推进日期、切换地点或增删在场角色。
 JSON 格式：
 {
   "characters": [
@@ -294,7 +295,17 @@ JSON 格式：
       "participants": ["角色名"],
       "impact": "对后续对话或关系的影响"
     }
-  ]
+  ],
+  "scene_update": {
+    "time": "仅在时间明确变化时输出",
+    "location": "仅在地点明确变化时输出",
+    "weather": "仅在天气明确变化时输出",
+    "objective": "当前场景目标发生变化时输出",
+    "description": "结合本轮发展后的简洁环境概括",
+    "tags": ["仅在状态标签变化时输出完整列表"],
+    "present_character_ids": ["仅在人物进入或离场明确发生时输出完整 character_id 列表"],
+    "reason": "场景变化依据"
+  }
 }
 """
 
@@ -446,14 +457,16 @@ def extract_character_book_changes(
     global_user_prompt: str = "",
     sender_name: str = "",
     sender_profile: str = "",
+    current_scene: dict | None = None,
 ):
     participants = [profile for profile in book.profiles if profile.character_id in set(participant_ids)]
     if not participants:
-        return None, []
+        return None, [], {}
     context = {
         "participants": [asdict(profile) for profile in participants],
         "recent_timeline": [asdict(item) for item in timeline[-8:]],
         "sender": {"name": sender_name, "profile": sender_profile},
+        "current_scene": current_scene or {},
         "user_message": user_message,
         "assistant_message": assistant_message,
     }
@@ -482,7 +495,36 @@ def extract_character_book_changes(
         turn_index=turn_index,
         source_message_range=f"turn:{turn_index}",
     )
-    return change_set, events
+    scene_update = data.get("scene_update", {})
+    if not isinstance(scene_update, dict):
+        scene_update = {}
+    allowed_scene_fields = {
+        "time", "location", "weather", "objective", "description",
+        "tags", "present_character_ids", "reason",
+    }
+    scene_update = {
+        key: value for key, value in scene_update.items()
+        if key in allowed_scene_fields and value not in (None, "")
+    }
+    for field_name in ("time", "location", "weather", "objective", "description", "reason"):
+        if field_name in scene_update:
+            scene_update[field_name] = str(scene_update[field_name]).strip()[:500]
+    if "present_character_ids" in scene_update:
+        valid_ids = set(participant_ids)
+        values = scene_update.get("present_character_ids", [])
+        if not isinstance(values, list):
+            values = []
+        scene_update["present_character_ids"] = [
+            character_id for character_id in values if character_id in valid_ids
+        ]
+    if "tags" in scene_update:
+        values = scene_update.get("tags", [])
+        if not isinstance(values, list):
+            values = []
+        scene_update["tags"] = [
+            str(tag).strip() for tag in values if str(tag).strip()
+        ][:12]
+    return change_set, events, scene_update
 
 
 def extract_and_merge_character_book(
@@ -497,6 +539,7 @@ def extract_and_merge_character_book(
     global_user_prompt: str = "",
     sender_name: str = "",
     sender_profile: str = "",
+    current_scene: dict | None = None,
 ) -> tuple[CharacterBook, list[ChatTimelineEntry]]:
     participants = [p for p in book.profiles if p.character_id in set(participant_ids)]
     if not participants:
@@ -505,6 +548,7 @@ def extract_and_merge_character_book(
         "participants": [asdict(p) for p in participants],
         "recent_timeline": [asdict(t) for t in timeline[-8:]],
         "sender": {"name": sender_name, "profile": sender_profile},
+        "current_scene": current_scene or {},
         "user_message": user_message,
         "assistant_message": assistant_message,
     }
