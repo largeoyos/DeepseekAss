@@ -144,6 +144,8 @@ class StreamSignals(QObject):
     token = pyqtSignal(str)
     finished = pyqtSignal()
     error = pyqtSignal(str)
+    api_task_started = pyqtSignal(str, str)         # task_id, display label
+    api_task_finished = pyqtSignal(str)             # task_id
     analysis_done = pyqtSignal(str, str, str)     # setting, plot, source_text
     directions_ready = pyqtSignal(list, str, str, int)  # directions, setting, plot, word_count
     novel_imported = pyqtSignal(str)               # 从源文档导入小说完成，参数：标题
@@ -347,10 +349,10 @@ HTML_STYLE = """
     margin: 8px 0;
     box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
   }
-  .reply-jump-nav { position: fixed; top: 14px; right: 14px; z-index: 1000; width: 176px; max-height: calc(100vh - 28px); overflow: hidden; background: #181826; border: 1px solid rgba(255,255,255,.12); border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,.32); }
-  .reply-jump-nav summary { padding: 9px 12px; cursor: pointer; color: #d7e7ff; font-size: 13px; font-weight: 700; user-select: none; }
-  .reply-jump-list { max-height: calc(100vh - 74px); overflow-y: auto; padding: 0 7px 8px; }
-  .reply-jump-item { display: block; width: 100%; margin: 3px 0; padding: 7px 9px; border: 0; border-radius: 7px; background: transparent; color: #aebdd3; text-align: left; font: inherit; font-size: 12px; cursor: pointer; }
+  .reply-jump-nav { position: fixed; top: 14px; right: 14px; z-index: 1000; width: 158px; max-height: 16.666vh; overflow: hidden; background: #181826; border: 1px solid rgba(255,255,255,.12); border-radius: 8px; box-shadow: 0 8px 28px rgba(0,0,0,.32); }
+  .reply-jump-nav summary { padding: 5px 9px; cursor: pointer; color: #d7e7ff; font-size: 12px; font-weight: 700; user-select: none; }
+  .reply-jump-list { max-height: calc(16.666vh - 30px); overflow-y: auto; padding: 0 4px 4px; }
+  .reply-jump-item { display: block; width: 100%; margin: 1px 0; padding: 3px 6px; border: 0; border-radius: 5px; background: transparent; color: #aebdd3; text-align: left; font: inherit; font-size: 11px; line-height: 1.25; cursor: pointer; }
   .reply-jump-item:hover { background: #264f78; color: #fff; }
   .assistant-msg { scroll-margin-top: 18px; }
 </style>
@@ -454,10 +456,10 @@ LIGHT_HTML_STYLE = """
   ul, ol { padding-left: 26px; }
   li { margin: 4px 0; }
   img { max-width: 100%; border-radius: 8px; margin: 8px 0; }
-  .reply-jump-nav { position: fixed; top: 14px; right: 14px; z-index: 1000; width: 176px; max-height: calc(100vh - 28px); overflow: hidden; background: #ffffff; border: 1px solid #d7dfed; border-radius: 10px; box-shadow: 0 8px 28px rgba(30,50,90,.16); }
-  .reply-jump-nav summary { padding: 9px 12px; cursor: pointer; color: #244a8f; font-size: 13px; font-weight: 700; user-select: none; }
-  .reply-jump-list { max-height: calc(100vh - 74px); overflow-y: auto; padding: 0 7px 8px; }
-  .reply-jump-item { display: block; width: 100%; margin: 3px 0; padding: 7px 9px; border: 0; border-radius: 7px; background: transparent; color: #526078; text-align: left; font: inherit; font-size: 12px; cursor: pointer; }
+  .reply-jump-nav { position: fixed; top: 14px; right: 14px; z-index: 1000; width: 158px; max-height: 16.666vh; overflow: hidden; background: #ffffff; border: 1px solid #d7dfed; border-radius: 8px; box-shadow: 0 8px 28px rgba(30,50,90,.16); }
+  .reply-jump-nav summary { padding: 5px 9px; cursor: pointer; color: #244a8f; font-size: 12px; font-weight: 700; user-select: none; }
+  .reply-jump-list { max-height: calc(16.666vh - 30px); overflow-y: auto; padding: 0 4px 4px; }
+  .reply-jump-item { display: block; width: 100%; margin: 1px 0; padding: 3px 6px; border: 0; border-radius: 5px; background: transparent; color: #526078; text-align: left; font: inherit; font-size: 11px; line-height: 1.25; cursor: pointer; }
   .reply-jump-item:hover { background: #dbe7ff; color: #123a8a; }
   .assistant-msg { scroll-margin-top: 18px; }
 </style>
@@ -560,7 +562,13 @@ class _UsageLoggingCompletionsProxy:
         self._operation = operation
 
     def create(self, *args, **kwargs):
-        response = self._completions.create(*args, **kwargs)
+        task_id = self._owner._begin_api_task(
+            self._owner._api_operation_label(self._operation)
+        )
+        try:
+            response = self._completions.create(*args, **kwargs)
+        finally:
+            self._owner._finish_api_task(task_id)
         messages = kwargs.get("messages") or []
         prompt = "\n\n".join(
             str(m.get("content", "")) for m in messages if m.get("role") == "user"
@@ -621,6 +629,8 @@ class DeepSeekChatGUI(QMainWindow):
         self._stream_signals.token.connect(self._on_stream_token)
         self._stream_signals.finished.connect(self._on_stream_finished)
         self._stream_signals.error.connect(self._on_stream_error)
+        self._stream_signals.api_task_started.connect(self._on_api_task_started)
+        self._stream_signals.api_task_finished.connect(self._on_api_task_finished)
         self._stream_signals.analysis_done.connect(self._show_analysis_dialog)
         self._stream_signals.directions_ready.connect(self._show_direction_selector)
         self._stream_signals.novel_imported.connect(self._on_cont_novel_imported)
@@ -646,6 +656,10 @@ class DeepSeekChatGUI(QMainWindow):
         self._stream_render_timer.timeout.connect(self._flush_stream_render)
         self._streaming = False
         self._streaming_start_time = 0.0
+        self._api_tasks: dict[str, tuple[str, float]] = {}
+        self._api_task_timer = QTimer(self)
+        self._api_task_timer.setInterval(1000)
+        self._api_task_timer.timeout.connect(self._refresh_api_task_display)
         # 章节渲染完成标志（防止 JS 异步渲染前触发下一章）
         self._chapter_finalized = True
         # 正在加载对话（阻止模式切换时覆盖显示）
@@ -1612,6 +1626,18 @@ class DeepSeekChatGUI(QMainWindow):
         self._stream_count_label.setVisible(False)
         status_layout.addWidget(self._stream_count_label)
         layout.addWidget(status_group)
+
+        api_task_group = QGroupBox("API 任务")
+        api_task_group.setMaximumHeight(62)
+        api_task_layout = QVBoxLayout(api_task_group)
+        api_task_layout.setContentsMargins(8, 3, 8, 5)
+        api_task_layout.setSpacing(0)
+        self._api_task_label = QLabel("● 空闲")
+        self._api_task_label.setObjectName("apiTaskLabel")
+        self._api_task_label.setWordWrap(False)
+        self._api_task_label.setToolTip("实时显示当前正在执行的模型 API 请求")
+        api_task_layout.addWidget(self._api_task_label)
+        layout.addWidget(api_task_group)
 
         # ── 模式专属面板容器（QStackedWidget 切换不触发布局重排）──
         self._role_play_panel = self._build_role_play_panel()
@@ -3251,6 +3277,73 @@ class DeepSeekChatGUI(QMainWindow):
             f"书籍: {book} | 状态: {state}"
         )
 
+    def _api_operation_label(self, operation: str) -> str:
+        labels = {
+            "chat": "生成聊天回复",
+            "novel_chapter": "生成小说章节",
+            "continuation": "生成续写章节",
+            "chapter_regenerate": "重写章节",
+            "chapter_tree_polish": "润色章节",
+            "chapter_tree_rewrite": "重写章节",
+            "novel_summary": "提取章节概要",
+            "continuation_summary": "提取章节概要",
+            "chapter_tree_summary": "提取章节概要",
+            "world_bible_update": "提取世界书",
+            "chapter_tree_world_bible": "提取世界书",
+            "continuation_import_analysis": "分析导入文档",
+            "batch_import_analysis": "分析批量章节",
+            "continuation_suggest": "分析发展方向",
+            "character_book_update": "更新人物书",
+        }
+        if operation in labels:
+            return labels[operation]
+        if "world_bible" in operation:
+            return "提取世界书"
+        if "summary" in operation:
+            return "生成剧情摘要"
+        if "supervision" in operation:
+            return "校验章节质量"
+        if "continuity" in operation:
+            return "检查章节连贯性"
+        return operation.replace("_", " ") or "模型请求"
+
+    def _begin_api_task(self, label: str) -> str:
+        task_id = new_id("api")
+        self._stream_signals.api_task_started.emit(task_id, label)
+        return task_id
+
+    def _finish_api_task(self, task_id: str) -> None:
+        if task_id:
+            self._stream_signals.api_task_finished.emit(task_id)
+
+    def _on_api_task_started(self, task_id: str, label: str) -> None:
+        self._api_tasks[task_id] = (label, time.time())
+        if not self._api_task_timer.isActive():
+            self._api_task_timer.start()
+        self._refresh_api_task_display()
+
+    def _on_api_task_finished(self, task_id: str) -> None:
+        self._api_tasks.pop(task_id, None)
+        if not self._api_tasks:
+            self._api_task_timer.stop()
+        self._refresh_api_task_display()
+
+    def _refresh_api_task_display(self) -> None:
+        if not hasattr(self, "_api_task_label"):
+            return
+        if not self._api_tasks:
+            self._api_task_label.setText("● 空闲")
+            self._api_task_label.setStyleSheet("color: #6a9955; font-size: 12px;")
+            self._api_task_label.setToolTip("当前没有正在执行的模型 API 请求")
+            return
+        label, started_at = next(reversed(self._api_tasks.values()))
+        elapsed = max(0, int(time.time() - started_at))
+        suffix = f" · {len(self._api_tasks)} 项" if len(self._api_tasks) > 1 else ""
+        text = f"● {label} · {elapsed}s{suffix}"
+        self._api_task_label.setText(text)
+        self._api_task_label.setStyleSheet("color: #4fc1ff; font-size: 12px;")
+        self._api_task_label.setToolTip(text)
+
     def _open_token_log_dialog(self) -> None:
         dialog = TokenLogDialog(self, self._token_log_manager)
         dialog.exec()
@@ -3340,6 +3433,7 @@ class DeepSeekChatGUI(QMainWindow):
         usage_dict: dict | None = None
         chunks: list[str] = []
         stream = None
+        task_id = self._begin_api_task(self._api_operation_label(operation))
 
         kwargs = {
             "model": self._client.model,
@@ -3379,6 +3473,7 @@ class DeepSeekChatGUI(QMainWindow):
                         self._stream_signals.token.emit(token)
         finally:
             finished_at = time.strftime("%Y-%m-%d %H:%M:%S")
+            self._finish_api_task(task_id)
 
         content = "".join(chunks)
         duration_ms = int((time.time() - start_time) * 1000)
@@ -5675,6 +5770,7 @@ class DeepSeekChatGUI(QMainWindow):
 
     def _run_stream(self, user_input: str) -> None:
         """后台线程：调用流式 API"""
+        task_id = self._begin_api_task(self._api_operation_label("chat"))
         try:
             for token in self._client.chat_stream(user_input):
                 self._stream_signals.token.emit(token)
@@ -5762,6 +5858,8 @@ class DeepSeekChatGUI(QMainWindow):
                 ).start()
         except Exception as e:
             self._stream_signals.error.emit(str(e))
+        finally:
+            self._finish_api_task(task_id)
 
     def _record_structured_user_message(self, content: str) -> ChatMessage:
         branch = self._chat_state.active_branch()

@@ -133,6 +133,17 @@ class ChapterTreeDialog(QDialog):
         self._init_ui()
         self._load_tree()
 
+    def _api_client(self, operation: str):
+        parent = self.parent()
+        if hasattr(parent, "_usage_logged_client"):
+            return parent._usage_logged_client(operation)
+        return self._client.raw_client if self._client else None
+
+    def _finish_host_stream(self) -> None:
+        parent = self.parent()
+        if hasattr(parent, "_stream_signals"):
+            parent._stream_signals.finished.emit()
+
     def _init_ui(self) -> None:
         layout = QVBoxLayout(self)
         splitter = QSplitter(Qt.Orientation.Horizontal)
@@ -443,7 +454,7 @@ class ChapterTreeDialog(QDialog):
         try:
             self._novel_manager.rebuild_plot_summary_from_tree(self._book_title)
             report = self._novel_manager.rebuild_world_bible_from_active(
-                self._client.raw_client if self._client else None,
+                self._api_client("chapter_tree_world_bible") if self._client else None,
                 self._book_title,
                 model=self._client.model if self._client else "deepseek-v4-flash",
                 global_user_prompt=self._client.global_user_prompt if self._client else "",
@@ -493,7 +504,7 @@ class ChapterTreeDialog(QDialog):
     def _run_force_extract_all_world_bible(self) -> None:
         try:
             report = self._novel_manager.rebuild_world_bible_from_active(
-                self._client.raw_client,
+                self._api_client("chapter_tree_world_bible"),
                 self._book_title,
                 model=self._client.model,
                 global_user_prompt=self._client.global_user_prompt,
@@ -534,7 +545,7 @@ class ChapterTreeDialog(QDialog):
     def _run_force_extract_current_world_bible(self, node_id: str) -> None:
         try:
             report = self._novel_manager.extract_world_bible_for_node(
-                self._client.raw_client,
+                self._api_client("chapter_tree_world_bible"),
                 self._book_title,
                 node_id,
                 model=self._client.model,
@@ -573,7 +584,7 @@ class ChapterTreeDialog(QDialog):
                 self._book_title, chapter_num, version
             )
             summary = self._novel_manager.generate_summary(
-                self._client.raw_client,
+                self._api_client("chapter_tree_summary"),
                 content,
                 chapter_num,
                 title,
@@ -687,6 +698,7 @@ class ChapterTreeDialog(QDialog):
         threading.Thread(target=self._run_generation, args=(node, mode, requirement.strip()), daemon=True).start()
 
     def _run_generation(self, node: dict, mode: str, requirement: str) -> None:
+        host_stream_finished = False
         try:
             old_content = self._novel_manager.read_chapter_node(self._book_title, node["id"]) or ""
             chapter_num = int(node["chapter_num"])
@@ -721,11 +733,12 @@ class ChapterTreeDialog(QDialog):
                 )
                 if cancelled:
                     parent._stream_signals.token.emit("\n\n⏹️ 已取消\n")
-                    parent._stream_signals.finished.emit()
+                    self._finish_host_stream()
+                    host_stream_finished = True
                     self.generation_failed.emit("已取消生成。")
                     return
             else:
-                response = self._client.raw_client.chat.completions.create(
+                response = self._api_client(f"chapter_tree_{mode}").chat.completions.create(
                     model=self._client.model,
                     messages=messages,
                     temperature=self._client.temperature,
@@ -749,9 +762,16 @@ class ChapterTreeDialog(QDialog):
                         usage=getattr(response, "usage", None),
                     )
             version = self._novel_manager.get_next_version(self._book_title, chapter_num)
-            self._novel_manager.save_chapter_version(self._book_title, chapter_num, title, content, version=version)
+            _, version = self._novel_manager.save_chapter_version(
+                self._book_title,
+                chapter_num,
+                title,
+                content,
+                version=version,
+                parent_id=node.get("parent_id"),
+            )
             summary = self._novel_manager.generate_summary(
-                self._client.raw_client,
+                self._api_client("chapter_tree_summary"),
                 content,
                 chapter_num,
                 title,
@@ -776,8 +796,24 @@ class ChapterTreeDialog(QDialog):
                 content[:500],
                 requirement=requirement,
             )
-            self.generation_done.emit(f"已生成新版本 v{version}。")
+            world_bible_warning = ""
+            try:
+                self._novel_manager.extract_world_bible_for_node(
+                    self._api_client("chapter_tree_world_bible"),
+                    self._book_title,
+                    self._novel_manager._node_id(chapter_num, version),
+                    model=self._client.model,
+                    global_user_prompt=self._client.global_user_prompt,
+                    xp_mode=self._novel_manager.load_meta(self._book_title).xp_mode,
+                )
+            except Exception as exc:
+                world_bible_warning = f"\n世界书快照提取失败：{exc}"
+            self._finish_host_stream()
+            host_stream_finished = True
+            self.generation_done.emit(f"已生成新版本 v{version}。{world_bible_warning}")
         except Exception as exc:
+            if not host_stream_finished:
+                self._finish_host_stream()
             self.generation_failed.emit(str(exc))
 
     def _on_generation_done(self, message: str) -> None:

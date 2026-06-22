@@ -186,6 +186,61 @@ class WorldBibleV2Tests(unittest.TestCase):
             self.assertEqual(rebuilt.characters[0].current_goal, "留下")
             self.assertEqual(report["override_count"], 1)
             self.assertEqual(report["schema_version"], 2)
+
+    def test_polished_version_keeps_branch_summary_and_world_snapshot_isolated(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            manager = NovelManager(bookshelf_root=temp_dir)
+            title = "润色分支绑定"
+            manager.create_book(title)
+            manager.save_chapter_version(title, 1, "起点", "第一章", version=1)
+            manager.save_chapter_version(title, 2, "相遇", "旧版本", version=1)
+
+            original = manager.ensure_chapter_tree(title).chapter_nodes["ch0002_v001"]
+            manager.save_chapter_version(
+                title,
+                2,
+                "相遇",
+                "润色版本",
+                version=2,
+                parent_id=original["parent_id"],
+            )
+            manager.set_chapter_node_summary(title, 2, 1, "旧版概要")
+            manager.set_chapter_node_summary(title, 2, 2, "润色版概要")
+
+            bible = merge_extracted_world_bible_data(
+                WorldBible(),
+                {"characters": [{"name": "旧版角色"}]},
+                chapter_num=2,
+                chapter_version=1,
+                store_chapter_entry=True,
+                run_dedup=False,
+            )
+            bible = merge_extracted_world_bible_data(
+                bible,
+                {"characters": [{"name": "润色版角色"}]},
+                chapter_num=2,
+                chapter_version=2,
+                store_chapter_entry=True,
+                run_dedup=False,
+            )
+            manager.save_world_bible(title, bible)
+
+            self.assertTrue(manager.switch_active_node(title, "ch0002_v002"))
+            manager.rebuild_plot_summary_from_tree(title)
+            manager.rebuild_world_bible_from_active(None, title)
+
+            meta = manager.ensure_chapter_tree(title)
+            self.assertEqual(
+                meta.chapter_nodes["ch0002_v002"]["parent_id"],
+                original["parent_id"],
+            )
+            summary = manager.load_summary(title)
+            self.assertIn("润色版概要", summary)
+            self.assertNotIn("旧版概要", summary)
+            names = {item.name for item in manager.load_world_bible(title).characters}
+            self.assertIn("润色版角色", names)
+            self.assertNotIn("旧版角色", names)
+
     def test_schema_validation_keeps_valid_categories(self):
         bible = merge_extracted_world_bible_data(
             WorldBible(),
