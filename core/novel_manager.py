@@ -1721,6 +1721,10 @@ class NovelManager:
         world_maintenance_report: dict | None = None,
         generation_mode: str = "classic",
         agent_run_id: str | None = None,
+        operation: str = "",
+        polish_requirement: str = "",
+        polish_plan: dict | None = None,
+        fidelity_report: dict | None = None,
     ) -> str:
         """
         保存一次生成的完整配置记录（独立文件）
@@ -1774,6 +1778,14 @@ class NovelManager:
             record["agent"] = copy.deepcopy(agent_data)
         if world_maintenance_report is not None:
             record["world_maintenance"] = copy.deepcopy(world_maintenance_report)
+        if operation:
+            record["operation"] = operation
+        if polish_requirement:
+            record["polish_requirement"] = polish_requirement
+        if polish_plan is not None:
+            record["polish_plan"] = copy.deepcopy(polish_plan)
+        if fidelity_report is not None:
+            record["fidelity_report"] = copy.deepcopy(fidelity_report)
 
         filename = f"ch{chapter_num:04d}_v{version:03d}.json"
         file_path = os.path.join(history_dir, filename)

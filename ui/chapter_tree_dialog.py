@@ -1,4 +1,4 @@
-﻿import re
+import re
 import threading
 import time
 
@@ -110,12 +110,22 @@ class ChapterTreeDialog(QDialog):
     rebuild_failed = pyqtSignal(str)
     summary_done = pyqtSignal(str)
     summary_failed = pyqtSignal(str)
+    polish_plan_ready = pyqtSignal(object, object, object)
+    polish_plan_failed = pyqtSignal(str)
 
-    def __init__(self, parent, novel_manager: NovelManager, book_title: str, client=None):
+    def __init__(
+        self, parent, novel_manager: NovelManager, book_title: str, client=None,
+        novel_generation_mode: str = "classic",
+        skills_enabled: bool = True,
+    ):
         super().__init__(parent)
         self._novel_manager = novel_manager
         self._book_title = book_title
         self._client = client
+        self._novel_generation_mode = (
+            novel_generation_mode if novel_generation_mode in {"classic", "agent"} else "classic"
+        )
+        self._skills_enabled = bool(skills_enabled)
         self._meta = None
         self._current_node: dict | None = None
         self._selected_node_id: str | None = None
@@ -130,6 +140,8 @@ class ChapterTreeDialog(QDialog):
         self.rebuild_failed.connect(self._on_rebuild_failed)
         self.summary_done.connect(self._on_summary_done)
         self.summary_failed.connect(self._on_summary_failed)
+        self.polish_plan_ready.connect(self._on_polish_plan_ready)
+        self.polish_plan_failed.connect(self._on_polish_plan_failed)
         self._init_ui()
         self._load_tree()
 
@@ -199,7 +211,9 @@ class ChapterTreeDialog(QDialog):
         self._switch_btn.clicked.connect(self._switch_branch)
         self._edit_btn = QPushButton("编辑正文")
         self._edit_btn.clicked.connect(self._edit_current)
-        self._polish_btn = QPushButton("润色")
+        self._polish_btn = QPushButton(
+            "Agent 润色" if self._novel_generation_mode == "agent" else "润色"
+        )
         self._polish_btn.clicked.connect(lambda: self._generate_variant("polish"))
         self._rewrite_btn = QPushButton("重写")
         self._rewrite_btn.clicked.connect(lambda: self._generate_variant("rewrite"))
@@ -678,13 +692,105 @@ class ChapterTreeDialog(QDialog):
         requirement, ok = QInputDialog.getMultiLineText(self, label, f"请输入{label}：")
         if not ok or not requirement.strip():
             return
+        if mode == "polish" and self._novel_generation_mode == "agent":
+            self._prepare_agent_polish(dict(node), requirement.strip())
+            return
+        self._start_variant_generation(dict(node), mode, requirement.strip())
+
+    def _prepare_agent_polish(self, node: dict, requirement: str) -> None:
+        from core.agent.chapter_polish import AgentChapterPolishService, AgentPolishRequest
+
+        chapter_num = int(node.get("chapter_num", 0) or 0)
+        title = node.get("title") or f"第{chapter_num}章"
+        request = AgentPolishRequest(
+            book_title=self._book_title,
+            node_id=node["id"],
+            chapter_num=chapter_num,
+            chapter_title=title,
+            requirement=requirement,
+            model=self._client.model,
+            global_prompt=self._client.global_user_prompt,
+        )
+        self._polish_btn.setEnabled(False)
+        self._rewrite_btn.setEnabled(False)
+        self._details.setPlainText("Agent 正在分析原文、润色要求和连续性上下文，请稍候...")
+        parent = self.parent()
+        if hasattr(parent, "_agent_chapter_planning"):
+            parent._agent_chapter_planning = True
+
+        def prepare() -> None:
+            try:
+                service = AgentChapterPolishService(
+                    self._novel_manager, self._api_client("agent_chapter_polish_plan"),
+                    skills_enabled=self._skills_enabled,
+                )
+                plan = service.prepare(request)
+                self.polish_plan_ready.emit(node, request, plan)
+            except Exception as exc:
+                self.polish_plan_failed.emit(str(exc))
+
+        threading.Thread(target=prepare, daemon=True).start()
+
+    def _on_polish_plan_ready(self, node, request, plan) -> None:
+        parent = self.parent()
+        if hasattr(parent, "_agent_chapter_planning"):
+            parent._agent_chapter_planning = False
+        self._polish_btn.setEnabled(True)
+        self._rewrite_btn.setEnabled(True)
+        self._details.setPlainText(plan.render())
+        if plan.rewrite_required:
+            reasons = "\n".join(f"- {item}" for item in plan.rewrite_reasons)
+            QMessageBox.warning(
+                self,
+                "请使用重写",
+                "该要求涉及剧情、事实或人物行为修改，不能作为润色执行。\n\n"
+                + (reasons or "请改用章节树中的“重写”功能。"),
+            )
+            from core.agent.chapter_polish import AgentChapterPolishService
+            AgentChapterPolishService(
+                self._novel_manager, self._api_client("agent_chapter_polish_plan"),
+                skills_enabled=self._skills_enabled,
+            ).mark_cancelled(request, plan)
+            return
+        from ui.agent_polish_dialog import AgentPolishPlanDialog
+        dialog = AgentPolishPlanDialog(self, request, plan)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            from core.agent.chapter_polish import AgentChapterPolishService
+            AgentChapterPolishService(
+                self._novel_manager, self._api_client("agent_chapter_polish_plan"),
+                skills_enabled=self._skills_enabled,
+            ).mark_cancelled(request, plan)
+            self._details.setPlainText("Agent 润色方案已取消，未修改章节树。")
+            return
+        self._start_variant_generation(
+            dict(node), "polish", request.requirement,
+            agent_request=request, agent_plan=plan,
+        )
+
+    def _on_polish_plan_failed(self, error: str) -> None:
+        parent = self.parent()
+        if hasattr(parent, "_agent_chapter_planning"):
+            parent._agent_chapter_planning = False
+        self._polish_btn.setEnabled(True)
+        self._rewrite_btn.setEnabled(True)
+        self._details.setPlainText(f"Agent 润色规划失败：{error}")
+        QMessageBox.critical(self, "Agent 润色规划失败", error)
+
+    def _start_variant_generation(
+        self, node: dict, mode: str, requirement: str, *,
+        agent_request=None, agent_plan=None,
+    ) -> None:
         self._details.setPlainText("正在生成新版本，请稍候...")
+        self._polish_btn.setEnabled(False)
+        self._rewrite_btn.setEnabled(False)
         parent = self.parent()
         if hasattr(parent, "_stream_chapter_completion") and hasattr(parent, "_client"):
             chapter_num = int(node.get("chapter_num", 0) or 0)
             title = node.get("title") or f"第{chapter_num}章"
             parent._chapter_finalized = False
             parent._generate_btn.setEnabled(False)
+            if hasattr(parent, "_agent_generate_btn"):
+                parent._agent_generate_btn.setEnabled(False)
             parent._cont_generate_btn.setEnabled(False)
             parent._client.reset_cancel()
             parent._stop_btn.setVisible(True)
@@ -694,21 +800,40 @@ class ChapterTreeDialog(QDialog):
             parent._streaming = True
             parent._streaming_start_time = time.time()
             parent._assistant_text_buffer = []
-            parent._append_user_message(f"🌳 章节树生成新版本：第 {chapter_num} 章「{title}」")
-        threading.Thread(target=self._run_generation, args=(node, mode, requirement.strip()), daemon=True).start()
+            action = "Agent 润色" if agent_plan is not None else ("润色" if mode == "polish" else "重写")
+            parent._append_user_message(f"🌳 {action}第 {chapter_num} 章「{title}」")
+        threading.Thread(
+            target=self._run_generation,
+            args=(node, mode, requirement),
+            kwargs={"agent_request": agent_request, "agent_plan": agent_plan},
+            daemon=True,
+        ).start()
 
-    def _run_generation(self, node: dict, mode: str, requirement: str) -> None:
+    def _run_generation(
+        self, node: dict, mode: str, requirement: str, *,
+        agent_request=None, agent_plan=None,
+    ) -> None:
         host_stream_finished = False
         try:
             old_content = self._novel_manager.read_chapter_node(self._book_title, node["id"]) or ""
             chapter_num = int(node["chapter_num"])
             title = node.get("title") or f"第{chapter_num}章"
             messages = [{"role": "system", "content": Prompts.NOVEL_CHAPTER_WRITING}]
-            if mode == "polish":
+            polish_service = None
+            if agent_plan is not None and agent_request is not None:
+                from core.agent.chapter_polish import AgentChapterPolishService
+                polish_service = AgentChapterPolishService(
+                    self._novel_manager, self._api_client("agent_chapter_polish_review"),
+                    skills_enabled=self._skills_enabled,
+                )
+                user_prompt, old_content = polish_service.build_prompt(agent_request, agent_plan)
+                operation = "agent_chapter_polish"
+            elif mode == "polish":
                 user_prompt = (
-                    f"请基于以下章节全文进行润色，保留核心剧情，不要输出解释。\n\n"
+                    "请基于以下章节全文进行润色，保留核心剧情，不要输出解释。\n\n"
                     f"【润色要求】\n{requirement}\n\n【原章节】\n{old_content}"
                 )
+                operation = "chapter_tree_polish"
             else:
                 summary = self._novel_manager.load_smart_summary(
                     self._book_title,
@@ -721,24 +846,27 @@ class ChapterTreeDialog(QDialog):
                     f"请重写第 {chapter_num} 章「{title}」，不要输出解释。\n\n"
                     f"【前情提要】\n{summary}\n\n【重写要求】\n{requirement}\n\n"
                     f"【旧版本参考】\n{old_content[:4000]}"
-            )
+                )
+                operation = "chapter_tree_rewrite"
             messages.append({"role": "user", "content": user_prompt})
             parent = self.parent()
             if hasattr(parent, "_stream_chapter_completion"):
-                content, generation_stats, cancelled = parent._stream_chapter_completion(
-                    operation=f"chapter_tree_{mode}",
+                content, _generation_stats, cancelled = parent._stream_chapter_completion(
+                    operation=operation,
                     messages=messages,
                     prompt_text=user_prompt,
                     max_tokens=self._client.max_tokens,
                 )
                 if cancelled:
                     parent._stream_signals.token.emit("\n\n⏹️ 已取消\n")
+                    if polish_service is not None:
+                        polish_service.mark_cancelled(agent_request, agent_plan)
                     self._finish_host_stream()
                     host_stream_finished = True
                     self.generation_failed.emit("已取消生成。")
                     return
             else:
-                response = self._api_client(f"chapter_tree_{mode}").chat.completions.create(
+                response = self._api_client(operation).chat.completions.create(
                     model=self._client.model,
                     messages=messages,
                     temperature=self._client.temperature,
@@ -748,33 +876,40 @@ class ChapterTreeDialog(QDialog):
                     stream=False,
                 )
                 content = response.choices[0].message.content or ""
-                if hasattr(parent, "_log_token_usage"):
-                    parent._log_token_usage(
-                        operation=f"chapter_tree_{mode}",
-                        direction="send",
-                        content=user_prompt,
-                        usage=getattr(response, "usage", None),
+
+            fidelity_report = None
+            if polish_service is not None:
+                if hasattr(parent, "_stream_signals"):
+                    parent._stream_signals.token.emit("\n🔍 正在执行润色保真审查...\n")
+                validation = polish_service.validate_and_repair(
+                    agent_request, agent_plan, old_content, content
+                )
+                fidelity_report = validation.report
+                content = validation.content
+                if not validation.passed:
+                    self._finish_host_stream()
+                    host_stream_finished = True
+                    self.generation_failed.emit(
+                        "润色稿未通过保真审查，未写入章节树。"
+                        f"\n加密 Artifact：{validation.artifact_id}"
                     )
-                    parent._log_token_usage(
-                        operation=f"chapter_tree_{mode}",
-                        direction="receive",
-                        content=content,
-                        usage=getattr(response, "usage", None),
-                    )
+                    return
+
+            if getattr(self._client, "_cancel_requested", False):
+                if polish_service is not None:
+                    polish_service.mark_cancelled(agent_request, agent_plan)
+                self._finish_host_stream()
+                host_stream_finished = True
+                self.generation_failed.emit("已取消生成。")
+                return
+
             version = self._novel_manager.get_next_version(self._book_title, chapter_num)
             _, version = self._novel_manager.save_chapter_version(
-                self._book_title,
-                chapter_num,
-                title,
-                content,
-                version=version,
-                parent_id=node.get("parent_id"),
+                self._book_title, chapter_num, title, content,
+                version=version, parent_id=node.get("parent_id"),
             )
             summary = self._novel_manager.generate_summary(
-                self._api_client("chapter_tree_summary"),
-                content,
-                chapter_num,
-                title,
+                self._api_client("chapter_tree_summary"), content, chapter_num, title,
                 model=self._client.model,
                 global_user_prompt=self._client.global_user_prompt,
                 xp_mode=self._novel_manager.load_meta(self._book_title).xp_mode,
@@ -783,24 +918,21 @@ class ChapterTreeDialog(QDialog):
                 self._novel_manager.set_chapter_node_summary(self._book_title, chapter_num, version, summary)
             self._novel_manager.rebuild_plot_summary_from_tree(self._book_title)
             self._novel_manager.save_generation_record(
-                self._book_title,
-                chapter_num,
-                title,
-                version,
-                user_prompt,
-                self._client.model,
-                self._client.temperature,
-                self._client.top_p,
-                self._client.max_tokens,
-                self._client.frequency_penalty,
-                content[:500],
+                self._book_title, chapter_num, title, version, user_prompt,
+                self._client.model, self._client.temperature, self._client.top_p,
+                self._client.max_tokens, self._client.frequency_penalty, content[:500],
                 requirement=requirement,
+                generation_mode="agent" if agent_plan is not None else "classic",
+                agent_run_id=agent_plan.plan_id if agent_plan is not None else None,
+                operation="chapter_polish" if mode == "polish" else "chapter_rewrite",
+                polish_requirement=requirement if mode == "polish" else "",
+                polish_plan=agent_plan.to_dict() if agent_plan is not None else None,
+                fidelity_report=fidelity_report,
             )
             world_bible_warning = ""
             try:
                 self._novel_manager.extract_world_bible_for_node(
-                    self._api_client("chapter_tree_world_bible"),
-                    self._book_title,
+                    self._api_client("chapter_tree_world_bible"), self._book_title,
                     self._novel_manager._node_id(chapter_num, version),
                     model=self._client.model,
                     global_user_prompt=self._client.global_user_prompt,
@@ -808,19 +940,35 @@ class ChapterTreeDialog(QDialog):
                 )
             except Exception as exc:
                 world_bible_warning = f"\n世界书快照提取失败：{exc}"
+            snapshot_id = ""
+            try:
+                snapshot = self._novel_manager.snapshot_service(self._book_title).create(
+                    f"第{chapter_num}章 v{version} 润色完成" if mode == "polish" else f"第{chapter_num}章 v{version} 重写完成",
+                    source="chapter",
+                )
+                snapshot_id = snapshot.snapshot_id
+            except Exception as exc:
+                world_bible_warning += f"\n项目快照失败：{exc}"
+            if polish_service is not None:
+                polish_service.mark_completed(agent_request, agent_plan, version, snapshot_id)
             self._finish_host_stream()
             host_stream_finished = True
-            self.generation_done.emit(f"已生成新版本 v{version}。{world_bible_warning}")
+            self.generation_done.emit(
+                f"已生成新版本 v{version}，未自动切换活跃版本。{world_bible_warning}"
+            )
         except Exception as exc:
             if not host_stream_finished:
                 self._finish_host_stream()
             self.generation_failed.emit(str(exc))
-
     def _on_generation_done(self, message: str) -> None:
+        self._polish_btn.setEnabled(True)
+        self._rewrite_btn.setEnabled(True)
         QMessageBox.information(self, "完成", message)
         self._load_tree()
 
     def _on_generation_failed(self, message: str) -> None:
+        self._polish_btn.setEnabled(True)
+        self._rewrite_btn.setEnabled(True)
         if "已取消" in message:
             QMessageBox.information(self, "已取消", message)
         else:

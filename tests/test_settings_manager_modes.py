@@ -73,10 +73,19 @@ class GenerationRecordModeTests(unittest.TestCase):
     def test_agent_record_keeps_run_id(self):
         with tempfile.TemporaryDirectory() as root:
             record = self._save_record(
-                root, generation_mode="agent", agent_run_id="run-123"
+                root,
+                generation_mode="agent",
+                agent_run_id="run-123",
+                operation="chapter_polish",
+                polish_requirement="改善节奏",
+                polish_plan={"constraints": ["不改变剧情"]},
+                fidelity_report={"passed": True},
             )
         self.assertEqual("agent", record["generation_mode"])
         self.assertEqual("run-123", record["agent_run_id"])
+        self.assertEqual("chapter_polish", record["operation"])
+        self.assertEqual("改善节奏", record["polish_requirement"])
+        self.assertTrue(record["fidelity_report"]["passed"])
 
 if __name__ == "__main__":
     unittest.main()

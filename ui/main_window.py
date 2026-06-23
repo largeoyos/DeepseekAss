@@ -3428,6 +3428,9 @@ class DeepSeekChatGUI(QMainWindow):
             "continuation": "生成续写章节",
             "chapter_regenerate": "重写章节",
             "chapter_tree_polish": "润色章节",
+            "agent_chapter_polish": "Agent 润色章节",
+            "agent_chapter_polish_plan": "规划 Agent 润色",
+            "agent_chapter_polish_review": "审查 Agent 润色",
             "chapter_tree_rewrite": "重写章节",
             "novel_summary": "提取章节概要",
             "continuation_summary": "提取章节概要",
@@ -5082,6 +5085,7 @@ class DeepSeekChatGUI(QMainWindow):
                 service = AgentChapterGenerationService(
                     self._novel_manager,
                     self._usage_logged_client("agent_chapter_plan"),
+                    skills_enabled=bool(self._settings.get("agent_skills_enabled", True)),
                 )
                 plan = service.prepare(request)
                 self._stream_signals.agent_chapter_plan_ready.emit(request, plan, generation_target)
@@ -5504,7 +5508,8 @@ class DeepSeekChatGUI(QMainWindow):
             if agent_plan is not None and agent_request is not None:
                 from core.agent.chapter_generation import AgentChapterGenerationService
                 agent_result = AgentChapterGenerationService(
-                    self._novel_manager, self._usage_logged_client("agent_chapter_prompt")
+                    self._novel_manager, self._usage_logged_client("agent_chapter_prompt"),
+                    skills_enabled=bool(self._settings.get("agent_skills_enabled", True)),
                 ).generate(agent_request, agent_plan)
                 user_prompt = agent_result.prompt
                 operation_prefix = "agent_novel_chapter"
@@ -8284,7 +8289,11 @@ class DeepSeekChatGUI(QMainWindow):
                     self._close_btn.setEnabled(False)
                     threading.Thread(target=self._do_rebuild_summary, daemon=True).start()
 
-        dialog = ChapterTreeDialog(self, self._novel_manager, title, self._client)
+        dialog = ChapterTreeDialog(
+            self, self._novel_manager, title, self._client,
+            novel_generation_mode=self._novel_generation_mode,
+            skills_enabled=bool(self._settings.get("agent_skills_enabled", True)),
+        )
         dialog.exec()
         self._refresh_chapter_info_display(title)
 

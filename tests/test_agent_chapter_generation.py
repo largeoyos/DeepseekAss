@@ -56,6 +56,8 @@ class AgentChapterGenerationTests(unittest.TestCase):
             self.assertEqual("hero", plan.selected_world_entities[0]["id"])
             self.assertIn("阿离", plan.context_report["content"])
             self.assertEqual(1, plan.selected_history[0]["chapter_num"])
+            self.assertTrue(plan.selected_skills)
+            self.assertIn("chapter-planning", {item["id"] for item in plan.selected_skills})
             workspace = manager.get_workspace("book")
             ledger = workspace.storage.read_json(f"{workspace.agent_root}/chapter_runs/{plan.plan_id}.json")
             self.assertEqual("prepared", ledger["status"])
@@ -83,7 +85,20 @@ class AgentChapterGenerationTests(unittest.TestCase):
             self.assertIn("主角设定", result.prompt)
             self.assertIn("世界观", result.prompt)
             self.assertIn("作者规划", result.prompt)
+            self.assertIn("本次启用 Skills", result.prompt)
 
+    def test_skills_can_be_disabled_for_deterministic_flow(self):
+        with tempfile.TemporaryDirectory() as root:
+            manager = NovelManager(bookshelf_root=root)
+            manager.create_book("book")
+            service = AgentChapterGenerationService(
+                manager, FakeClient([valid_plan()]), skills_enabled=False
+            )
+            request = AgentChapterRequest("book", 1, "开始", "剧情", "要求", 1000, "fake")
+            plan = service.prepare(request)
+            result = service.generate(request, plan)
+            self.assertEqual([], plan.selected_skills)
+            self.assertNotIn("本次启用 Skills", result.prompt)
     def test_maintenance_archives_resolved_but_protects_resident(self):
         with tempfile.TemporaryDirectory() as root:
             manager = NovelManager(bookshelf_root=root)
