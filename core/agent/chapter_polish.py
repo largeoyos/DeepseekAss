@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass, field
 
 from core.agent.repository import AgentRepository
 from core.agent.types import now_iso
+from core.agent.skills import HUMANIZER_ZH_STYLE_BRIEF
 
 
 class AgentPolishError(RuntimeError):
@@ -179,6 +180,7 @@ class AgentChapterPolishService:
             f"【润色要求】\n{request.requirement}", f"【已确认润色方案】\n{plan.render()}",
             f"【连续性保护上下文】\n{plan.context_report.get('content', '')}",
             f"【本次启用 Skills】\n{plan.context_report.get('skills_text', '')}" if plan.context_report.get("skills_text") else "",
+            f"【去 AI 腔风格约束】\n{HUMANIZER_ZH_STYLE_BRIEF}",
             "【硬性边界】\n不得新增、删除或调换剧情事件；不得改变人物行为、动机、关系、时间线、地点、能力、关键事实和对白意图；不得把作者规划写成已发生事实。",
             f"【原章节全文】\n{original}",
         ])
@@ -220,9 +222,9 @@ class AgentChapterPolishService:
         )
     def _audit(self, request, plan, original, candidate) -> dict:
         payload = {"requirement": request.requirement, "preserved_facts": plan.preserved_facts, "preserved_dialogue_intents": plan.preserved_dialogue_intents, "skills": plan.context_report.get("skills_text", ""), "original": original, "polished": candidate}
-        prompt = "你是小说润色保真审稿器。比较原文和润色稿，只返回严格 JSON：passed:boolean, plot_drift:[string], fact_drift:[string], character_drift:[string], dialogue_intent_drift:[string], new_facts:[string], requirement_issues:[string], format_issues:[string], repair_instruction:string。任何剧情事件、事实、人物行为/动机、时间线、关系或对白意图改变都必须令 passed=false。\n\n" + json.dumps(payload, ensure_ascii=False)
+        prompt = "你是小说润色保真审稿器。比较原文和润色稿，只返回严格 JSON：passed:boolean, plot_drift:[string], fact_drift:[string], character_drift:[string], dialogue_intent_drift:[string], new_facts:[string], requirement_issues:[string], format_issues:[string], style_issues:[string], repair_instruction:string。任何剧情事件、事实、人物行为/动机、时间线、关系或对白意图改变都必须令 passed=false；若出现明显 AI 腔、否定式排比或描写重复，写入 style_issues。\n\n" + json.dumps(payload, ensure_ascii=False)
         data = self._call_json(prompt, request.model, max_tokens=8192)
-        fields = ("plot_drift", "fact_drift", "character_drift", "dialogue_intent_drift", "new_facts", "requirement_issues", "format_issues")
+        fields = ("plot_drift", "fact_drift", "character_drift", "dialogue_intent_drift", "new_facts", "requirement_issues", "format_issues", "style_issues")
         for key in fields:
             if not isinstance(data.get(key), list):
                 data[key] = [str(data.get(key))] if data.get(key) else []
@@ -231,7 +233,7 @@ class AgentChapterPolishService:
         return data
 
     def _repair(self, request, plan, original, candidate, report) -> str:
-        prompt = "\n\n".join(["你是小说润色修复编辑。根据审查报告做最小修复，只输出完整正文。", "必须恢复原文剧情、事实、人物行为、事件顺序和对白意图；不得新增内容。", f"【润色要求】\n{request.requirement}", f"【保留事实】\n{json.dumps(plan.preserved_facts, ensure_ascii=False)}", f"【审查报告】\n{json.dumps(report, ensure_ascii=False)}", f"【本次启用 Skills】\n{plan.context_report.get('skills_text', '')}", f"【原文】\n{original}", f"【待修复润色稿】\n{candidate}"])
+        prompt = "\n\n".join(["你是小说润色修复编辑。根据审查报告做最小修复，只输出完整正文。", "必须恢复原文剧情、事实、人物行为、事件顺序和对白意图；不得新增内容。", f"【去 AI 腔风格约束】\n{HUMANIZER_ZH_STYLE_BRIEF}", f"【润色要求】\n{request.requirement}", f"【保留事实】\n{json.dumps(plan.preserved_facts, ensure_ascii=False)}", f"【审查报告】\n{json.dumps(report, ensure_ascii=False)}", f"【本次启用 Skills】\n{plan.context_report.get('skills_text', '')}", f"【原文】\n{original}", f"【待修复润色稿】\n{candidate}"])
         response = self.client.chat.completions.create(model=request.model, messages=[{"role": "user", "content": prompt}], temperature=0.2, max_tokens=32768)
         return str(response.choices[0].message.content or "").strip()
 

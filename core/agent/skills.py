@@ -7,6 +7,16 @@ MAX_SKILL_CHARS = 12000
 SKILL_NAME_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 FORBIDDEN_PATTERNS = [r"\bshell\b", r"\bsubprocess\b", r"忽略.*系统", r"绕过.*权限", r"读取.*api.?key", r"直接.*文件系统"]
 
+HUMANIZER_ZH_STYLE_BRIEF = """
+【humanizer-zh 风格硬约束】
+- 正文避免 AI 腔、宣传腔、总结腔和金句式段尾；不要把普通事件拔高成象征、证明、时代意义。
+- 尽量不用“不是……而是……”“不仅……而且……”等否定式排比；如必须表达对比，改成直接陈述动作、事实或感受。
+- 少用“此外、关键、至关重要、复杂性、彰显、体现、标志着、充满活力、深刻、命运、宿命”等抽象套话。
+- 描写要多样化：动作、感官、环境、对话、停顿、身体反应、物件细节交替使用，避免反复写眼神、沉默、空气、心头一震。
+- 句长和段落节奏要有变化；允许短句，但不要连续堆三段式排比。
+- 用具体场景承载情绪，不用旁白解释主题；信任读者能读懂。
+""".strip()
+
 
 def _skill(name: str, description: str, tasks: str, content: str, *, agents: str = "writing_orchestrator", keywords: str = "", priority: int = 50, version: str = "1") -> str:
     return f"""---
@@ -85,7 +95,16 @@ BUILTIN_SKILL_TEXTS = {
 - resident、人工修改和 manual override 条目禁止自动归档。
 - 有效历史数据只隐藏归档，不物理删除。
 """, agents="continuity_editor,project_maintainer,writing_orchestrator,world_bible_manager", keywords="世界书,归档,剧情线,角色状态", priority=90),
-    "long-context": _skill("long-context", "长篇上下文筛选与压缩时保护关键事实。", "chapter_generation,extra_generation,continuation_segmentation,continuation_analysis,continuation_direction,chapter_polish,context_compaction,chapter_supervision,writing_advice", """
+    "humanizer-zh": _skill("humanizer-zh", "去除 AI 写作痕迹，使中文小说表达更自然、具体、有人的节奏。", "chapter_generation,extra_generation,chapter_polish,polish_fidelity,chapter_supervision,continuation_segmentation,continuation_analysis,continuation_direction,writing_advice", """
+# humanizer-zh
+1. 去掉 AI 腔：少用抽象拔高、宣传腔、总结腔、金句式段尾。
+2. 尽量不用“不是……而是……”“不仅……而且……”这类否定式排比；需要对比时直接写事实、动作或感受。
+3. 减少套话：此外、关键、至关重要、复杂性、彰显、体现、标志着、充满活力、深刻、不可磨灭等。
+4. 描写多样化：动作、感官、环境、物件、对话、停顿、身体反应交替使用，不要反复写眼神、沉默、空气、心头一震。
+5. 句子长短混合，段落结尾不要总是升华主题。
+6. 用具体场景承载情绪和主题，不用旁白替读者解释。
+7. 保留原意、事实和人物行为；去 AI 腔不能改剧情。
+""", agents="writing_orchestrator,chapter_supervisor,writing_advisor", keywords="去AI腔,人味,自然,润色,文风,描写,不是而是,不仅而且", priority=98),    "long-context": _skill("long-context", "长篇上下文筛选与压缩时保护关键事实。", "chapter_generation,extra_generation,continuation_segmentation,continuation_analysis,continuation_direction,chapter_polish,context_compaction,chapter_supervision,writing_advice", """
 # 长篇上下文
 优先保留系统约束、当前任务、上一章承接、近期摘要、当前角色状态、未完成剧情线、待回收伏笔和用户明确引用。压缩旧内容时保留已确认事实、用户决策、已执行操作、未完成事项和禁止遗失约束。
 """, agents="writing_orchestrator,project_maintainer,chapter_supervisor,writing_advisor", keywords="长篇,上下文,压缩,历史剧情", priority=60),

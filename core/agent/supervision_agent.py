@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass, field
 
 from core.agent.domain_tools import build_domain_tool_registry
 from core.agent.repository import AgentRepository
-from core.agent.skills import SkillSelection, SkillService
+from core.agent.skills import HUMANIZER_ZH_STYLE_BRIEF, SkillSelection, SkillService
 from core.agent.tools import ToolContext
 from core.agent.types import ToolCallRequest, now_iso
 
@@ -83,6 +83,7 @@ class AgentSupervisionService:
             request.continuity_context,
             "【监督 Agent 只读工具证据】\n" + "\n\n".join(evidence) if evidence else "",
             "【监督 Agent Skills】\n" + skills.text if skills.text else "",
+            "【humanizer-zh 风格检查】\n" + HUMANIZER_ZH_STYLE_BRIEF,
         ]))
 
         from utils.supervision import supervise_chapter

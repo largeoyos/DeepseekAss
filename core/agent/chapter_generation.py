@@ -6,6 +6,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 
 from core.agent.types import now_iso
+from core.agent.skills import HUMANIZER_ZH_STYLE_BRIEF
 
 
 @dataclass
@@ -152,6 +153,7 @@ class AgentChapterGenerationService:
             f"【Agent 已确认章节计划】\n{approved_plan.render()}",
             f"【Agent 精选上下文】\n{approved_plan.context_report.get('content', '')}",
             f"【本次启用 Skills】\n{approved_plan.context_report.get('skills_text', '')}" if approved_plan.context_report.get("skills_text") else "",
+            f"【风格硬约束】\n{HUMANIZER_ZH_STYLE_BRIEF}",
             f"【主角设定】\n{meta.protagonist_bio}" if meta.protagonist_bio else "",
             f"【世界观】\n{meta.background_story}" if meta.background_story else "",
             f"【作者规划】\n{meta.author_plan}" if meta.author_plan else "",

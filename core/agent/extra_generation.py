@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 import re
@@ -6,6 +6,7 @@ import uuid
 from dataclasses import asdict, dataclass, field
 
 from core.agent.types import now_iso
+from core.agent.skills import HUMANIZER_ZH_STYLE_BRIEF
 
 
 @dataclass
@@ -164,6 +165,7 @@ class AgentExtraGenerationService:
         prompt = "\n\n".join(filter(None, [
             f"【已确认的{labels.get(request.extra_type, '番外')}计划】\n{plan.render()}",
             f"【实际注入上下文】\n{plan.context_report.get('content', '')}",
+            f"【风格硬约束】\n{HUMANIZER_ZH_STYLE_BRIEF}",
             f"【用户剧情】\n{request.plot}",
             f"【写作要求】\n{request.requirement}",
             f"请创作「{request.title}」，不少于 {request.target_words} 字。只输出小说正文，不输出解释、标题或计划。",
