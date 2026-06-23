@@ -1199,6 +1199,8 @@ class DeepSeekChatGUI(QMainWindow):
             )
             if not has_messages:
                 self._display.setHtml(INITIAL_HTML)
+        if hasattr(self, "_agent_nav_button"):
+            self._agent_nav_button.setVisible(bool(self._settings.get("controlled_agent_enabled", False)))
         self._update_status()
 
     def _save_runtime_settings(self) -> None:
@@ -1321,6 +1323,14 @@ class DeepSeekChatGUI(QMainWindow):
             self._mode_nav_group.addButton(btn)
             self._mode_nav_buttons[mode_name] = btn
             layout.addWidget(btn)
+
+        self._agent_nav_button = QPushButton("Agent")
+        self._agent_nav_button.setObjectName("navButton")
+        self._agent_nav_button.setToolTip("受控 Agent 工作台")
+        self._agent_nav_button.setFixedSize(58, 54)
+        self._agent_nav_button.clicked.connect(self._open_agent_workbench)
+        self._agent_nav_button.setVisible(bool(self._settings.get("controlled_agent_enabled", False)))
+        layout.addWidget(self._agent_nav_button)
 
         layout.addStretch()
 
@@ -3594,6 +3604,19 @@ class DeepSeekChatGUI(QMainWindow):
             api_key_callback=self._on_change_api_key,
             settings_changed_callback=self._apply_settings_to_controls,
             password_changed_callback=self._on_password_changed,
+        )
+        dialog.exec()
+
+    def _open_agent_workbench(self) -> None:
+        if not self._settings.get("controlled_agent_enabled", False):
+            QMessageBox.information(self, "Agent 未启用", "请先在设置中心的 Agent 页启用工作台。")
+            return
+        from ui.agent_workbench import AgentWorkbenchDialog
+        dialog = AgentWorkbenchDialog(
+            self,
+            novel_manager=self._novel_manager,
+            client=self._client,
+            conversation_manager=self._conversation_manager,
         )
         dialog.exec()
 

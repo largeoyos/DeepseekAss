@@ -19,10 +19,13 @@ class WorkspaceManifest:
     book_id: str = ""
     created_at: str = ""
     migrations: list[dict] = field(default_factory=list)
-    features: dict[str, bool] = field(default_factory=lambda: {
+    features: dict[str, object] = field(default_factory=lambda: {
         "progressive_context": True,
         "encrypted_snapshots": True,
         "controlled_agent": False,
+        "agent_runtime": False,
+        "agent_schema_version": 1,
+        "agent_skills": False,
     })
 
 
@@ -46,6 +49,10 @@ class BookWorkspace:
     @property
     def drafts_dir(self) -> str:
         return f"{INTERNAL_DIR}/drafts"
+
+    @property
+    def agent_root(self) -> str:
+        return f"{INTERNAL_DIR}/agent"
 
     def chapter_path(self, chapter_num: int, title: str, version: int) -> str:
         safe = str(title).replace("/", "-").replace("\\", "-").replace(":", "：")
