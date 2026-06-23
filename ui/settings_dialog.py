@@ -10,7 +10,6 @@ from PyQt6.QtWidgets import (
     QFormLayout,
     QGroupBox,
     QHBoxLayout,
-    QInputDialog,
     QLabel,
     QLineEdit,
     QListWidget,
@@ -38,7 +37,9 @@ class SettingsDialog(QDialog):
         username: str,
         user_dir: str,
         encrypted: bool,
-        api_key_callback,
+        api_config: dict,
+        api_config_callback,
+        api_test_callback,
         settings_changed_callback,
         password_changed_callback,
     ):
@@ -49,19 +50,21 @@ class SettingsDialog(QDialog):
         self._username = username
         self._user_dir = user_dir
         self._encrypted = encrypted
-        self._api_key_callback = api_key_callback
+        self._api_config = deepcopy(api_config)
+        self._api_config_callback = api_config_callback
+        self._api_test_callback = api_test_callback
         self._settings_changed_callback = settings_changed_callback
         self._password_changed_callback = password_changed_callback
 
         self.setWindowTitle("设置中心")
-        self.resize(680, 520)
+        self.resize(760, 620)
         self._init_ui()
 
     def _init_ui(self) -> None:
         layout = QVBoxLayout(self)
         tabs = QTabWidget()
-        tabs.addTab(self._build_models_tab(), "模型与参数")
-        tabs.addTab(self._build_api_tab(), "API Key")
+        tabs.addTab(self._build_api_tab(), "API 与模型")
+        tabs.addTab(self._build_models_tab(), "生成参数")
         tabs.addTab(self._build_account_tab(), "账号安全")
         tabs.addTab(self._build_data_tab(), "数据管理")
         tabs.addTab(self._build_appearance_tab(), "外观")
@@ -78,20 +81,6 @@ class SettingsDialog(QDialog):
     def _build_models_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-
-        model_group = QGroupBox("模型列表")
-        model_layout = QVBoxLayout(model_group)
-        self._model_list = QListWidget()
-        model_layout.addWidget(self._model_list)
-        row = QHBoxLayout()
-        add_btn = QPushButton("添加模型")
-        add_btn.clicked.connect(self._add_model)
-        remove_btn = QPushButton("移除选中")
-        remove_btn.clicked.connect(self._remove_model)
-        row.addWidget(add_btn)
-        row.addWidget(remove_btn)
-        model_layout.addLayout(row)
-        layout.addWidget(model_group)
 
         preset_group = QGroupBox("参数预设")
         preset_layout = QVBoxLayout(preset_group)
@@ -136,14 +125,120 @@ class SettingsDialog(QDialog):
     def _build_api_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        label = QLabel("API Key 会保存在当前用户的加密配置中。")
-        label.setWordWrap(True)
-        layout.addWidget(label)
-        btn = QPushButton("修改 API Key")
-        btn.clicked.connect(self._api_key_callback)
-        layout.addWidget(btn)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(14)
+
+        title = QLabel("模型服务")
+        title.setObjectName("apiTitle")
+        subtitle = QLabel("分别配置文字生成与图片生成服务。配置保存在当前用户的加密文件中。")
+        subtitle.setObjectName("apiSubtitle")
+        subtitle.setWordWrap(True)
+        layout.addWidget(title)
+        layout.addWidget(subtitle)
+
+        self._api_fields: dict[str, dict[str, QLineEdit]] = {}
+        layout.addWidget(self._build_api_section(
+            "text", "文字 API", "用于对话、续写、分析、世界书与 Agent。", required=True
+        ))
+        layout.addWidget(self._build_api_section(
+            "image", "图片 API", "用于封面、插图等图片生成；暂不使用时可以留空。", required=False
+        ))
+
+        actions = QHBoxLayout()
+        actions.addStretch()
+        save_btn = QPushButton("保存全部配置")
+        save_btn.setObjectName("primaryButton")
+        save_btn.clicked.connect(self._save_api_config)
+        actions.addWidget(save_btn)
+        layout.addLayout(actions)
         layout.addStretch()
+
+        page.setStyleSheet("""
+            QLabel#apiTitle { font-size: 22px; font-weight: 700; }
+            QLabel#apiSubtitle { color: #8b98a9; margin-bottom: 4px; }
+            QGroupBox#apiCard {
+                border: 1px solid #394758; border-radius: 10px;
+                margin-top: 12px; padding: 14px;
+                font-size: 15px; font-weight: 700;
+            }
+            QGroupBox#apiCard::title { subcontrol-origin: margin; left: 14px; padding: 0 6px; }
+            QPushButton#primaryButton { background: #2774c8; color: white; padding: 8px 18px; font-weight: 700; }
+        """)
         return page
+
+    def _build_api_section(self, kind: str, title: str, description: str, *, required: bool) -> QGroupBox:
+        config = self._api_config.get(kind, {}) or {}
+        group = QGroupBox(title)
+        group.setObjectName("apiCard")
+        layout = QVBoxLayout(group)
+
+        note = QLabel(description)
+        note.setWordWrap(True)
+        note.setStyleSheet("color: #8b98a9; font-weight: 400;")
+        layout.addWidget(note)
+
+        base_url = QLineEdit(str(config.get("base_url", "")))
+        base_url.setPlaceholderText("https://api.example.com/v1")
+        api_key = QLineEdit(str(config.get("api_key", "")))
+        api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        api_key.setPlaceholderText("sk-...")
+        model = QLineEdit(str(config.get("model", "")))
+        model.setPlaceholderText("例如 deepseek-chat / gpt-image-1")
+
+        form = QFormLayout()
+        form.addRow("调用地址" + (" *" if required else ""), base_url)
+        form.addRow("API Key" + (" *" if required else ""), api_key)
+        form.addRow("模型名称" + (" *" if required else ""), model)
+        layout.addLayout(form)
+
+        row = QHBoxLayout()
+        reveal = QCheckBox("显示 API Key")
+        reveal.toggled.connect(
+            lambda checked, field=api_key: field.setEchoMode(
+                QLineEdit.EchoMode.Normal if checked else QLineEdit.EchoMode.Password
+            )
+        )
+        test_btn = QPushButton("测试连接")
+        test_btn.clicked.connect(lambda _=False, api_kind=kind: self._test_api(api_kind))
+        row.addWidget(reveal)
+        row.addStretch()
+        row.addWidget(test_btn)
+        layout.addLayout(row)
+
+        self._api_fields[kind] = {"base_url": base_url, "api_key": api_key, "model": model}
+        return group
+
+    def _api_values(self, kind: str) -> dict:
+        fields = self._api_fields[kind]
+        return {name: field.text().strip() for name, field in fields.items()}
+
+    def _save_api_config(self) -> None:
+        text_config = self._api_values("text")
+        image_config = self._api_values("image")
+        if not all(text_config.values()):
+            QMessageBox.warning(self, "配置不完整", "文字 API 的调用地址、API Key 和模型名称均不能为空。")
+            return
+        if any(image_config.values()) and not all(image_config.values()):
+            QMessageBox.warning(self, "配置不完整", "图片 API 如需启用，调用地址、API Key 和模型名称必须全部填写。")
+            return
+        try:
+            self._api_config_callback({"text": text_config, "image": image_config})
+        except Exception as exc:
+            QMessageBox.critical(self, "保存失败", str(exc))
+            return
+        self._api_config = {"text": text_config, "image": image_config}
+        QMessageBox.information(self, "已保存", "文字 API 与图片 API 配置已加密保存并生效。")
+
+    def _test_api(self, kind: str) -> None:
+        config = self._api_values(kind)
+        if not all(config.values()):
+            QMessageBox.warning(self, "配置不完整", "请先填写调用地址、API Key 和模型名称。")
+            return
+        ok, message = self._api_test_callback(kind, config)
+        if ok:
+            QMessageBox.information(self, "连接成功", message)
+        else:
+            QMessageBox.critical(self, "连接失败", message)
 
     def _build_account_tab(self) -> QWidget:
         page = QWidget()
@@ -199,10 +294,10 @@ class SettingsDialog(QDialog):
     def _build_agent_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        notice = QLabel("Agent 为实验功能。它只能调用受控领域工具；正式章节和世界书写入必须审批。")
+        notice = QLabel("Agent 为实验功能，集成在小说写作面板中。它会先规划和筛选上下文，经确认后调用原章节生成流水线。")
         notice.setWordWrap(True)
         layout.addWidget(notice)
-        self._agent_enabled = QCheckBox("启用 Agent 工作台")
+        self._agent_enabled = QCheckBox("启用小说写作 Agent")
         self._agent_enabled.setChecked(bool(self._settings.get("controlled_agent_enabled", False)))
         self._agent_enabled.stateChanged.connect(self._save_agent_settings)
         layout.addWidget(self._agent_enabled)
@@ -227,43 +322,10 @@ class SettingsDialog(QDialog):
 
     def _refresh_model_and_preset_lists(self) -> None:
         self._settings = self._settings_manager.load()
-        self._model_list.clear()
-        models = []
-        for key in ("favorite_models", "custom_models"):
-            for model in self._settings.get(key, []) or []:
-                if model and model not in models:
-                    models.append(model)
-        self._model_list.addItems(models)
-
         self._preset_list.clear()
         self._preset_list.addItems(list((self._settings.get("presets") or {}).keys()))
         if self._preset_list.count():
             self._preset_list.setCurrentRow(0)
-
-    def _add_model(self) -> None:
-        model, ok = QInputDialog.getText(self, "添加模型", "模型名称：")
-        if not ok or not model.strip():
-            return
-        settings = self._settings_manager.load()
-        custom = settings.setdefault("custom_models", [])
-        if model.strip() not in custom and model.strip() not in settings.get("favorite_models", []):
-            custom.append(model.strip())
-        settings["last_model"] = model.strip()
-        self._settings_manager.save(settings)
-        self._settings_changed_callback()
-        self._refresh_model_and_preset_lists()
-
-    def _remove_model(self) -> None:
-        item = self._model_list.currentItem()
-        if not item:
-            return
-        model = item.text()
-        settings = self._settings_manager.load()
-        for key in ("favorite_models", "custom_models"):
-            settings[key] = [m for m in settings.get(key, []) if m != model]
-        self._settings_manager.save(settings)
-        self._settings_changed_callback()
-        self._refresh_model_and_preset_lists()
 
     def _load_selected_preset(self, name: str) -> None:
         preset = (self._settings.get("presets") or {}).get(name)

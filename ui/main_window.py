@@ -164,6 +164,9 @@ class StreamSignals(QObject):
     refresh_chapter_info = pyqtSignal(str)          # 安全刷新章节信息，参数：书名
     character_book_sync_status = pyqtSignal(str)   # 后台人物书同步状态
     character_book_sync_status = pyqtSignal(str)   # 后台人物书同步状态
+    agent_chapter_plan_ready = pyqtSignal(object, object, object)
+    agent_chapter_plan_error = pyqtSignal(str)
+    agent_maintenance_changed = pyqtSignal(str)
 
 
 # ========== 模式配置 ==========
@@ -650,6 +653,9 @@ class DeepSeekChatGUI(QMainWindow):
         self._stream_signals.character_book_sync_status.connect(
             self._on_character_book_sync_status
         )
+        self._stream_signals.agent_chapter_plan_ready.connect(self._on_agent_chapter_plan_ready)
+        self._stream_signals.agent_chapter_plan_error.connect(self._on_agent_chapter_plan_error)
+        self._stream_signals.agent_maintenance_changed.connect(self._refresh_agent_maintenance_status)
         self._stream_signals.character_book_sync_status.connect(
             self._on_character_book_sync_status
         )
@@ -681,6 +687,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._settings_applying = False
         # 模式切换守卫：记录上次有效模式，用于 streaming 时回退
         self._last_mode: str = ""
+        self._agent_chapter_planning = False
 
         # Step 1: 登录
         self._login_and_init()
@@ -773,18 +780,28 @@ class DeepSeekChatGUI(QMainWindow):
         self._last_structured_assistant_messages: list[ChatMessage] = []
         self._character_book_sync_lock = threading.Lock()
 
-        # Step 2: 获取 API Key（加密存储或弹窗输入）
-        api_key, base_url = self._load_encrypted_config()
-        if not api_key:
+        # Step 2: 加载文字 / 图片 API 配置（兼容旧版 api_key + base_url 格式）
+        self._api_config = self._load_encrypted_config()
+        text_api = self._api_config["text"]
+        if not text_api.get("api_key"):
             api_key = self._get_api_key_with_retry()
             if not api_key:
                 sys.exit(0)
-            # 首次输入 → 加密保存
-            self._save_encrypted_config(api_key, Config.BASE_URL)
+            text_api.update({
+                "api_key": api_key,
+                "base_url": text_api.get("base_url") or Config.BASE_URL,
+                "model": text_api.get("model") or self._settings.get("last_model") or Config.MODEL_V4_FLASH,
+            })
+            self._save_encrypted_config(self._api_config)
 
-        if base_url:
-            Config.BASE_URL = base_url
-        Config.API_KEY = api_key
+        Config.API_KEY = text_api.get("api_key", "")
+        Config.BASE_URL = text_api.get("base_url") or Config.BASE_URL
+        self._settings["last_model"] = text_api.get("model") or Config.MODEL_V4_FLASH
+        self._model_options = self._build_model_options()
+        image_api = self._api_config["image"]
+        Config.IMAGE_API_KEY = image_api.get("api_key", "")
+        Config.IMAGE_BASE_URL = image_api.get("base_url", "")
+        Config.IMAGE_MODEL = image_api.get("model", "")
 
         # Step 3: 初始化客户端
         self._init_client()
@@ -807,22 +824,37 @@ class DeepSeekChatGUI(QMainWindow):
         """用户加密配置路径"""
         return os.path.join(self._auth.get_user_dir(self._username), "config.enc")
 
-    def _load_encrypted_config(self) -> tuple[str, str]:
-        """从加密存储加载 API Key 和 Base URL"""
+    def _load_encrypted_config(self) -> dict:
+        """加载结构化 API 配置，并自动兼容旧版凭据格式。"""
+        defaults = {
+            "text": {
+                "api_key": Config.API_KEY,
+                "base_url": Config.BASE_URL,
+                "model": self._settings.get("last_model") or Config.MODEL_V4_FLASH,
+            },
+            "image": {
+                "api_key": Config.IMAGE_API_KEY,
+                "base_url": Config.IMAGE_BASE_URL,
+                "model": Config.IMAGE_MODEL,
+            },
+        }
         if not self._enc_key:
-            return Config.API_KEY, Config.BASE_URL
+            return defaults
         data = self._auth.decrypt_json(self._enc_key, self._encrypted_config_path())
-        if data:
-            return data.get("api_key", ""), data.get("base_url", Config.BASE_URL)
-        return "", Config.BASE_URL
+        if not data:
+            return defaults
+        if "text" not in data:
+            defaults["text"]["api_key"] = data.get("api_key", "")
+            defaults["text"]["base_url"] = data.get("base_url", Config.BASE_URL)
+            return defaults
+        for kind in ("text", "image"):
+            defaults[kind].update(data.get(kind, {}) or {})
+        return defaults
 
-    def _save_encrypted_config(self, api_key: str, base_url: str) -> None:
-        """加密保存 API Key 和 Base URL"""
+    def _save_encrypted_config(self, api_config: dict) -> None:
+        """加密保存文字与图片 API 的完整配置。"""
         if self._enc_key:
-            self._auth.encrypt_json(self._enc_key, self._encrypted_config_path(), {
-                "api_key": api_key,
-                "base_url": base_url,
-            })
+            self._auth.encrypt_json(self._enc_key, self._encrypted_config_path(), api_config)
 
     def _user_prefs_path(self) -> str:
         """用户加密偏好文件路径"""
@@ -1094,59 +1126,20 @@ class DeepSeekChatGUI(QMainWindow):
         except Exception:
             return False
 
-    def _on_change_api_key(self) -> None:
-        """弹出对话框修改 API Key，验证后加密保存并更新客户端"""
-        key, ok = QInputDialog.getText(
-            self,
-            "修改 API Key",
-            "请输入新的 DeepSeek API Key：\n"
-            "（可在 https://platform.deepseek.com 获取）\n\n"
-            f"当前 Key: {Config.API_KEY[:12]}...{Config.API_KEY[-4:] if len(Config.API_KEY) > 16 else ''}",
-            text=Config.API_KEY,
-        )
-        if not ok or not key.strip():
-            return
-
-        key = key.strip()
-        if key == Config.API_KEY:
-            QMessageBox.information(self, "提示", "API Key 未变更。")
-            return
-
-        # 验证新 Key
-        if not self._verify_api_key(key):
-            QMessageBox.critical(
-                self, "验证失败",
-                "新的 API Key 验证失败，请检查后重试。\n"
-                "常见问题：\n"
-                "  - Key 已过期或未生效\n"
-                "  - 网络连接异常\n"
-                "  - Base URL 配置错误"
-            )
-            return
-
-        # 加密保存
-        old_key = Config.API_KEY
-        Config.API_KEY = key
-        self._save_encrypted_config(key, Config.BASE_URL)
-
-        # 更新客户端
-        self._client.raw_client.api_key = key
-
-        QMessageBox.information(
-            self, "修改成功",
-            "API Key 已更新并加密保存，下次启动自动加载。"
-        )
-
     # ========== 初始化 ==========
 
     def _init_client(self) -> None:
         """创建初始聊天客户端（默认角色扮演模式）"""
         strategy = RolePlayStrategy()
-        self._client = DeepSeekChatClient(strategy=strategy, model=strategy.recommended_model)
+        model = (getattr(self, "_api_config", {}).get("text", {}) or {}).get("model")
+        self._client = DeepSeekChatClient(strategy=strategy, model=model or strategy.recommended_model)
 
     def _build_model_options(self) -> list[str]:
         settings = getattr(self, "_settings", {}) or {}
         models: list[str] = []
+        configured_model = (getattr(self, "_api_config", {}).get("text", {}) or {}).get("model")
+        if configured_model:
+            models.append(configured_model)
         for model in MODEL_OPTIONS:
             if model not in models:
                 models.append(model)
@@ -1199,8 +1192,10 @@ class DeepSeekChatGUI(QMainWindow):
             )
             if not has_messages:
                 self._display.setHtml(INITIAL_HTML)
-        if hasattr(self, "_agent_nav_button"):
-            self._agent_nav_button.setVisible(bool(self._settings.get("controlled_agent_enabled", False)))
+        if hasattr(self, "_agent_generate_btn"):
+            self._agent_generate_btn.setVisible(bool(self._settings.get("controlled_agent_enabled", False)))
+        if hasattr(self, "_agent_chapter_group"):
+            self._agent_chapter_group.setVisible(bool(self._settings.get("controlled_agent_enabled", False)))
         self._update_status()
 
     def _save_runtime_settings(self) -> None:
@@ -1323,14 +1318,6 @@ class DeepSeekChatGUI(QMainWindow):
             self._mode_nav_group.addButton(btn)
             self._mode_nav_buttons[mode_name] = btn
             layout.addWidget(btn)
-
-        self._agent_nav_button = QPushButton("Agent")
-        self._agent_nav_button.setObjectName("navButton")
-        self._agent_nav_button.setToolTip("受控 Agent 工作台")
-        self._agent_nav_button.setFixedSize(58, 54)
-        self._agent_nav_button.clicked.connect(self._open_agent_workbench)
-        self._agent_nav_button.setVisible(bool(self._settings.get("controlled_agent_enabled", False)))
-        layout.addWidget(self._agent_nav_button)
 
         layout.addStretch()
 
@@ -2012,6 +1999,35 @@ class DeepSeekChatGUI(QMainWindow):
         """)
         self._generate_btn.clicked.connect(self._on_generate_chapter)
         layout.addWidget(self._generate_btn)
+
+        self._agent_chapter_group = QGroupBox("Agent 章节模块")
+        self._agent_chapter_group.setCheckable(True)
+        self._agent_chapter_group.setChecked(True)
+        agent_layout = QVBoxLayout(self._agent_chapter_group)
+        self._agent_generate_btn = QPushButton("Agent 生成下一章")
+        self._agent_generate_btn.setMinimumHeight(38)
+        self._agent_generate_btn.setToolTip("先读取设定、规划剧情并筛选世界书/历史上下文，确认计划后生成正文")
+        self._agent_generate_btn.clicked.connect(self._on_agent_generate_chapter)
+        agent_layout.addWidget(self._agent_generate_btn)
+        self._agent_plan_status = QLabel("Agent 尚未规划本章。")
+        self._agent_plan_status.setWordWrap(True)
+        agent_layout.addWidget(self._agent_plan_status)
+        self._agent_plan_preview = QTextEdit()
+        self._agent_plan_preview.setReadOnly(True)
+        self._agent_plan_preview.setPlaceholderText("Agent 完成规划后，这里会显示章节目标、场景、角色变化、世界书和历史剧情选择。")
+        self._agent_plan_preview.setMaximumHeight(180)
+        agent_layout.addWidget(self._agent_plan_preview)
+        self._agent_maintenance_status = QLabel("世界书维护：无待处理任务")
+        self._agent_maintenance_status.setWordWrap(True)
+        agent_layout.addWidget(self._agent_maintenance_status)
+        self._agent_retry_maintenance_btn = QPushButton("重试世界书维护")
+        self._agent_retry_maintenance_btn.clicked.connect(self._on_retry_world_maintenance)
+        self._agent_retry_maintenance_btn.setVisible(False)
+        agent_layout.addWidget(self._agent_retry_maintenance_btn)
+        enabled = bool(self._settings.get("controlled_agent_enabled", False))
+        self._agent_chapter_group.setVisible(enabled)
+        self._agent_generate_btn.setVisible(enabled)
+        layout.addWidget(self._agent_chapter_group)
 
         # ── 保存/加载设定按钮 ──
         save_settings_row = QHBoxLayout()
@@ -3601,24 +3617,52 @@ class DeepSeekChatGUI(QMainWindow):
             username=self._username,
             user_dir=self._user_dir,
             encrypted=self._enc_key is not None,
-            api_key_callback=self._on_change_api_key,
+            api_config=self._api_config,
+            api_config_callback=self._apply_api_config,
+            api_test_callback=self._test_api_config,
             settings_changed_callback=self._apply_settings_to_controls,
             password_changed_callback=self._on_password_changed,
         )
         dialog.exec()
 
-    def _open_agent_workbench(self) -> None:
-        if not self._settings.get("controlled_agent_enabled", False):
-            QMessageBox.information(self, "Agent 未启用", "请先在设置中心的 Agent 页启用工作台。")
-            return
-        from ui.agent_workbench import AgentWorkbenchDialog
-        dialog = AgentWorkbenchDialog(
-            self,
-            novel_manager=self._novel_manager,
-            client=self._client,
-            conversation_manager=self._conversation_manager,
-        )
-        dialog.exec()
+    def _apply_api_config(self, api_config: dict) -> None:
+        """Persist API profiles and immediately activate the text connection."""
+        text_api = dict(api_config.get("text", {}) or {})
+        image_api = dict(api_config.get("image", {}) or {})
+        self._api_config = {"text": text_api, "image": image_api}
+        self._save_encrypted_config(self._api_config)
+
+        Config.API_KEY = text_api["api_key"]
+        Config.BASE_URL = text_api["base_url"]
+        Config.IMAGE_API_KEY = image_api.get("api_key", "")
+        Config.IMAGE_BASE_URL = image_api.get("base_url", "")
+        Config.IMAGE_MODEL = image_api.get("model", "")
+        self._client.reconfigure_connection(Config.API_KEY, Config.BASE_URL, text_api["model"])
+
+        settings = self._settings_manager.load()
+        settings["last_model"] = text_api["model"]
+        custom_models = list(settings.get("custom_models", []) or [])
+        if text_api["model"] not in custom_models:
+            custom_models.append(text_api["model"])
+        settings["custom_models"] = custom_models
+        self._settings_manager.save(settings)
+        self._apply_settings_to_controls()
+
+    @staticmethod
+    def _test_api_config(kind: str, api_config: dict) -> tuple[bool, str]:
+        """Test an OpenAI-compatible endpoint without persisting the draft values."""
+        try:
+            from openai import OpenAI
+            client = OpenAI(
+                api_key=api_config["api_key"],
+                base_url=api_config["base_url"],
+                timeout=12,
+            )
+            client.models.list()
+            label = "文字 API" if kind == "text" else "图片 API"
+            return True, f"{label} 已连接；模型配置：{api_config['model']}"
+        except Exception as exc:
+            return False, f"无法连接该服务：\n{exc}"
 
     def _on_password_changed(self, new_key: bytes) -> None:
         self._enc_key = new_key
@@ -4427,6 +4471,7 @@ class DeepSeekChatGUI(QMainWindow):
             self._client.strategy.genre = meta.genre
             self._client.strategy.style_tone = meta.style_tone
             self._client.strategy.xp_mode = bool(meta.xp_mode)
+        self._refresh_agent_maintenance_status(title)
 
     def _on_novel_title_changed(self, text: str) -> None:
         if isinstance(self._client.strategy, NovelStrategy):
@@ -4913,6 +4958,163 @@ class DeepSeekChatGUI(QMainWindow):
 
     # ========== 🚀 生成章节 ==========
 
+    def _on_agent_generate_chapter(self) -> None:
+        if self._streaming or not self._chapter_finalized or self._agent_chapter_planning:
+            return
+        if not self._settings.get("controlled_agent_enabled", False):
+            QMessageBox.information(self, "Agent 未启用", "请先在设置中心启用小说写作 Agent。")
+            return
+        title = self._novel_title_edit.text().strip()
+        if not title:
+            QMessageBox.warning(self, "提示", "请先设置小说标题。")
+            return
+        self._novel_manager.create_book(title)
+        generation_target = self._novel_manager.get_active_generation_target(title)
+        chapter_num = int(generation_target["chapter_num"])
+        chapter_title = self._chapter_title_edit.text().strip() or f"第{chapter_num}章"
+        self._chapter_title_edit.setText(chapter_title)
+        genre_cfg = get_genre_by_display(self._novel_genre_combo.currentText())
+        tone_cfg = get_tone_by_display(self._novel_tone_combo.currentText())
+        self._novel_manager.save_meta(
+            title,
+            protagonist_bio=self._protagonist_edit.toPlainText().strip(),
+            background_story=self._background_edit.toPlainText().strip(),
+            writing_demand=self._demand_edit.toPlainText().strip(),
+            author_plan=self._author_plan_edit.toPlainText().strip(),
+            genre=genre_cfg.key if genre_cfg else "",
+            style_tone=tone_cfg.key if tone_cfg else "",
+            xp_mode=self._xp_mode_check.isChecked(),
+        )
+        if isinstance(self._client.strategy, NovelStrategy):
+            self._client.strategy.novel_title = title
+            self._client.strategy.chapter_title = chapter_title
+            self._client.strategy.protagonist_bio = self._protagonist_edit.toPlainText().strip()
+            self._client.strategy.background_story = self._background_edit.toPlainText().strip()
+            self._client.strategy.writing_demand = self._demand_edit.toPlainText().strip()
+            self._client.strategy.genre = genre_cfg.key if genre_cfg else ""
+            self._client.strategy.style_tone = tone_cfg.key if tone_cfg else ""
+            self._client.strategy.xp_mode = self._xp_mode_check.isChecked()
+        from core.agent.chapter_generation import AgentChapterGenerationService, AgentChapterRequest
+        request = AgentChapterRequest(
+            book_title=title,
+            chapter_num=chapter_num,
+            chapter_title=chapter_title,
+            plot=self._plot_edit.toPlainText().strip(),
+            requirement=self._demand_edit.toPlainText().strip(),
+            target_words=self._chapter_word_count.value(),
+            model=self._client.model,
+            global_prompt=self._client.global_user_prompt,
+        )
+        self._agent_chapter_planning = True
+        self._agent_generate_btn.setEnabled(False)
+        self._generate_btn.setEnabled(False)
+        self._agent_plan_status.setText("Agent 正在读取设定、规划剧情并筛选世界书与历史内容……")
+
+        def run_plan() -> None:
+            try:
+                service = AgentChapterGenerationService(
+                    self._novel_manager,
+                    self._usage_logged_client("agent_chapter_plan"),
+                )
+                plan = service.prepare(request)
+                self._stream_signals.agent_chapter_plan_ready.emit(request, plan, generation_target)
+            except Exception as exc:
+                self._stream_signals.agent_chapter_plan_error.emit(str(exc))
+
+        threading.Thread(target=run_plan, daemon=True).start()
+
+    def _on_agent_chapter_plan_ready(self, request, plan, generation_target) -> None:
+        self._agent_chapter_planning = False
+        self._agent_generate_btn.setEnabled(True)
+        self._generate_btn.setEnabled(True)
+        self._agent_plan_status.setText(
+            f"规划完成：{plan.chapter_goal}\n"
+            f"选中 {len(plan.selected_world_entities)} 个世界书实体、"
+            f"{len(plan.selected_history)} 个历史章节；实际上下文 {plan.context_report.get('injected_chars', 0)} 字。"
+        )
+        self._agent_plan_preview.setPlainText(plan.render())
+        from ui.agent_chapter_dialog import AgentChapterPlanDialog
+        dialog = AgentChapterPlanDialog(self, request, plan)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            self._agent_plan_status.setText("本章 Agent 计划已取消，未修改任何正式数据。")
+            workspace = self._novel_manager.get_workspace(request.book_title)
+            path = f"{workspace.agent_root}/chapter_runs/{plan.plan_id}.json"
+            record = workspace.storage.read_json(path, default={}) or {}
+            record.update({"status": "cancelled", "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S")})
+            workspace.storage.write_json(path, record)
+            return
+        self._chapter_finalized = False
+        self._generate_btn.setEnabled(False)
+        self._agent_generate_btn.setEnabled(False)
+        self._cont_generate_btn.setEnabled(False)
+        self._client.reset_cancel()
+        self._stop_btn.setVisible(True)
+        self._stop_btn.setEnabled(True)
+        self._stop_btn.setText("⏹")
+        self._mode_combo.setEnabled(False)
+        self._streaming = True
+        self._streaming_start_time = time.time()
+        self._assistant_text_buffer = []
+        self._append_user_message(f"Agent 生成第{request.chapter_num}章：{request.chapter_title}")
+        threading.Thread(
+            target=self._run_chapter_generation,
+            args=(request.book_title, request.chapter_title, request.plot, request.target_words, generation_target),
+            kwargs={"agent_request": request, "agent_plan": plan},
+            daemon=True,
+        ).start()
+
+    def _on_agent_chapter_plan_error(self, error: str) -> None:
+        self._agent_chapter_planning = False
+        self._agent_generate_btn.setEnabled(True)
+        self._generate_btn.setEnabled(True)
+        self._agent_plan_status.setText(f"Agent 规划失败：{error}")
+        QMessageBox.critical(self, "Agent 规划失败", error)
+
+    def _refresh_agent_maintenance_status(self, title: str = "") -> None:
+        if not hasattr(self, "_agent_maintenance_status"):
+            return
+        title = title or self._novel_title_edit.text().strip()
+        if not title:
+            self._agent_maintenance_status.setText("世界书维护：无待处理任务")
+            self._agent_retry_maintenance_btn.setVisible(False)
+            return
+        self._agent_retry_maintenance_btn.setEnabled(True)
+        from core.agent.world_maintenance import WorldBibleMaintenanceService
+        pending = WorldBibleMaintenanceService(self._novel_manager).list_pending(title)
+        self._pending_world_maintenance = pending
+        if pending:
+            self._agent_maintenance_status.setText(f"世界书维护：{len(pending)} 个任务待重试；最近错误：{pending[0].get('error', '')}")
+            self._agent_retry_maintenance_btn.setVisible(True)
+        else:
+            self._agent_maintenance_status.setText("世界书维护：已同步")
+            self._agent_retry_maintenance_btn.setVisible(False)
+
+    def _on_retry_world_maintenance(self) -> None:
+        title = self._novel_title_edit.text().strip()
+        pending = getattr(self, "_pending_world_maintenance", [])
+        if not title or not pending:
+            self._refresh_agent_maintenance_status(title)
+            return
+        task_id = pending[0].get("task_id", "")
+        self._agent_retry_maintenance_btn.setEnabled(False)
+        self._agent_maintenance_status.setText(f"正在重试 {task_id}……")
+
+        def retry() -> None:
+            try:
+                from core.agent.world_maintenance import WorldBibleMaintenanceService
+                result = WorldBibleMaintenanceService(self._novel_manager).retry(
+                    self._usage_logged_client("agent_world_maintenance_retry"), title, task_id
+                )
+                self._stream_signals.token.emit(
+                    "\n世界书维护重试" + ("成功。\n" if result.status == "completed" else f"仍待处理：{result.error}\n")
+                )
+            except Exception as exc:
+                self._stream_signals.token.emit(f"\n世界书维护重试失败：{exc}\n")
+            finally:
+                self._stream_signals.agent_maintenance_changed.emit(title)
+
+        threading.Thread(target=retry, daemon=True).start()
+
     def _on_generate_chapter(self) -> None:
         """生成下一章 → 完整工作流"""
         if self._streaming or not self._chapter_finalized:
@@ -5197,6 +5399,9 @@ class DeepSeekChatGUI(QMainWindow):
         plot_content: str = "",
         target_words: int = 40000,
         generation_target: dict | None = None,
+        *,
+        agent_request=None,
+        agent_plan=None,
     ) -> None:
         """后台线程：生成章节 + 版本保存 + 摘要"""
         try:
@@ -5219,18 +5424,28 @@ class DeepSeekChatGUI(QMainWindow):
             if isinstance(strategy, NovelStrategy):
                 messages += strategy.build_system_messages()
 
-            user_prompt = self._build_chapter_prompt(
-                title,
-                chapter_title,
-                plot_content=plot_content,
-                chapter_num=chapter_num,
-            )
+            if agent_plan is not None and agent_request is not None:
+                from core.agent.chapter_generation import AgentChapterGenerationService
+                agent_result = AgentChapterGenerationService(
+                    self._novel_manager, self._usage_logged_client("agent_chapter_prompt")
+                ).generate(agent_request, agent_plan)
+                user_prompt = agent_result.prompt
+                operation_prefix = "agent_novel_chapter"
+            else:
+                agent_result = None
+                user_prompt = self._build_chapter_prompt(
+                    title,
+                    chapter_title,
+                    plot_content=plot_content,
+                    chapter_num=chapter_num,
+                )
+                operation_prefix = "novel_chapter"
             messages.append({"role": "user", "content": user_prompt})
 
             self._stream_signals.token.emit(f"\n\n📝 正在创作第 {chapter_num} 章「{chapter_title}」...\n\n")
 
             content, generation_stats, cancelled = self._stream_chapter_completion(
-                operation="novel_chapter",
+                operation=operation_prefix,
                 messages=messages,
                 prompt_text=user_prompt,
                 max_tokens=max(target_words * 2, self._client.max_tokens),
@@ -5249,7 +5464,7 @@ class DeepSeekChatGUI(QMainWindow):
                 requirements=getattr(strategy, "writing_demand", ""),
                 target_words=target_words,
                 xp_mode=xp_mode,
-                operation_prefix="novel_chapter",
+                operation_prefix=operation_prefix,
             )
 
             if self._client._cancel_requested:
@@ -5268,16 +5483,32 @@ class DeepSeekChatGUI(QMainWindow):
                 old_active = None
                 new_chapter = True
 
-            file_path, saved_version = self._novel_manager.save_chapter_version(
-                title,
-                chapter_num,
-                chapter_title,
-                content,
+            agent_data = (
+                {
+                    "enabled": True,
+                    "run_id": agent_plan.plan_id,
+                    "plan": agent_plan.to_dict(),
+                    "context_report": agent_result.context_report,
+                }
+                if agent_plan is not None and agent_result is not None else None
+            )
+            file_path, saved_version = self._chapter_service.persist_chapter(
+                title=title,
+                chapter_num=chapter_num,
+                chapter_title=chapter_title,
+                content=content,
                 version=version,
                 parent_id=generation_target["parent_id"],
-            )
-            self._novel_manager.switch_active_node(
-                title, self._novel_manager._node_id(chapter_num, saved_version)
+                prompt=user_prompt,
+                model=self._client.model,
+                temperature=self._client.temperature,
+                top_p=self._client.top_p,
+                max_tokens=self._client.max_tokens,
+                frequency_penalty=self._client.frequency_penalty,
+                supervision_report=supervision_report,
+                requirement=agent_request.requirement if agent_request is not None else "",
+                plot=plot_content,
+                agent_data=agent_data,
             )
             self._stream_signals.token.emit(f"✅ 已保存版本 v{saved_version} → `{file_path}`\n")
 
@@ -5286,28 +5517,12 @@ class DeepSeekChatGUI(QMainWindow):
                     f"\n⚡ 该章节已有旧版本 v{old_active}。请点击右侧「⚙ 章节管理」按钮选择使用哪个版本。\n"
                 )
 
-            # 保存生成历史记录（含已定情节，供重新生成时还原）
-            content_preview = content.replace("\n", " ")
-            self._novel_manager.save_generation_record(
-                title=title,
-                chapter_num=chapter_num,
-                chapter_title=chapter_title,
-                version=saved_version,
-                prompt=user_prompt,
-                model=self._client.model,
-                temperature=self._client.temperature,
-                top_p=self._client.top_p,
-                max_tokens=self._client.max_tokens,
-                frequency_penalty=self._client.frequency_penalty,
-                content_preview=content_preview,
-                supervision_report=supervision_report,
-                plot=plot_content,
-            )
-
-            if self._client._cancel_requested:
+            if self._client._cancel_requested and agent_plan is None:
                 self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
                 self._stream_signals.finished.emit()
                 return
+            elif self._client._cancel_requested and agent_plan is not None:
+                self._stream_signals.token.emit("\n正文已经写入章节树，继续完成摘要和世界书一致性收尾。\n")
 
             self._stream_signals.token.emit("\n🔍 正在提炼剧情记忆...\n")
             summary = self._novel_manager.generate_summary(
@@ -5320,36 +5535,76 @@ class DeepSeekChatGUI(QMainWindow):
             self._novel_manager.rebuild_plot_summary_from_tree(title)
             self._stream_signals.token.emit(f"📋 剧情摘要已绑定至章节树。\n\n")
 
-            if self._client._cancel_requested:
+            if self._client._cancel_requested and agent_plan is None:
                 self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
                 self._stream_signals.finished.emit()
                 return
 
-            # 更新世界书
+            # 更新世界书；Agent 章节使用可恢复、幂等的逐章维护服务。
             self._stream_signals.token.emit("\n📖 正在更新世界书...\n")
-            try:
-                from core.world_bible import extract_and_merge_world_bible
-                bible = self._novel_manager.load_world_bible(title)
-                updated_bible = extract_and_merge_world_bible(
-                    self._usage_logged_client("world_bible_update"), content, chapter_num, bible, self._client.model,
-                    chapter_version=saved_version,
+            maintenance = None
+            if agent_plan is not None:
+                from core.agent.world_maintenance import WorldBibleMaintenanceService
+                maintenance = WorldBibleMaintenanceService(self._novel_manager).maintain(
+                    self._usage_logged_client("agent_world_maintenance"),
+                    title, chapter_num, saved_version,
+                    model=self._client.model,
                     global_user_prompt=self._client.global_user_prompt,
                     xp_mode=xp_mode,
+                    plan=agent_plan.to_dict(),
                 )
-                self._novel_manager.save_world_bible(title, updated_bible)
-                self._stream_signals.token.emit("✅ 世界书已更新。\n")
-                if getattr(updated_bible, "consistency_warnings", None):
+                self._novel_manager.update_generation_record(
+                    title, chapter_num, saved_version,
+                    world_maintenance=asdict(maintenance),
+                )
+                if maintenance.status == "completed":
                     self._stream_signals.token.emit(
-                        f"⚠️ 世界书发现 {len(updated_bible.consistency_warnings)} 条一致性提醒，可在世界书窗口查看。\n"
+                        f"✅ 世界书已维护：新增 {len(maintenance.added)}，更新 {len(maintenance.updated)}，归档 {len(maintenance.archived)}。\n"
                     )
-            except Exception as wb_e:
-                self._stream_signals.token.emit(f"⚠️ 世界书更新跳过: {wb_e}\n")
+                else:
+                    self._stream_signals.token.emit(
+                        f"⚠️ 章节已保存，世界书维护待重试：{maintenance.error}\n"
+                    )
+                self._stream_signals.agent_maintenance_changed.emit(title)
+            else:
+                try:
+                    from core.world_bible import extract_and_merge_world_bible
+                    bible = self._novel_manager.load_world_bible(title)
+                    updated_bible = extract_and_merge_world_bible(
+                        self._usage_logged_client("world_bible_update"), content, chapter_num, bible, self._client.model,
+                        chapter_version=saved_version,
+                        global_user_prompt=self._client.global_user_prompt,
+                        xp_mode=xp_mode,
+                    )
+                    self._novel_manager.save_world_bible(title, updated_bible)
+                    self._stream_signals.token.emit("✅ 世界书已更新。\n")
+                    if getattr(updated_bible, "consistency_warnings", None):
+                        self._stream_signals.token.emit(
+                            f"⚠️ 世界书发现 {len(updated_bible.consistency_warnings)} 条一致性提醒，可在世界书窗口查看。\n"
+                        )
+                except Exception as wb_e:
+                    self._stream_signals.token.emit(f"⚠️ 世界书更新跳过: {wb_e}\n")
 
             try:
                 self._chapter_service.create_auto_snapshot(title, chapter_num, saved_version)
                 self._stream_signals.token.emit("Project snapshot saved.\n")
             except Exception as snapshot_error:
                 self._stream_signals.token.emit(f"Snapshot skipped: {snapshot_error}\n")
+
+            if agent_plan is not None:
+                workspace = self._novel_manager.get_workspace(title)
+                run_path = f"{workspace.agent_root}/chapter_runs/{agent_plan.plan_id}.json"
+                run_record = workspace.storage.read_json(run_path, default={}) or {}
+                run_record.update({
+                    "status": "completed_with_pending_maintenance" if maintenance is not None and maintenance.status != "completed" else "completed",
+                    "chapter_num": chapter_num,
+                    "version": saved_version,
+                    "chapter_node_id": self._novel_manager._node_id(chapter_num, saved_version),
+                    "world_maintenance_task_id": maintenance.task_id if maintenance is not None else "",
+                    "world_maintenance_status": maintenance.status if maintenance is not None else "",
+                    "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                })
+                workspace.storage.write_json(run_path, run_record)
 
             self._refresh_chapter_info_display(title)
             next_ch = self._novel_manager.get_active_generation_target(title)["chapter_num"]
@@ -5360,6 +5615,15 @@ class DeepSeekChatGUI(QMainWindow):
 
             self._stream_signals.finished.emit()
         except Exception as e:
+            if agent_plan is not None:
+                try:
+                    workspace = self._novel_manager.get_workspace(title)
+                    run_path = f"{workspace.agent_root}/chapter_runs/{agent_plan.plan_id}.json"
+                    run_record = workspace.storage.read_json(run_path, default={}) or {}
+                    run_record.update({"status": "failed", "error": str(e), "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S")})
+                    workspace.storage.write_json(run_path, run_record)
+                except Exception:
+                    pass
             self._stream_signals.error.emit(f"章节生成失败: {e}")
 
     # ========== 📄 续写小说事件 ==========
@@ -6432,6 +6696,8 @@ class DeepSeekChatGUI(QMainWindow):
         self._streaming = False
         self._chapter_finalized = True
         self._generate_btn.setEnabled(True)
+        if hasattr(self, "_agent_generate_btn"):
+            self._agent_generate_btn.setEnabled(True)
         self._cont_generate_btn.setEnabled(True)
 
     def _on_stream_error(self, error_msg: str) -> None:
@@ -6440,6 +6706,8 @@ class DeepSeekChatGUI(QMainWindow):
         self._streaming = False
         self._chapter_finalized = True
         self._generate_btn.setEnabled(True)
+        if hasattr(self, "_agent_generate_btn"):
+            self._agent_generate_btn.setEnabled(True)
         self._cont_generate_btn.setEnabled(True)
         self._stop_btn.setVisible(False)
         self._stop_btn.setEnabled(True)

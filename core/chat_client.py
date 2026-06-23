@@ -161,6 +161,12 @@ class DeepSeekChatClient:
             print(f"[警告] 未知模型 '{model}'，将尝试使用，但可能出错。")
         self._model = model
 
+    def reconfigure_connection(self, api_key: str, base_url: str, model: str | None = None) -> None:
+        """Rebuild the OpenAI-compatible connection without clearing the conversation."""
+        self._client = OpenAI(api_key=api_key, base_url=base_url)
+        if model:
+            self._model = model
+
     # ========== 取消机制 ==========
 
     def cancel(self) -> None:

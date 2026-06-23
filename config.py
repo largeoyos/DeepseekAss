@@ -21,6 +21,9 @@ class Config:
     # DeepSeek API 配置（可从 .env 预填，也可在运行时通过 GUI 设置）
     API_KEY: str = os.getenv("DEEPSEEK_API_KEY", "")
     BASE_URL: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
+    IMAGE_API_KEY: str = os.getenv("IMAGE_API_KEY", "")
+    IMAGE_BASE_URL: str = os.getenv("IMAGE_BASE_URL", "")
+    IMAGE_MODEL: str = os.getenv("IMAGE_MODEL", "")
 
     # 模型列表
     MODEL_V4_FLASH: str = "deepseek-v4-flash"
