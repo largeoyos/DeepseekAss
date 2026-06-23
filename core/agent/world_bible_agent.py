@@ -72,14 +72,25 @@ class WorldBibleAgentService:
         run_id = f"world_detail_{uuid.uuid4().hex}"
         skills = self._select_skills(repository, request)
         index = self._world_index(request.book_title)
+        active_nodes = self.manager.get_active_path_nodes(request.book_title)
         payload = {
             "user_details": request.text,
             "world_index": index,
+            "active_path": [
+                {
+                    "node_id": item.get("id", ""),
+                    "chapter_num": item.get("chapter_num", 0),
+                    "version": item.get("version", 0),
+                    "title": item.get("title", ""),
+                    "summary": str(item.get("summary", ""))[:500],
+                }
+                for item in active_nodes
+            ],
             "global_prompt": request.global_prompt,
             "skills": skills.text,
         }
         raw = self._call(payload, request.model)
-        operations, conflicts = self._validate(raw, index)
+        operations, conflicts = self._validate(raw, index, active_nodes)
         change_set = ChangeSetService(self.manager, request.book_title, repository).propose_world_patch(
             run_id,
             manifest.book_id,
@@ -104,15 +115,72 @@ class WorldBibleAgentService:
         workspace.storage.write_json(f"{workspace.agent_root}/world_detail_runs/{run_id}.json", record)
         return WorldChangePlan(run_id, summary, operations, conflicts, change_set.change_set_id, skills.summaries)
 
+    def confirm_scopes(self, book_title: str, change_set_id: str, operations: list[dict]) -> None:
+        workspace = self.manager.get_workspace(book_title)
+        repository = AgentRepository(workspace)
+        change_set = repository.load_change_set(change_set_id)
+        if change_set is None or change_set.status != "pending":
+            raise ValueError("待审批世界书变更不存在")
+        valid_scopes = {"chapter", "branch", "global"}
+        active_ids = {str(item.get("id", "")) for item in self.manager.get_active_path_nodes(book_title)}
+        for item in operations:
+            scope = str(item.get("scope", ""))
+            anchor = str(item.get("anchor_node_id", "") or "")
+            if scope not in valid_scopes:
+                raise ValueError("所有世界书变更都必须先确认作用域")
+            if scope in {"chapter", "branch"} and anchor not in active_ids:
+                raise ValueError(f"作用域锚点不在当前活跃路径: {anchor}")
+            if scope == "global":
+                item["anchor_node_id"] = ""
+        target = next((item for item in change_set.operations if item.operation == "world_bible.patch"), None)
+        if target is None:
+            raise ValueError("ChangeSet 中不存在世界书字段变更")
+        target.payload["operations"] = operations
+        change_set.validation_result = {
+            **dict(change_set.validation_result or {}),
+            "scopes_confirmed": True,
+            "scope_summary": {
+                scope: sum(1 for item in operations if item.get("scope") == scope)
+                for scope in sorted(valid_scopes)
+            },
+        }
+        repository.save_change_set(change_set)
+        run_path = f"{workspace.agent_root}/world_detail_runs/{change_set.run_id}.json"
+        run_record = workspace.storage.read_json(run_path, default={}) or {}
+        if isinstance(run_record, dict):
+            run_record.update({
+                "operations": operations,
+                "approval_status": "scope_confirmed",
+                "updated_at": now_iso(),
+            })
+            workspace.storage.write_json(run_path, run_record)
+
     def approve(self, book_title: str, change_set_id: str):
         workspace = self.manager.get_workspace(book_title)
         repository = AgentRepository(workspace)
-        return ChangeSetService(self.manager, book_title, repository).approve(change_set_id)
+        result = ChangeSetService(self.manager, book_title, repository).approve(change_set_id)
+        self._update_run_status(workspace, result.run_id, "approved", result.validation_result)
+        return result
 
     def reject(self, book_title: str, change_set_id: str):
         workspace = self.manager.get_workspace(book_title)
         repository = AgentRepository(workspace)
-        return ChangeSetService(self.manager, book_title, repository).reject(change_set_id)
+        result = ChangeSetService(self.manager, book_title, repository).reject(change_set_id)
+        self._update_run_status(workspace, result.run_id, "rejected", result.validation_result)
+        return result
+
+    @staticmethod
+    def _update_run_status(workspace, run_id: str, status: str, validation: dict | None = None) -> None:
+        path = f"{workspace.agent_root}/world_detail_runs/{run_id}.json"
+        record = workspace.storage.read_json(path, default={}) or {}
+        if not isinstance(record, dict):
+            return
+        record.update({
+            "approval_status": status,
+            "validation_result": validation or {},
+            "updated_at": now_iso(),
+        })
+        workspace.storage.write_json(path, record)
 
     def _select_skills(self, repository: AgentRepository, request: WorldDetailRequest) -> SkillSelection:
         if not self.skills_enabled:
@@ -123,11 +191,15 @@ class WorldBibleAgentService:
 
     def _call(self, payload: dict, model: str) -> dict:
         prompt = (
-            "你是受控的小说世界书管理 Agent。根据用户明确补充的细节和现有世界书索引，"
-            "提出字段级变更，但不得直接写入。只输出 JSON："
-            "{summary:string, operations:[{operation,entity_type,entity_id,payload,reason,risk}], conflicts:[{message,entity_id}]}。"
+            "你是受控的小说世界书管理 Agent。根据用户明确补充的细节、现有世界书索引和当前活跃章节路径，"
+            "提出字段级变更，但不得直接写入。必须判断每项事实的生效范围："
+            "chapter 表示只属于某个章节版本；branch 表示从锚点章节开始只在该剧情分支生效；"
+            "global 表示不依赖剧情分支的全书稳定设定；无法可靠判断时使用 uncertain。"
+            "只输出 JSON："
+            "{summary:string, operations:[{operation,entity_type,entity_id,payload,reason,risk,scope,anchor_node_id,scope_reason,source_ids}], conflicts:[{message,entity_id}]}。"
             "operation 只能是 entity.create/entity.patch/entity.supersede/entity.archive/entity.merge；"
             "entity_type 只能是 character/location/timeline/plot_thread/world_rule/foreshadowing。"
+            "chapter、branch 的 anchor_node_id 必须来自 active_path；global 的 anchor_node_id 留空。"
             "修改已有实体必须使用索引中的 ID；新实体 ID 使用小写英文、数字和下划线组成的稳定 ID。"
             "来自用户补充的信息均需审批，不要声称已经修改世界书。不得输出 Markdown。\n\n输入："
             + json.dumps(payload, ensure_ascii=False)
@@ -161,11 +233,13 @@ class WorldBibleAgentService:
             raise ValueError("世界书变更计划不是 JSON 对象")
         return data
 
-    def _validate(self, data: dict, index: list[dict]) -> tuple[list[dict], list[dict]]:
+    def _validate(self, data: dict, index: list[dict], active_nodes: list[dict]) -> tuple[list[dict], list[dict]]:
         raw_operations = data.get("operations")
         if not isinstance(raw_operations, list):
             raise ValueError("世界书变更缺少 operations 数组")
         existing = {str(item["id"]): item for item in index}
+        active_ids = {str(item.get("id", "")) for item in active_nodes}
+        active_tip = str(active_nodes[-1].get("id", "")) if active_nodes else ""
         operations = []
         for item in raw_operations:
             if not isinstance(item, dict):
@@ -180,6 +254,14 @@ class WorldBibleAgentService:
                 continue
             if action != "entity.create" and entity_id not in existing:
                 continue
+            scope = str(item.get("scope", "uncertain") or "uncertain").strip().lower()
+            if scope not in {"chapter", "branch", "global", "uncertain"}:
+                scope = "uncertain"
+            anchor_node_id = str(item.get("anchor_node_id", "") or "").strip()
+            if scope == "global":
+                anchor_node_id = ""
+            elif anchor_node_id not in active_ids:
+                anchor_node_id = active_tip
             operations.append({
                 "operation": action,
                 "entity_type": kind,
@@ -189,6 +271,9 @@ class WorldBibleAgentService:
                 "risk": str(item.get("risk", "requires_approval"))[:100],
                 "source": "user_or_advisor_detail",
                 "source_ids": [str(value) for value in (item.get("source_ids") or [])],
+                "scope": scope,
+                "anchor_node_id": anchor_node_id,
+                "scope_reason": str(item.get("scope_reason", ""))[:500],
             })
         if not operations:
             raise ValueError("世界书管理 Agent 未生成可应用的有效变更")

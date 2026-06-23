@@ -5177,30 +5177,73 @@ class DeepSeekChatGUI(QMainWindow):
 
     def _on_agent_world_plan_ready(self, plan) -> None:
         self._agent_world_running = False
+        book_title = self._novel_title_edit.text().strip()
+        active_nodes = self._novel_manager.get_active_path_nodes(book_title)
+        active_tip = str(active_nodes[-1].get("id", "")) if active_nodes else ""
+        scope_labels = {
+            "chapter": "仅锚点章节版本",
+            "branch": "锚点所在分支及其后续",
+            "global": "全书所有分支",
+            "uncertain": "待确认",
+        }
+        for item in plan.operations:
+            if item.get("scope") != "uncertain":
+                continue
+            choices = ["分支后续", "仅当前章节版本", "全书全局"] if active_tip else ["全书全局"]
+            choice, ok = QInputDialog.getItem(
+                self,
+                "确认世界书作用域",
+                f"{item.get('reason', 'Agent 无法确定该事实的作用域')}\n\n"
+                f"实体：{item.get('entity_type')}:{item.get('entity_id')}\n请选择生效范围：",
+                choices,
+                0,
+                False,
+            )
+            if not ok:
+                from core.agent.world_bible_agent import WorldBibleAgentService
+                WorldBibleAgentService(self._novel_manager).reject(book_title, plan.change_set_id)
+                self._agent_advisor_status.setText("世界书作用域确认已取消，正式数据未修改。")
+                self._agent_add_world_btn.setEnabled(self._last_advisor_result is not None)
+                return
+            item["scope"] = {
+                "分支后续": "branch",
+                "仅当前章节版本": "chapter",
+                "全书全局": "global",
+            }[choice]
+            item["anchor_node_id"] = "" if item["scope"] == "global" else active_tip
+            item["scope_reason"] = (item.get("scope_reason") or "用户在审批时确认")
+
         preview = [plan.summary, "", "拟议变更："]
         for item in plan.operations:
+            scope = str(item.get("scope", "uncertain"))
+            anchor = str(item.get("anchor_node_id", "") or "")
             preview.append(
                 f"- {item.get('operation')} {item.get('entity_type')}:{item.get('entity_id')}\n"
-                f"  原因：{item.get('reason', '')}\n  字段：{json.dumps(item.get('payload', {}), ensure_ascii=False)}"
+                f"  作用域：{scope_labels.get(scope, scope)}"
+                f"{f'；锚点={anchor}' if anchor else ''}\n"
+                f"  范围理由：{item.get('scope_reason', '')}\n"
+                f"  修改原因：{item.get('reason', '')}\n"
+                f"  字段：{json.dumps(item.get('payload', {}), ensure_ascii=False)}"
             )
         if plan.conflicts:
             preview.extend(["", "冲突：", json.dumps(plan.conflicts, ensure_ascii=False, indent=2)])
         answer = QMessageBox.question(
             self,
             "审批世界书变更",
-            "\n".join(preview)[:12000] + "\n\n批准后会先创建项目快照，再原子提交。是否批准？",
+            "\n".join(preview)[:12000] + "\n\n批准后会先创建项目快照，再按上述作用域原子提交。是否批准？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
         )
         from core.agent.world_bible_agent import WorldBibleAgentService
         service = WorldBibleAgentService(self._novel_manager)
         try:
             if answer == QMessageBox.StandardButton.Yes:
-                applied = service.approve(self._novel_title_edit.text().strip(), plan.change_set_id)
+                service.confirm_scopes(book_title, plan.change_set_id, plan.operations)
+                applied = service.approve(book_title, plan.change_set_id)
                 self._agent_advisor_status.setText(
-                    f"世界书变更已批准并提交；状态：{applied.status}"
+                    f"世界书变更已批准并按作用域提交；状态：{applied.status}"
                 )
             else:
-                service.reject(self._novel_title_edit.text().strip(), plan.change_set_id)
+                service.reject(book_title, plan.change_set_id)
                 self._agent_advisor_status.setText("世界书变更已拒绝，正式数据未修改。")
         except Exception as exc:
             QMessageBox.critical(self, "世界书变更失败", str(exc))

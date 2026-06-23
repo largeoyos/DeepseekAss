@@ -1225,6 +1225,8 @@ class NovelManager:
             "failed_chapters": [],
         }
         if not nodes:
+            from core.world_bible import apply_manual_overrides
+            apply_manual_overrides(bible, [], "")
             report.update({
                 "override_count": len(manual_overrides),
                 "fact_count": len(bible.facts),
@@ -1311,7 +1313,9 @@ class NovelManager:
         bible.merge_history = merge_history
         bible.duplicate_candidates = duplicate_candidates
         materialize_current_facts(bible)
-        apply_manual_overrides(bible)
+        active_node_ids = [str(node.get("id", "")) for node in nodes]
+        current_node_id = active_node_ids[-1] if active_node_ids else ""
+        apply_manual_overrides(bible, active_node_ids, current_node_id)
         bible.consistency_warnings = audit_world_bible_consistency(bible)
 
         for item in report["missing_chapters"]:

@@ -11,6 +11,7 @@ from core.agent.tools import ToolContext, ToolRegistry, ToolSpec
 from core.agent.types import ToolCallRequest
 from core.agent.web_search import WebSearchClient, WebSearchConfig
 from core.novel_manager import NovelManager
+from core.world_bible import ManualOverride, WorldBible, apply_manual_overrides
 
 
 class ExtendedAgentTests(unittest.TestCase):
@@ -83,6 +84,61 @@ class ExtendedAgentTests(unittest.TestCase):
             self.assertTrue(any(item.entity_id == "character_test" for item in bible.manual_overrides))
             self.assertTrue(manager.snapshot_service("book").list())
 
+    def test_scoped_overrides_follow_active_path(self):
+        bible = WorldBible(manual_overrides=[
+            ManualOverride(
+                id="global", operation="add", entity_type="character", entity_id="global_char",
+                payload={"id": "global_char", "name": "全局角色"}, scope="global",
+            ),
+            ManualOverride(
+                id="branch", operation="add", entity_type="character", entity_id="branch_char",
+                payload={"id": "branch_char", "name": "分支角色"}, scope="branch", anchor_node_id="ch0002_v001",
+            ),
+            ManualOverride(
+                id="chapter", operation="add", entity_type="character", entity_id="chapter_char",
+                payload={"id": "chapter_char", "name": "章节角色"}, scope="chapter", anchor_node_id="ch0002_v001",
+            ),
+        ])
+        apply_manual_overrides(bible, ["ch0001_v001", "ch0002_v001"], "ch0002_v001")
+        self.assertEqual({"global_char", "branch_char", "chapter_char"}, {item.id for item in bible.characters})
+
+        other_branch = WorldBible(manual_overrides=bible.manual_overrides)
+        apply_manual_overrides(other_branch, ["ch0001_v001", "ch0002_v002"], "ch0002_v002")
+        self.assertEqual({"global_char"}, {item.id for item in other_branch.characters})
+
+        later_chapter = WorldBible(manual_overrides=bible.manual_overrides)
+        apply_manual_overrides(later_chapter, ["ch0001_v001", "ch0002_v001", "ch0003_v001"], "ch0003_v001")
+        self.assertEqual({"global_char", "branch_char"}, {item.id for item in later_chapter.characters})
+
+    def test_branch_scoped_changes_disappear_on_sibling_branch(self):
+        with tempfile.TemporaryDirectory() as root:
+            manager = NovelManager(bookshelf_root=root)
+            manager.create_book("book")
+            manager.save_chapter_version("book", 1, "root", "one", version=1)
+            root_id = manager._node_id(1, 1)
+            manager.save_chapter_version("book", 2, "branch-a", "two-a", version=1, parent_id=root_id)
+            manager.save_chapter_version("book", 2, "branch-b", "two-b", version=2, parent_id=root_id)
+            branch_a = manager._node_id(2, 1)
+            branch_b = manager._node_id(2, 2)
+            manager.switch_active_node("book", branch_a)
+            manifest = manager.ensure_workspace("book")
+            repository = AgentRepository(manager.get_workspace("book"))
+            service = ChangeSetService(manager, "book", repository)
+            change = service.propose_world_patch("run", manifest.book_id, [{
+                "operation": "entity.create",
+                "entity_type": "character",
+                "entity_id": "branch_only",
+                "payload": {"id": "branch_only", "name": "仅分支A"},
+                "scope": "branch",
+                "anchor_node_id": branch_a,
+                "scope_reason": "该角色只在分支A登场",
+            }])
+            service.approve(change.change_set_id)
+            self.assertTrue(any(item.id == "branch_only" for item in manager.load_world_bible("book").characters))
+
+            manager.switch_active_node("book", branch_b)
+            manager.rebuild_world_bible_from_active(None, "book")
+            self.assertFalse(any(item.id == "branch_only" for item in manager.load_world_bible("book").characters))
     def test_new_agents_receive_matching_skills(self):
         with tempfile.TemporaryDirectory() as root:
             manager = NovelManager(bookshelf_root=root)

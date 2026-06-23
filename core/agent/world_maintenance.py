@@ -100,7 +100,16 @@ class WorldBibleMaintenanceService:
 
     def _archive_obsolete(self, book_title: str, bible) -> dict:
         policies = self.manager.get_workspace(book_title).load_context_policies()
-        protected_ids = {str(item.entity_id) for item in getattr(bible, "manual_overrides", []) if getattr(item, "entity_id", "")}
+        from core.world_bible import _override_is_active
+        active_nodes = self.manager.get_active_path_nodes(book_title)
+        active_ids = [str(item.get("id", "")) for item in active_nodes]
+        current_id = active_ids[-1] if active_ids else ""
+        protected_ids = {
+            str(item.entity_id)
+            for item in getattr(bible, "manual_overrides", [])
+            if getattr(item, "entity_id", "")
+            and _override_is_active(item, active_ids, current_id)
+        }
         archived = []
         for thread in bible.active_plot_threads:
             protected = thread.id in protected_ids or policies.get(thread.id, {}).get("load_mode") == "resident" or thread.locked

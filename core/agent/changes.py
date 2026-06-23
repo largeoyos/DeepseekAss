@@ -122,26 +122,66 @@ class ChangeSetService:
             from core.world_bible import dict_to_world_bible
             self.manager.save_world_bible(self.book_title, dict_to_world_bible(operation.payload["world_bible"]))
         elif operation.operation == "world_bible.patch":
-            import copy
-            from core.world_bible import (
-                dict_to_world_bible,
-                record_manual_view_changes,
-                world_bible_to_dict,
-            )
+            from core.world_bible import dict_to_world_bible, world_bible_to_dict
+            operations = operation.payload.get("operations", [])
             data = world_bible_to_dict(self.manager.load_world_bible(self.book_title))
-            before_view = copy.deepcopy(data.get("resolved_view") or {
-                key: data.get(key, [])
-                for key in (
-                    "characters", "locations", "timeline", "active_plot_threads",
-                    "key_worldbuilding_passages", "global_foreshadowing",
-                    "global_key_dialogues", "world_rules",
-                )
-            })
-            before_view["story_clock"] = copy.deepcopy(data.get("story_clock", {}))
-            self._apply_world_patch(data, operation.payload.get("operations", []))
+            self._apply_world_patch(data, operations)
             bible = dict_to_world_bible(data)
-            record_manual_view_changes(bible, before_view)
+            active_ids = {str(item.get("id", "")) for item in self.manager.get_active_path_nodes(self.book_title)}
+            self._record_scoped_overrides(bible, data, operations, active_ids)
             self.manager.save_world_bible(self.book_title, bible)
+            self.manager.rebuild_world_bible_from_active(None, self.book_title)
+
+    @staticmethod
+    def _record_scoped_overrides(bible, data: dict, operations: list[dict], active_node_ids: set[str]) -> None:
+        from core.world_bible import ManualOverride, _upsert_override
+        collection_map = {
+            "character": ("characters", "character"),
+            "location": ("locations", "location"),
+            "timeline": ("timeline", "timeline"),
+            "plot_thread": ("active_plot_threads", "plot_thread"),
+            "world_rule": ("world_rules", "rule"),
+            "foreshadowing": ("global_foreshadowing", "foreshadowing"),
+        }
+        for op in operations or []:
+            kind = str(op.get("entity_type", ""))
+            spec = collection_map.get(kind)
+            if not spec:
+                continue
+            collection_name, override_type = spec
+            scope = str(op.get("scope", "global") or "global")
+            anchor = str(op.get("anchor_node_id", "") or "")
+            if scope not in {"global", "branch", "chapter"}:
+                raise ChangeSetError(f"世界书变更作用域尚未确认: {scope}")
+            if scope != "global" and not anchor:
+                raise ChangeSetError("章节或分支作用域必须指定锚点章节节点")
+            if scope != "global" and anchor not in active_node_ids:
+                raise ChangeSetError(f"作用域锚点不在当前活跃路径: {anchor}")
+            entity_ids = [str(op.get("entity_id", ""))]
+            if str(op.get("operation", "")) == "entity.merge":
+                entity_ids.extend(str(item) for item in op.get("source_ids", []) or [])
+            collection = data.get(collection_name, []) or []
+            for entity_id in dict.fromkeys(item for item in entity_ids if item):
+                payload = next(
+                    (item for item in collection if isinstance(item, dict) and str(item.get("id", "")) == entity_id),
+                    None,
+                )
+                if payload is None:
+                    continue
+                override_operation = "add" if str(op.get("operation", "")) == "entity.create" else "patch"
+                override = ManualOverride(
+                    id=f"override_{uuid.uuid4().hex}",
+                    operation=override_operation,
+                    entity_type=override_type,
+                    entity_id=entity_id,
+                    payload=dict(payload),
+                    note=str(op.get("reason", "Agent 审批变更"))[:500],
+                    scope=scope,
+                    anchor_node_id=anchor,
+                    source=str(op.get("source", "agent_approved")),
+                    scope_reason=str(op.get("scope_reason", ""))[:500],
+                )
+                _upsert_override(bible, override)
 
     @staticmethod
     def _apply_world_patch(data: dict, operations: list[dict]) -> None:

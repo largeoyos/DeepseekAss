@@ -78,6 +78,10 @@ class ManualOverride:
     payload: dict = field(default_factory=dict)
     created_at: str = ""
     note: str = ""
+    scope: str = "global"
+    anchor_node_id: str = ""
+    source: str = "manual"
+    scope_reason: str = ""
 
 
 @dataclass
@@ -382,7 +386,13 @@ def _override_id(operation: str, entity_type: str, entity_id: str) -> str:
 def _upsert_override(bible: WorldBible, override: ManualOverride) -> None:
     bible.manual_overrides = [
         item for item in bible.manual_overrides
-        if not (item.operation == override.operation and item.entity_type == override.entity_type and item.entity_id == override.entity_id)
+        if not (
+            item.operation == override.operation
+            and item.entity_type == override.entity_type
+            and item.entity_id == override.entity_id
+            and getattr(item, "scope", "global") == getattr(override, "scope", "global")
+            and getattr(item, "anchor_node_id", "") == getattr(override, "anchor_node_id", "")
+        )
     ]
     bible.manual_overrides.append(override)
 
@@ -443,9 +453,34 @@ def _override_collection(bible: WorldBible, entity_type: str):
     }.get(entity_type)
 
 
-def apply_manual_overrides(bible: WorldBible) -> WorldBible:
-    """Replay user authority after rebuilding the automatic aggregate."""
+def _override_is_active(
+    override: ManualOverride,
+    active_node_ids: list[str] | set[str] | None = None,
+    current_node_id: str = "",
+) -> bool:
+    scope = str(getattr(override, "scope", "global") or "global")
+    anchor = str(getattr(override, "anchor_node_id", "") or "")
+    if scope == "global":
+        return True
+    if not anchor:
+        return False
+    active = set(active_node_ids or [])
+    if scope == "branch":
+        return anchor in active
+    if scope == "chapter":
+        return bool(current_node_id) and anchor == current_node_id
+    return False
+
+
+def apply_manual_overrides(
+    bible: WorldBible,
+    active_node_ids: list[str] | set[str] | None = None,
+    current_node_id: str = "",
+) -> WorldBible:
+    """Replay user authority, filtered by global/chapter/branch scope."""
     for override in bible.manual_overrides:
+        if not _override_is_active(override, active_node_ids, current_node_id):
+            continue
         if override.entity_type == "story_clock" and override.operation == "patch":
             bible.story_clock = copy.deepcopy(override.payload)
             continue
@@ -473,7 +508,6 @@ def apply_manual_overrides(bible: WorldBible) -> WorldBible:
     bible.rules = [rule.content for rule in bible.world_rules if rule.content and not rule.hidden]
     bible.resolved_view = _flat_view_dict(bible)
     return bible
-
 
 def _record_dynamic_fact(
     bible: WorldBible,
