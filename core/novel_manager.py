@@ -1,4 +1,4 @@
-"""
+﻿"""
 小说管理器模块
 负责：
 - 书架管理（创建/列出/删除小说项目）
@@ -70,6 +70,9 @@ class NovelMeta:
     root_chapter_id: str = ""
     active_path: list[str] = field(default_factory=list)
     chapter_nodes: dict[str, dict] = field(default_factory=dict)
+    tree_roots: dict[str, str] = field(default_factory=dict)
+    active_tree_id: str = "primary_tree"
+    active_paths: dict[str, list[str]] = field(default_factory=dict)
 
     def __post_init__(self):
         """加载时归一化：确保文本字段是 str（兼容 LLM 返回 JSON 数组/对象）。"""
@@ -491,11 +494,26 @@ class NovelManager:
                 changed = True
 
         valid_ids = set(meta.chapter_nodes)
+        meta.tree_roots = dict(getattr(meta, "tree_roots", {}) or {})
+        meta.active_paths = dict(getattr(meta, "active_paths", {}) or {})
+        meta.active_tree_id = str(getattr(meta, "active_tree_id", "primary_tree") or "primary_tree")
+        meta.tree_roots.setdefault("primary_tree", root_id)
         for node_id, node in meta.chapter_nodes.items():
+            node.setdefault("node_kind", "main")
+            node.setdefault("tree_id", "primary_tree")
+            node.setdefault("tree_kind", "main")
+            node.setdefault("reference_node_ids", [])
+            node.setdefault("display_order", float(node.get("chapter_num", 0) or 0))
+            node.setdefault("display_label", "" if node.get("virtual") else f"第{node.get('chapter_num', 0)}章")
+            node.setdefault("is_primary_tree", node.get("tree_id") == "primary_tree")
+            node.setdefault("storage_kind", "legacy")
+            if node.get("parent_id") is None and not node.get("virtual"):
+                meta.tree_roots.setdefault(str(node.get("tree_id") or "primary_tree"), node_id)
             if node_id == root_id:
                 continue
             parent_id = node.get("parent_id")
-            if not parent_id or parent_id not in valid_ids or parent_id == node_id:
+            is_forest_root = node_id in set(meta.tree_roots.values()) and node.get("tree_id") != "primary_tree"
+            if (not parent_id and not is_forest_root) or (parent_id and parent_id not in valid_ids) or parent_id == node_id:
                 node["parent_id"] = root_id
                 changed = True
 
@@ -503,8 +521,9 @@ class NovelManager:
         for node_id, node in meta.chapter_nodes.items():
             if node_id == root_id:
                 continue
-            parent_id = node.get("parent_id") or root_id
-            expected_children.setdefault(parent_id, []).append(node_id)
+            parent_id = node.get("parent_id")
+            if parent_id:
+                expected_children.setdefault(parent_id, []).append(node_id)
         for parent_id, node in meta.chapter_nodes.items():
             children = sorted(
                 dict.fromkeys(expected_children.get(parent_id, [])),
@@ -530,11 +549,15 @@ class NovelManager:
             desired_path.append(cursor)
             cursor = meta.chapter_nodes[cursor].get("parent_id")
         desired_path.reverse()
-        if not desired_path or desired_path[0] != root_id:
+        if not desired_path:
+            desired_path = [root_id]
+        elif meta.active_tree_id == "primary_tree" and desired_path[0] != root_id:
             desired_path = [root_id]
         if meta.active_path != desired_path:
             meta.active_path = desired_path
             changed = True
+        meta.active_paths[meta.active_tree_id] = list(meta.active_path)
+        meta.active_paths.setdefault("primary_tree", list(meta.active_path) if meta.active_tree_id == "primary_tree" else [root_id])
         if meta.root_chapter_id != root_id:
             meta.root_chapter_id = root_id
             changed = True
@@ -608,8 +631,11 @@ class NovelManager:
                 if node["id"] not in children:
                     children.append(node["id"])
 
-        meta.schema_version = 2
+        meta.schema_version = 3
         meta.chapter_nodes = nodes
+        meta.tree_roots = {"primary_tree": self._virtual_root_node_id()}
+        meta.active_tree_id = "primary_tree"
+        meta.active_paths = {"primary_tree": list(active_path)}
         meta.active_path = active_path
         meta.root_chapter_id = active_path[0] if active_path else ""
         changed = True
@@ -628,11 +654,29 @@ class NovelManager:
             if nid in meta.chapter_nodes and not meta.chapter_nodes[nid].get("virtual")
         ]
 
+    def get_path_to_node(self, title: str, node_id: str) -> list[dict]:
+        meta = self.ensure_chapter_tree(title)
+        if node_id not in meta.chapter_nodes:
+            return []
+        path = []
+        cursor = node_id
+        seen = set()
+        while cursor and cursor not in seen:
+            seen.add(cursor)
+            node = meta.chapter_nodes.get(cursor)
+            if not node:
+                break
+            path.append(node)
+            cursor = node.get("parent_id")
+        return [copy.deepcopy(item) for item in reversed(path) if not item.get("virtual")]
+
     def read_chapter_node(self, title: str, node_id: str) -> str | None:
         meta = self.ensure_chapter_tree(title)
         node = meta.chapter_nodes.get(node_id)
         if not node or node.get("virtual"):
             return None
+        if node.get("storage_kind") == "extra_uuid":
+            return self.get_workspace(title).storage.read_text(str(node.get("file", "")))
         return self.read_chapter_version(title, int(node["chapter_num"]), int(node["version"]))
 
     def set_chapter_node_summary(self, title: str, chapter_num: int, version: int, summary: str) -> None:
@@ -688,6 +732,7 @@ class NovelManager:
                 "chapter_num": chapter_num,
                 "version": version,
                 "title": node.get("title", f"第{chapter_num}章"),
+                "display_label": node.get("display_label", ""),
                 "summary": summary,
                 "node_id": node.get("id", self._node_id(chapter_num, version)),
             })
@@ -704,9 +749,8 @@ class NovelManager:
             return "故事刚刚开始。"
         parts = ["# 完整前情提要（基于章节树活跃路径）\n"]
         for entry in entries:
-            parts.append(
-                f"\n第{entry['chapter_num']}章「{entry['title']}」摘要：{entry['summary']}\n"
-            )
+            label = entry.get("display_label") or f"第{entry['chapter_num']}章"
+            parts.append(f"\n{label}「{entry['title']}」摘要：{entry['summary']}\n")
         return "".join(parts).strip()
 
     def rebuild_plot_summary_from_tree(self, title: str) -> None:
@@ -728,7 +772,11 @@ class NovelManager:
             path.append(cursor)
             cursor = node.get("parent_id")
         path.reverse()
+        meta.active_paths[meta.active_tree_id] = list(meta.active_path)
+        selected_tree_id = str(meta.chapter_nodes[node_id].get("tree_id", "primary_tree"))
+        meta.active_tree_id = selected_tree_id
         meta.active_path = path
+        meta.active_paths[selected_tree_id] = list(path)
         for active_id in path:
             active = meta.chapter_nodes.get(active_id)
             if active:
@@ -740,23 +788,235 @@ class NovelManager:
         self._save_meta(title, meta)
         return True
 
+    def list_chapter_trees(self, title: str) -> list[dict]:
+        meta = self.ensure_chapter_tree(title)
+        result = []
+        for tree_id, root_id in meta.tree_roots.items():
+            root = meta.chapter_nodes.get(root_id, {})
+            result.append({
+                "tree_id": tree_id,
+                "root_id": root_id,
+                "tree_kind": root.get("tree_kind", "main"),
+                "title": root.get("display_label") or root.get("title") or tree_id,
+                "active": tree_id == meta.active_tree_id,
+                "is_primary_tree": tree_id == "primary_tree",
+            })
+        return result
+
+    def switch_active_tree(self, title: str, tree_id: str) -> bool:
+        meta = self.ensure_chapter_tree(title)
+        if tree_id not in meta.tree_roots:
+            return False
+        meta.active_paths[meta.active_tree_id] = list(meta.active_path)
+        meta.active_tree_id = tree_id
+        path = list(meta.active_paths.get(tree_id) or [meta.tree_roots[tree_id]])
+        meta.active_path = [node_id for node_id in path if node_id in meta.chapter_nodes]
+        self._normalize_chapter_tree(meta)
+        self._save_meta(title, meta)
+        return True
+
+    def are_direct_path_neighbors(self, title: str, start_node_id: str, end_node_id: str) -> bool:
+        meta = self.ensure_chapter_tree(title)
+        start = meta.chapter_nodes.get(start_node_id)
+        end = meta.chapter_nodes.get(end_node_id)
+        return bool(start and end and end.get("parent_id") == start_node_id and start.get("tree_id") == end.get("tree_id"))
+
+    def _extra_content_path(self, node_id: str) -> str:
+        return f".deepseekass/extra_chapters/{node_id}.txt"
+
+    def _extra_history_path(self, node_id: str) -> str:
+        return f".deepseekass/extra_history/{node_id}.json"
+
+    def save_extra_node(
+        self,
+        title: str,
+        *,
+        run_id: str,
+        extra_type: str,
+        chapter_title: str,
+        content: str,
+        start_node_id: str = "",
+        end_node_id: str = "",
+        reference_node_id: str = "",
+        summary: str = "",
+        generation_record: dict | None = None,
+    ) -> dict:
+        if extra_type not in {"enrichment", "if_line", "prequel", "sequel"}:
+            raise ValueError("不支持的番外类型")
+        meta = self.ensure_chapter_tree(title)
+        existing = next((item for item in meta.chapter_nodes.values() if item.get("extra_run_id") == run_id), None)
+        if existing:
+            return copy.deepcopy(existing)
+        start = meta.chapter_nodes.get(start_node_id) if start_node_id else None
+        end = meta.chapter_nodes.get(end_node_id) if end_node_id else None
+        reference = meta.chapter_nodes.get(reference_node_id) if reference_node_id else None
+        if extra_type in {"enrichment", "if_line"}:
+            if not start or not end or end.get("parent_id") != start_node_id:
+                raise ValueError("丰富内容和 IF 线必须选择同一路径中连续的两个节点")
+        elif not reference:
+            raise ValueError("前传或后传必须选择一个正传参考节点")
+
+        node_id = f"extra_{uuid.uuid4().hex}"
+        tree_id = str(start.get("tree_id", "primary_tree")) if start else f"{extra_type}_{uuid.uuid4().hex[:12]}"
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        start_order = float(start.get("display_order", start.get("chapter_num", 0)) or 0) if start else 0.0
+        end_order = float(end.get("display_order", end.get("chapter_num", 0)) or 0) if end else start_order + 1.0
+        counts = sum(1 for item in meta.chapter_nodes.values() if item.get("node_kind") == extra_type) + 1
+        if extra_type == "enrichment":
+            display_label = f"第{start.get('chapter_num', 0)}.5章·番外"
+            display_order = (start_order + end_order) / 2.0
+            parent_id = start_node_id
+            tree_kind = str(start.get("tree_kind", "main"))
+        elif extra_type == "if_line":
+            display_label = f"IF-{counts:02d}"
+            display_order = start_order + 0.1
+            parent_id = start_node_id
+            tree_kind = "if_line"
+        else:
+            prefix = "前传" if extra_type == "prequel" else "后传"
+            display_label = f"{prefix}-{counts:02d}"
+            display_order = -float(counts) if extra_type == "prequel" else 100000.0 + counts
+            parent_id = None
+            tree_kind = extra_type
+        anchor = start or reference or {}
+        node = {
+            "id": node_id,
+            "chapter_num": int(anchor.get("chapter_num", 0) or 0),
+            "version": 0,
+            "title": chapter_title,
+            "file": self._extra_content_path(node_id),
+            "summary": summary,
+            "user_direction": "",
+            "generation_params": {},
+            "parent_id": parent_id,
+            "children_ids": [],
+            "sibling_order": counts,
+            "created_at": now,
+            "updated_at": now,
+            "node_kind": extra_type,
+            "tree_id": tree_id,
+            "tree_kind": tree_kind,
+            "reference_node_ids": [item for item in (start_node_id, end_node_id, reference_node_id) if item],
+            "display_order": display_order,
+            "display_label": display_label,
+            "is_primary_tree": tree_id == "primary_tree",
+            "storage_kind": "extra_uuid",
+            "extra_run_id": run_id,
+        }
+        workspace = self.get_workspace(title)
+        workspace.storage.write_text(node["file"], content)
+        try:
+            meta.chapter_nodes[node_id] = node
+            if parent_id:
+                children = meta.chapter_nodes[parent_id].setdefault("children_ids", [])
+                if node_id not in children:
+                    children.append(node_id)
+            else:
+                meta.tree_roots[tree_id] = node_id
+                meta.active_paths[tree_id] = [node_id]
+            if extra_type == "enrichment":
+                start_children = meta.chapter_nodes[start_node_id].setdefault("children_ids", [])
+                start_children[:] = [node_id if item == end_node_id else item for item in start_children]
+                meta.chapter_nodes[end_node_id]["parent_id"] = node_id
+                node["children_ids"] = [end_node_id]
+                if start_node_id in meta.active_path and end_node_id in meta.active_path:
+                    pos = meta.active_path.index(end_node_id)
+                    meta.active_path.insert(pos, node_id)
+                    meta.active_paths[meta.active_tree_id] = list(meta.active_path)
+            self._normalize_chapter_tree(meta)
+            self._save_meta(title, meta)
+            if generation_record is not None:
+                workspace.storage.write_json(self._extra_history_path(node_id), generation_record)
+            return copy.deepcopy(node)
+        except Exception:
+            workspace.storage.delete(node["file"])
+            workspace.storage.delete(self._extra_history_path(node_id))
+            raise
+
+    def load_node_generation_record(self, title: str, node_id: str) -> dict | None:
+        meta = self.ensure_chapter_tree(title)
+        node = meta.chapter_nodes.get(node_id) or {}
+        if node.get("storage_kind") == "extra_uuid":
+            data = self.get_workspace(title).storage.read_json(self._extra_history_path(node_id))
+            return data if isinstance(data, dict) else None
+        return self.load_generation_record(title, int(node.get("chapter_num", 0)), int(node.get("version", 0)))
+
+    def set_node_summary(self, title: str, node_id: str, summary: str) -> None:
+        meta = self.ensure_chapter_tree(title)
+        node = meta.chapter_nodes.get(node_id)
+        if not node:
+            return
+        node["summary"] = (summary or "").strip()
+        node["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+        meta.compressed_early_summary = ""
+        self._save_meta(title, meta)
+
     def delete_chapter_node(self, title: str, node_id: str) -> bool:
         meta = self.ensure_chapter_tree(title)
-        if node_id not in meta.chapter_nodes or meta.chapter_nodes[node_id].get("virtual"):
+        node = meta.chapter_nodes.get(node_id)
+        if not node or node.get("virtual"):
             return False
-        to_delete: set[str] = set()
+        if node.get("storage_kind") == "extra_uuid" and node.get("node_kind") == "enrichment":
+            parent_id = node.get("parent_id")
+            children = list(node.get("children_ids", []))
+            if parent_id in meta.chapter_nodes:
+                parent_children = meta.chapter_nodes[parent_id].setdefault("children_ids", [])
+                parent_children[:] = [item for item in parent_children if item != node_id]
+                for child_id in children:
+                    if child_id not in parent_children:
+                        parent_children.append(child_id)
+                    if child_id in meta.chapter_nodes:
+                        meta.chapter_nodes[child_id]["parent_id"] = parent_id
+            meta.active_path = [item for item in meta.active_path if item != node_id]
+            for tree_id, path in meta.active_paths.items():
+                meta.active_paths[tree_id] = [item for item in path if item != node_id]
+            self._delete_extra_node_files(title, node_id)
+            meta.chapter_nodes.pop(node_id, None)
+            self._normalize_chapter_tree(meta)
+            self._save_meta(title, meta)
+            return True
 
+        to_delete: set[str] = set()
         def collect(nid: str) -> None:
             to_delete.add(nid)
             for child_id in meta.chapter_nodes.get(nid, {}).get("children_ids", []):
                 collect(child_id)
-
         collect(node_id)
-        for nid in sorted(to_delete, reverse=True):
-            node = meta.chapter_nodes.get(nid)
-            if node:
-                self.delete_chapter_version(title, int(node["chapter_num"]), int(node["version"]))
+        legacy_nodes = []
+        for nid in to_delete:
+            item = meta.chapter_nodes.get(nid) or {}
+            if item.get("storage_kind") == "extra_uuid":
+                self._delete_extra_node_files(title, nid)
+            else:
+                legacy_nodes.append((int(item.get("chapter_num", 0)), int(item.get("version", 0))))
+        for nid in to_delete:
+            item = meta.chapter_nodes.get(nid) or {}
+            parent_id = item.get("parent_id")
+            if parent_id in meta.chapter_nodes:
+                meta.chapter_nodes[parent_id]["children_ids"] = [child for child in meta.chapter_nodes[parent_id].get("children_ids", []) if child != nid]
+            meta.chapter_nodes.pop(nid, None)
+        meta.active_path = [nid for nid in meta.active_path if nid not in to_delete]
+        for tree_id, path in list(meta.active_paths.items()):
+            meta.active_paths[tree_id] = [nid for nid in path if nid not in to_delete]
+        for tree_id, root_id in list(meta.tree_roots.items()):
+            if root_id in to_delete and tree_id != "primary_tree":
+                meta.tree_roots.pop(tree_id, None)
+                meta.active_paths.pop(tree_id, None)
+        self._normalize_chapter_tree(meta)
+        self._save_meta(title, meta)
+        for chapter_num, version in legacy_nodes:
+            self.delete_chapter_version(title, chapter_num, version)
         return True
+
+    def _delete_extra_node_files(self, title: str, node_id: str) -> None:
+        workspace = self.get_workspace(title)
+        workspace.storage.delete(self._extra_content_path(node_id))
+        workspace.storage.delete(self._extra_history_path(node_id))
+        bible = self.load_world_bible(title)
+        key = f"node:{node_id}"
+        bible.chapter_snapshots.pop(key, None)
+        bible.chapter_world_entries.pop(key, None)
+        self.save_world_bible(title, bible)
 
     # ========== 章节版本管理 ==========
 
@@ -1246,9 +1506,12 @@ class NovelManager:
             content = ""
             entry = None
             if not force_extract:
-                entry = snapshots.get(
-                    _chapter_world_entry_key(chapter_num, version)
+                snapshot_key = (
+                    f"node:{node.get('id')}"
+                    if node.get("storage_kind") == "extra_uuid"
+                    else _chapter_world_entry_key(chapter_num, version)
                 )
+                entry = snapshots.get(snapshot_key)
                 if not (isinstance(entry, dict) and isinstance(entry.get("data"), dict)):
                     report["snapshot_missing_count"] += 1
             if not force_extract and isinstance(entry, dict) and isinstance(entry.get("data"), dict):
@@ -1257,7 +1520,7 @@ class NovelManager:
                     entry["data"],
                     chapter_num=chapter_num,
                     chapter_version=version,
-                    store_chapter_entry=True,
+                    store_chapter_entry=node.get("storage_kind") != "extra_uuid",
                     run_dedup=False,
                 )
                 report["snapshot_count"] += 1
@@ -1401,6 +1664,50 @@ class NovelManager:
         report["refreshed_chapter"] = chapter_num
         report["refreshed_version"] = version
         return report
+
+    def extract_world_bible_for_extra_node(
+        self,
+        client,
+        title: str,
+        node_id: str,
+        model: str = "deepseek-v4-flash",
+        global_user_prompt: str = "",
+        xp_mode: bool = False,
+        rebuild_active: bool = False,
+    ) -> dict:
+        from core.world_bible import WorldBible, _chapter_world_entry_key, extract_and_merge_world_bible
+        meta = self.ensure_chapter_tree(title)
+        node = meta.chapter_nodes.get(node_id)
+        if not node or node.get("storage_kind") != "extra_uuid":
+            raise ValueError("请选择 UUID 番外节点")
+        content = self.read_chapter_node(title, node_id) or ""
+        if not content.strip():
+            raise ValueError("番外正文为空")
+        chapter_num = int(node.get("chapter_num", 0) or 0)
+        temp = WorldBible()
+        extract_and_merge_world_bible(
+            client, content, chapter_num, temp, model,
+            chapter_version=0,
+            global_user_prompt=global_user_prompt,
+            background_story=meta.background_story,
+            protagonist_bio=meta.protagonist_bio,
+            writing_demand=meta.writing_demand,
+            xp_mode=xp_mode or meta.xp_mode,
+        )
+        generated_key = _chapter_world_entry_key(chapter_num, 0)
+        entry = copy.deepcopy(temp.chapter_snapshots.get(generated_key) or temp.chapter_world_entries.get(generated_key))
+        if not isinstance(entry, dict):
+            raise ValueError("番外世界书提取未产生快照")
+        existing = self.load_world_bible(title)
+        existing.chapter_snapshots[f"node:{node_id}"] = entry
+        existing.chapter_world_entries[f"node:{node_id}"] = copy.deepcopy(entry)
+        self.save_world_bible(title, existing)
+        if rebuild_active:
+            return self.rebuild_world_bible_from_active(
+                client, title, model=model,
+                global_user_prompt=global_user_prompt, xp_mode=xp_mode,
+            )
+        return {"node_id": node_id, "snapshot_key": f"node:{node_id}", "isolated": True}
 
     # ========== 🔬 智能前情提要选取算法 ==========
 
@@ -1941,3 +2248,5 @@ class NovelManager:
         self._world_bible_load_errors.pop(title, None)
     def world_bible_load_error(self, title: str) -> str:
         return self._world_bible_load_errors.get(title, "")
+
+

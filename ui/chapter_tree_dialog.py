@@ -1,10 +1,11 @@
-import re
+﻿import re
 import threading
 import time
 
 from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QBrush, QColor, QPainterPath, QPen
 from PyQt6.QtWidgets import (
+    QComboBox,
     QDialog,
     QGraphicsPathItem,
     QGraphicsRectItem,
@@ -52,9 +53,8 @@ class ChapterNodeItem(QGraphicsRectItem):
         self._apply_style(active=active, selected=selected)
 
         title = node.get("title") or f"第{node.get('chapter_num')}章"
-        node_text = "第零章\n故事起点" if node.get("virtual") else (
-            f"第{node.get('chapter_num')}章  v{node.get('version')}\n{title}"
-        )
+        label = node.get("display_label") or f"第{node.get('chapter_num')}章  v{node.get('version')}"
+        node_text = "第零章\n故事起点" if node.get("virtual") else f"{label}\n{title}"
         self._text_item = QGraphicsTextItem(node_text, self)
         self._text_item.setTextWidth(width - 16)
         self._text_item.setPos(8, 7)
@@ -112,6 +112,8 @@ class ChapterTreeDialog(QDialog):
     summary_failed = pyqtSignal(str)
     polish_plan_ready = pyqtSignal(object, object, object)
     polish_plan_failed = pyqtSignal(str)
+    extra_plan_ready = pyqtSignal(object, object)
+    extra_plan_failed = pyqtSignal(str)
 
     def __init__(
         self, parent, novel_manager: NovelManager, book_title: str, client=None,
@@ -142,6 +144,8 @@ class ChapterTreeDialog(QDialog):
         self.summary_failed.connect(self._on_summary_failed)
         self.polish_plan_ready.connect(self._on_polish_plan_ready)
         self.polish_plan_failed.connect(self._on_polish_plan_failed)
+        self.extra_plan_ready.connect(self._on_extra_plan_ready)
+        self.extra_plan_failed.connect(self._on_extra_plan_failed)
         self._init_ui()
         self._load_tree()
 
@@ -165,6 +169,13 @@ class ChapterTreeDialog(QDialog):
         hint = QLabel("章节图形树（从上到下为父子层级；高亮为活跃路径）")
         hint.setWordWrap(True)
         left_layout.addWidget(hint)
+
+        tree_row = QHBoxLayout()
+        tree_row.addWidget(QLabel("阅读树"))
+        self._tree_combo = QComboBox()
+        self._tree_combo.currentIndexChanged.connect(self._on_tree_combo_changed)
+        tree_row.addWidget(self._tree_combo, 1)
+        left_layout.addLayout(tree_row)
 
         zoom_row = QHBoxLayout()
         zoom_out_btn = QPushButton("-")
@@ -219,8 +230,9 @@ class ChapterTreeDialog(QDialog):
         self._rewrite_btn.clicked.connect(lambda: self._generate_variant("rewrite"))
         self._export_btn = QPushButton("导出该章节")
         self._export_btn.clicked.connect(self._export_current)
-        insert_btn = QPushButton("插入中间章")
-        insert_btn.clicked.connect(self._insert_middle_chapter)
+        insert_btn = QPushButton("Agent 插入番外")
+        insert_btn.clicked.connect(self._insert_agent_extra)
+        self._extra_btn = insert_btn
         self._delete_btn = QPushButton("删除子树")
         self._delete_btn.clicked.connect(self._delete_current)
         self._summary_btn = QPushButton("重新生成摘要")
@@ -975,12 +987,239 @@ class ChapterTreeDialog(QDialog):
             QMessageBox.critical(self, "生成失败", message)
         self._load_tree()
 
-    def _insert_middle_chapter(self) -> None:
-        QMessageBox.information(
-            self,
-            "暂不执行",
-            "插入中间章需要重排后续章节编号。为避免破坏旧书结构，请先通过生成/重写创建分支版本。",
+    def _insert_agent_extra(self) -> None:
+        node = self._selected_node()
+        if not node or node.get("virtual") or not self._client:
+            QMessageBox.warning(self, "Agent 番外", "请先选择一个正文章节节点。")
+            return
+        if self._novel_generation_mode != "agent":
+            QMessageBox.information(self, "Agent 番外", "请先在设置中心切换到 Agent 写作模式。")
+            return
+        from ui.agent_extra_dialog import AgentExtraRequestDialog
+        dialog = AgentExtraRequestDialog(self, start_node=node, reference_node=node)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        values = dialog.values()
+        extra_type = values["extra_type"]
+        start_node_id = node["id"] if extra_type in {"enrichment", "if_line"} else ""
+        reference_node_id = node["id"] if extra_type in {"prequel", "sequel"} else ""
+        end_node_id = ""
+        if extra_type in {"enrichment", "if_line"}:
+            children = [self._meta.chapter_nodes[item] for item in node.get("children_ids", []) if item in self._meta.chapter_nodes]
+            if not children:
+                QMessageBox.warning(self, "Agent 番外", "当前节点没有直接下一节点，无法选择连续的两个点。")
+                return
+            labels = [f"{item.get('display_label') or item.get('title')} [{item['id']}]" for item in children]
+            selected, ok = QInputDialog.getItem(self, "选择终点", "请选择与起点直接相连的下一节点：", labels, 0, False)
+            if not ok:
+                return
+            end_node_id = children[labels.index(selected)]["id"]
+        from core.agent.extra_generation import AgentExtraGenerationService, AgentExtraRequest
+        request = AgentExtraRequest(
+            book_title=self._book_title,
+            extra_type=extra_type,
+            start_node_id=start_node_id,
+            end_node_id=end_node_id,
+            reference_node_id=reference_node_id,
+            title=values["title"],
+            plot=values["plot"],
+            requirement=values["requirement"],
+            target_words=values["target_words"],
+            model=self._client.model,
+            manual_entity_ids=values["manual_entity_ids"],
+            global_prompt=self._client.global_user_prompt,
         )
+        self._extra_btn.setEnabled(False)
+        self._details.setPlainText("Agent 正在分析番外位置、上下文、世界书和历史剧情……")
+        parent = self.parent()
+        if hasattr(parent, "_agent_chapter_planning"):
+            parent._agent_chapter_planning = True
+
+        def prepare() -> None:
+            try:
+                service = AgentExtraGenerationService(
+                    self._novel_manager,
+                    self._api_client("agent_extra_plan"),
+                    skills_enabled=self._skills_enabled,
+                )
+                plan = service.prepare(request)
+                self.extra_plan_ready.emit(request, plan)
+            except Exception as exc:
+                self.extra_plan_failed.emit(str(exc))
+        threading.Thread(target=prepare, daemon=True).start()
+
+    def _on_extra_plan_ready(self, request, plan) -> None:
+        parent = self.parent()
+        if hasattr(parent, "_agent_chapter_planning"):
+            parent._agent_chapter_planning = False
+        self._extra_btn.setEnabled(True)
+        self._details.setPlainText(plan.render())
+        from ui.agent_extra_dialog import AgentExtraPlanDialog
+        if AgentExtraPlanDialog(self, request, plan).exec() != QDialog.DialogCode.Accepted:
+            self._details.setPlainText("番外计划已取消，未修改章节森林。")
+            return
+        self._start_extra_generation(request, plan)
+
+    def _on_extra_plan_failed(self, error: str) -> None:
+        parent = self.parent()
+        if hasattr(parent, "_agent_chapter_planning"):
+            parent._agent_chapter_planning = False
+        self._extra_btn.setEnabled(True)
+        self._details.setPlainText(f"Agent 番外规划失败：{error}")
+        QMessageBox.critical(self, "Agent 番外规划失败", error)
+
+    def _start_extra_generation(self, request, plan) -> None:
+        self._extra_btn.setEnabled(False)
+        self._details.setPlainText("正在生成番外正文，请稍候……")
+        parent = self.parent()
+        if hasattr(parent, "_stream_chapter_completion"):
+            parent._chapter_finalized = False
+            parent._generate_btn.setEnabled(False)
+            if hasattr(parent, "_agent_generate_btn"):
+                parent._agent_generate_btn.setEnabled(False)
+            parent._cont_generate_btn.setEnabled(False)
+            parent._client.reset_cancel()
+            parent._stop_btn.setVisible(True)
+            parent._stop_btn.setEnabled(True)
+            parent._mode_combo.setEnabled(False)
+            parent._streaming = True
+            parent._streaming_start_time = time.time()
+            parent._assistant_text_buffer = []
+            parent._append_user_message(f"Agent 生成番外：{request.title}")
+        threading.Thread(target=self._run_extra_generation, args=(request, plan), daemon=True).start()
+
+    def _run_extra_generation(self, request, plan) -> None:
+        host_finished = False
+        rollback_snapshot_id = ""
+        try:
+            from core.agent.extra_generation import AgentExtraGenerationService
+            service = AgentExtraGenerationService(
+                self._novel_manager,
+                self._api_client("agent_extra_prompt"),
+                skills_enabled=self._skills_enabled,
+            )
+            result = service.generate(request, plan)
+            messages = [
+                {"role": "system", "content": Prompts.NOVEL_CHAPTER_WRITING},
+                {"role": "user", "content": result.prompt},
+            ]
+            parent = self.parent()
+            if hasattr(parent, "_stream_chapter_completion"):
+                content, generation_stats, cancelled = parent._stream_chapter_completion(
+                    operation="agent_extra_generation",
+                    messages=messages,
+                    prompt_text=result.prompt,
+                    max_tokens=max(request.target_words * 2, self._client.max_tokens),
+                )
+                if cancelled:
+                    self._finish_host_stream()
+                    host_finished = True
+                    self.generation_failed.emit("已取消番外生成。")
+                    return
+            else:
+                response = self._api_client("agent_extra_generation").chat.completions.create(
+                    model=self._client.model, messages=messages,
+                    temperature=self._client.temperature, top_p=self._client.top_p,
+                    max_tokens=max(request.target_words * 2, self._client.max_tokens),
+                    frequency_penalty=self._client.frequency_penalty,
+                )
+                content = response.choices[0].message.content or ""
+                generation_stats = {}
+            if getattr(self._client, "_cancel_requested", False):
+                self._finish_host_stream()
+                host_finished = True
+                self.generation_failed.emit("已取消番外生成。")
+                return
+            anchor_id = request.start_node_id or request.reference_node_id
+            anchor = self._novel_manager.ensure_chapter_tree(self._book_title).chapter_nodes.get(anchor_id, {})
+            chapter_num = int(anchor.get("chapter_num", 0) or 0)
+            if hasattr(parent, "_supervise_chapter_content"):
+                content, supervision_report = parent._supervise_chapter_content(
+                    chapter_num=chapter_num,
+                    chapter_title=request.title,
+                    content=content,
+                    context=result.prompt,
+                    chapter_outline=request.plot,
+                    requirements=request.requirement,
+                    target_words=request.target_words,
+                    xp_mode=self._novel_manager.load_meta(self._book_title).xp_mode,
+                    operation_prefix="agent_extra",
+                    agent_mode=True,
+                )
+            else:
+                supervision_report = {"status": "not_available"}
+            summary = self._novel_manager.generate_summary(
+                self._api_client("agent_extra_summary"), content, chapter_num, request.title,
+                model=self._client.model,
+                global_user_prompt=self._client.global_user_prompt,
+                xp_mode=self._novel_manager.load_meta(self._book_title).xp_mode,
+                raise_on_error=True,
+            )
+            rollback = self._novel_manager.snapshot_service(self._book_title).create(
+                f"插入番外「{request.title}」前备份", source="rollback_backup"
+            )
+            rollback_snapshot_id = rollback.snapshot_id
+            generation_record = {
+                "schema_version": 1,
+                "operation": "agent_extra_generation",
+                "generation_mode": "agent",
+                "agent_run_id": plan.plan_id,
+                "extra_type": request.extra_type,
+                "title": request.title,
+                "prompt": result.prompt,
+                "plot": request.plot,
+                "requirement": request.requirement,
+                "model": self._client.model,
+                "temperature": self._client.temperature,
+                "top_p": self._client.top_p,
+                "max_tokens": self._client.max_tokens,
+                "frequency_penalty": self._client.frequency_penalty,
+                "generation_stats": generation_stats,
+                "supervision_report": supervision_report,
+                "plan": plan.to_dict(),
+                "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            }
+            node = self._novel_manager.save_extra_node(
+                self._book_title,
+                run_id=plan.plan_id,
+                extra_type=request.extra_type,
+                chapter_title=request.title,
+                content=content,
+                start_node_id=request.start_node_id,
+                end_node_id=request.end_node_id,
+                reference_node_id=request.reference_node_id,
+                summary=summary,
+                generation_record=generation_record,
+            )
+            self._novel_manager.extract_world_bible_for_extra_node(
+                self._api_client("agent_extra_world_bible"),
+                self._book_title, node["id"],
+                model=self._client.model,
+                global_user_prompt=self._client.global_user_prompt,
+                xp_mode=self._novel_manager.load_meta(self._book_title).xp_mode,
+                rebuild_active=request.extra_type == "enrichment",
+            )
+            if request.extra_type == "enrichment":
+                self._novel_manager.rebuild_plot_summary_from_tree(self._book_title)
+            completed = self._novel_manager.snapshot_service(self._book_title).create(
+                f"番外「{request.title}」生成完成", source="chapter"
+            )
+            service.mark_completed(self._book_title, plan.plan_id, node["id"], completed.snapshot_id)
+            self._finish_host_stream()
+            host_finished = True
+            self.generation_done.emit(
+                f"番外已生成：{node.get('display_label')}「{request.title}」。"
+                + ("已插入当前活跃路径。" if request.extra_type == "enrichment" else "当前正传活跃路径未改变。")
+            )
+        except Exception as exc:
+            if rollback_snapshot_id:
+                try:
+                    self._novel_manager.snapshot_service(self._book_title).restore(rollback_snapshot_id)
+                except Exception as restore_exc:
+                    exc = RuntimeError(f"{exc}；回滚失败：{restore_exc}")
+            if not host_finished:
+                self._finish_host_stream()
+            self.generation_failed.emit(str(exc))
 
     def _delete_current(self) -> None:
         node = self._selected_node()
