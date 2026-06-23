@@ -45,6 +45,22 @@ class ChangeSetService:
         self.repository.save_change_set(change_set)
         return change_set
 
+
+    def propose_world_patch(self, run_id: str, book_id: str, operations: list[dict], reason: str = "") -> ChangeSet:
+        from core.world_bible import world_bible_to_dict
+        current = world_bible_to_dict(self.manager.load_world_bible(self.book_title))
+        operation = ChangeOperation(
+            operation_id=f"op_{uuid.uuid4().hex}",
+            operation="world_bible.patch",
+            target_type="world_bible",
+            target_id="world_bible",
+            expected_checksum=self._digest_json(current),
+            payload={"operations": operations},
+        )
+        change_set = ChangeSet(f"changes_{uuid.uuid4().hex}", run_id, book_id, [operation], {"valid": True, "operation_count": len(operations)}, reason=reason)
+        self.repository.save_change_set(change_set)
+        return change_set
+
     def approve(self, change_set_id: str, approved_operation_ids: list[str] | None = None) -> ChangeSet:
         change_set = self.repository.load_change_set(change_set_id)
         if change_set is None or change_set.status != "pending":
@@ -87,7 +103,7 @@ class ChangeSetService:
             if operation.operation == "chapter.save_version":
                 current = self.manager.read_active_chapter(self.book_title, int(operation.target_id)) or ""
                 actual = self._digest(current)
-            elif operation.operation == "world_bible.replace":
+            elif operation.operation in {"world_bible.replace", "world_bible.patch"}:
                 from core.world_bible import world_bible_to_dict
                 actual = self._digest_json(world_bible_to_dict(self.manager.load_world_bible(self.book_title)))
             else:
@@ -105,6 +121,93 @@ class ChangeSetService:
         elif operation.operation == "world_bible.replace":
             from core.world_bible import dict_to_world_bible
             self.manager.save_world_bible(self.book_title, dict_to_world_bible(operation.payload["world_bible"]))
+        elif operation.operation == "world_bible.patch":
+            import copy
+            from core.world_bible import (
+                dict_to_world_bible,
+                record_manual_view_changes,
+                world_bible_to_dict,
+            )
+            data = world_bible_to_dict(self.manager.load_world_bible(self.book_title))
+            before_view = copy.deepcopy(data.get("resolved_view") or {
+                key: data.get(key, [])
+                for key in (
+                    "characters", "locations", "timeline", "active_plot_threads",
+                    "key_worldbuilding_passages", "global_foreshadowing",
+                    "global_key_dialogues", "world_rules",
+                )
+            })
+            before_view["story_clock"] = copy.deepcopy(data.get("story_clock", {}))
+            self._apply_world_patch(data, operation.payload.get("operations", []))
+            bible = dict_to_world_bible(data)
+            record_manual_view_changes(bible, before_view)
+            self.manager.save_world_bible(self.book_title, bible)
+
+    @staticmethod
+    def _apply_world_patch(data: dict, operations: list[dict]) -> None:
+        collections = {
+            "character": "characters",
+            "location": "locations",
+            "rule": "rules",
+            "timeline": "timeline",
+            "plot_thread": "active_plot_threads",
+            "world_rule": "world_rules",
+            "foreshadowing": "global_foreshadowing",
+        }
+        for op in operations or []:
+            if not isinstance(op, dict):
+                continue
+            kind = str(op.get("entity_type") or op.get("type") or "").strip()
+            collection_name = collections.get(kind, kind)
+            if collection_name not in data or not isinstance(data.get(collection_name), list):
+                raise ChangeSetError(f"不支持的世界书实体类型: {kind or collection_name}")
+            entity_id = str(op.get("entity_id") or op.get("id") or "").strip()
+            payload = op.get("payload") if isinstance(op.get("payload"), dict) else {}
+            action = str(op.get("operation") or "").strip()
+            collection = data.setdefault(collection_name, [])
+            target = next((item for item in collection if isinstance(item, dict) and str(item.get("id", "")) == entity_id), None)
+            if action == "entity.create":
+                item = dict(payload)
+                if entity_id:
+                    item.setdefault("id", entity_id)
+                if not item.get("id"):
+                    raise ChangeSetError("新增世界书实体必须包含 id")
+                if any(isinstance(existing, dict) and existing.get("id") == item.get("id") for existing in collection):
+                    raise ChangeSetError(f"世界书实体已存在: {item.get('id')}")
+                collection.append(item)
+            elif action == "entity.patch":
+                if target is None:
+                    raise ChangeSetError(f"世界书实体不存在: {entity_id}")
+                target.update(payload)
+            elif action == "entity.archive":
+                if target is None:
+                    raise ChangeSetError(f"世界书实体不存在: {entity_id}")
+                target["hidden"] = True
+                if payload:
+                    target.update(payload)
+            elif action == "entity.supersede":
+                if target is None:
+                    raise ChangeSetError(f"世界书实体不存在: {entity_id}")
+                supersedes = target.setdefault("supersedes", [])
+                source = op.get("supersedes") or payload.get("supersedes")
+                if isinstance(source, list):
+                    for item in source:
+                        if item not in supersedes:
+                            supersedes.append(item)
+                elif source and source not in supersedes:
+                    supersedes.append(source)
+                target.update({k: v for k, v in payload.items() if k != "supersedes"})
+            elif action == "entity.merge":
+                if target is None:
+                    raise ChangeSetError(f"世界书实体不存在: {entity_id}")
+                target.update(payload)
+                for source_id in op.get("source_ids", []) or []:
+                    source = next((item for item in collection if isinstance(item, dict) and str(item.get("id", "")) == str(source_id)), None)
+                    if source is not None and source is not target:
+                        source["hidden"] = True
+                        source["merged_into"] = entity_id
+            else:
+                raise ChangeSetError(f"不支持的世界书变更操作: {action}")
 
     @staticmethod
     def _digest(text: str) -> str:

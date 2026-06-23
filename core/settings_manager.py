@@ -31,6 +31,18 @@ DEFAULT_SETTINGS = {
     "controlled_agent_enabled": False,
     "agent_skills_enabled": True,
     "agent_web_enabled": False,
+    "agent_web_endpoint": "",
+    "agent_web_method": "POST",
+    "agent_web_api_key": "",
+    "agent_web_auth_header": "Authorization",
+    "agent_web_auth_prefix": "Bearer ",
+    "agent_web_query_field": "query",
+    "agent_web_results_path": "results",
+    "agent_web_title_field": "title",
+    "agent_web_url_field": "url",
+    "agent_web_snippet_field": "content",
+    "agent_web_max_results": 5,
+    "agent_web_timeout_seconds": 15,
 }
 
 

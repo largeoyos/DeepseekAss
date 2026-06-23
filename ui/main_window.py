@@ -167,6 +167,10 @@ class StreamSignals(QObject):
     agent_chapter_plan_ready = pyqtSignal(object, object, object)
     agent_chapter_plan_error = pyqtSignal(str)
     agent_maintenance_changed = pyqtSignal(str)
+    agent_advisor_ready = pyqtSignal(object)
+    agent_advisor_error = pyqtSignal(str)
+    agent_world_plan_ready = pyqtSignal(object)
+    agent_world_plan_error = pyqtSignal(str)
 
 
 # ========== 模式配置 ==========
@@ -656,6 +660,10 @@ class DeepSeekChatGUI(QMainWindow):
         self._stream_signals.agent_chapter_plan_ready.connect(self._on_agent_chapter_plan_ready)
         self._stream_signals.agent_chapter_plan_error.connect(self._on_agent_chapter_plan_error)
         self._stream_signals.agent_maintenance_changed.connect(self._on_agent_maintenance_changed)
+        self._stream_signals.agent_advisor_ready.connect(self._on_agent_advisor_ready)
+        self._stream_signals.agent_advisor_error.connect(self._on_agent_advisor_error)
+        self._stream_signals.agent_world_plan_ready.connect(self._on_agent_world_plan_ready)
+        self._stream_signals.agent_world_plan_error.connect(self._on_agent_world_plan_error)
         self._stream_signals.character_book_sync_status.connect(
             self._on_character_book_sync_status
         )
@@ -688,6 +696,9 @@ class DeepSeekChatGUI(QMainWindow):
         # 模式切换守卫：记录上次有效模式，用于 streaming 时回退
         self._last_mode: str = ""
         self._agent_chapter_planning = False
+        self._agent_advisor_running = False
+        self._agent_world_running = False
+        self._last_advisor_result = None
         self._agent_maintenance_running = False
         self._novel_generation_mode = "classic"
 
@@ -1202,6 +1213,10 @@ class DeepSeekChatGUI(QMainWindow):
     def _can_change_novel_generation_mode(self, requested_mode: str) -> tuple[bool, str]:
         if requested_mode == self._novel_generation_mode:
             return True, ""
+        if self._agent_advisor_running:
+            return False, "写作顾问正在回答，请等待完成后再切换。"
+        if self._agent_world_running:
+            return False, "世界书管理 Agent 正在生成变更计划，请等待完成后再切换。"
         if self._agent_chapter_planning:
             return False, "Agent 正在规划章节，请等待规划完成或取消后再切换。"
         if self._agent_maintenance_running:
@@ -2071,6 +2086,21 @@ class DeepSeekChatGUI(QMainWindow):
             lambda: self.dispatch_chapter_generation("agent_button")
         )
         agent_layout.addWidget(self._agent_generate_btn)
+        self._agent_advisor_mode_check = QCheckBox("Agent 顾问模式（发送内容用于提问/构思，不生成章节）")
+        agent_layout.addWidget(self._agent_advisor_mode_check)
+        self._agent_advisor_status = QLabel("顾问：尚未提问")
+        self._agent_advisor_status.setWordWrap(True)
+        agent_layout.addWidget(self._agent_advisor_status)
+        advisor_actions = QHBoxLayout()
+        self._agent_save_advice_btn = QPushButton("保存为构思")
+        self._agent_save_advice_btn.setEnabled(False)
+        self._agent_save_advice_btn.clicked.connect(self._on_save_agent_advice)
+        self._agent_add_world_btn = QPushButton("加入世界书")
+        self._agent_add_world_btn.setEnabled(False)
+        self._agent_add_world_btn.clicked.connect(self._on_add_advisor_to_world_bible)
+        advisor_actions.addWidget(self._agent_save_advice_btn)
+        advisor_actions.addWidget(self._agent_add_world_btn)
+        agent_layout.addLayout(advisor_actions)
         self._agent_plan_status = QLabel("Agent 尚未规划本章。")
         self._agent_plan_status.setWordWrap(True)
         agent_layout.addWidget(self._agent_plan_status)
@@ -4485,6 +4515,11 @@ class DeepSeekChatGUI(QMainWindow):
     def _on_book_selected(self, text: str) -> None:
         """书架选择变化 → 加载已有小说设定"""
         self._clear_agent_transient_plan()
+        self._last_advisor_result = None
+        if hasattr(self, "_agent_advisor_status"):
+            self._agent_advisor_status.setText("顾问：尚未提问")
+            self._agent_save_advice_btn.setEnabled(False)
+            self._agent_add_world_btn.setEnabled(False)
         title = text if text and not text.startswith("（暂无小说") else None
         if not title:
             self._novel_title_edit.setText("")
@@ -5028,6 +5063,156 @@ class DeepSeekChatGUI(QMainWindow):
 
     # ========== 🚀 生成章节 ==========
 
+    def _on_agent_advisor_ask(self, message: str) -> None:
+        if self._agent_advisor_running:
+            return
+        title = self._novel_title_edit.text().strip()
+        if not title:
+            QMessageBox.warning(self, "Agent 顾问", "请先选择或创建一本小说。")
+            return
+        self._novel_manager.create_book(title)
+        self._agent_advisor_running = True
+        self._agent_advisor_status.setText("顾问正在读取章节、世界书和作者规划……")
+        self._agent_save_advice_btn.setEnabled(False)
+        self._agent_add_world_btn.setEnabled(False)
+
+        def run_advisor() -> None:
+            try:
+                from core.agent.advisor import AdvisorRequest, WritingAdvisorService
+                service = WritingAdvisorService(
+                    self._novel_manager,
+                    self._usage_logged_client("agent_advisor"),
+                    self._conversation_manager,
+                )
+                result = service.ask(AdvisorRequest(
+                    book_title=title,
+                    message=message,
+                    model=self._client.model,
+                    settings=dict(self._settings),
+                ))
+                self._stream_signals.agent_advisor_ready.emit(result)
+            except Exception as exc:
+                self._stream_signals.agent_advisor_error.emit(str(exc))
+
+        threading.Thread(target=run_advisor, daemon=True).start()
+
+    def _on_agent_advisor_ready(self, result) -> None:
+        self._agent_advisor_running = False
+        self._last_advisor_result = result
+        answer = result.answer or "顾问未返回有效回答。"
+        source_lines = []
+        answer_sources = []
+        for source in result.sources:
+            if source.get("type") == "web":
+                source_title = source.get("title", "") or source.get("url", "")
+                url = source.get("url", "")
+                source_lines.append(f"网页：{source_title} {url}")
+                if url:
+                    answer_sources.append(f"- [{source_title}]({url})")
+            else:
+                label = f"{source.get('type', '')}：{source.get('tool', '')}"
+                source_lines.append(label)
+                answer_sources.append(f"- {label}")
+        display_answer = answer + (
+            "\n\n### 引用来源\n" + "\n".join(answer_sources)
+            if answer_sources else ""
+        )
+        self._assistant_text_buffer = [display_answer]
+        self._render_assistant_stream(display_answer)
+        self._agent_advisor_status.setText(
+            f"顾问完成；工具调用 {len(result.tool_calls)} 次，来源 {len(result.sources)} 项。"
+        )
+        self._agent_plan_preview.setPlainText(
+            "【顾问回答】\n" + answer +
+            ("\n\n【引用来源】\n" + "\n".join(source_lines) if source_lines else "")
+        )
+        self._agent_save_advice_btn.setEnabled(bool(answer.strip()))
+        self._agent_add_world_btn.setEnabled(bool(answer.strip()))
+
+    def _on_agent_advisor_error(self, error: str) -> None:
+        self._agent_advisor_running = False
+        self._agent_advisor_status.setText(f"顾问失败：{error}")
+        QMessageBox.warning(self, "Agent 顾问失败", error)
+
+    def _on_save_agent_advice(self) -> None:
+        result = self._last_advisor_result
+        title = self._novel_title_edit.text().strip()
+        if not result or not title:
+            return
+        from core.agent.advisor import WritingAdvisorService
+        artifact_id = WritingAdvisorService(
+            self._novel_manager, self._usage_logged_client("agent_advisor_save")
+        ).save_advice(title, result.run_id, result.answer)
+        self._agent_advisor_status.setText(f"构思已加密保存：{artifact_id}")
+
+    def _on_add_advisor_to_world_bible(self) -> None:
+        result = self._last_advisor_result
+        title = self._novel_title_edit.text().strip()
+        if not result or not title or self._agent_world_running:
+            return
+        self._agent_world_running = True
+        self._agent_add_world_btn.setEnabled(False)
+        self._agent_advisor_status.setText("世界书管理 Agent 正在分析补充细节……")
+
+        def run_world_plan() -> None:
+            try:
+                from core.agent.world_bible_agent import WorldBibleAgentService, WorldDetailRequest
+                service = WorldBibleAgentService(
+                    self._novel_manager,
+                    self._usage_logged_client("world_bible_agent_detail"),
+                    skills_enabled=bool(self._settings.get("agent_skills_enabled", True)),
+                )
+                plan = service.analyze_user_details(WorldDetailRequest(
+                    book_title=title,
+                    text=result.answer,
+                    model=self._client.model,
+                    source_run_id=result.run_id,
+                    global_prompt=self._client.global_user_prompt,
+                ))
+                self._stream_signals.agent_world_plan_ready.emit(plan)
+            except Exception as exc:
+                self._stream_signals.agent_world_plan_error.emit(str(exc))
+
+        threading.Thread(target=run_world_plan, daemon=True).start()
+
+    def _on_agent_world_plan_ready(self, plan) -> None:
+        self._agent_world_running = False
+        preview = [plan.summary, "", "拟议变更："]
+        for item in plan.operations:
+            preview.append(
+                f"- {item.get('operation')} {item.get('entity_type')}:{item.get('entity_id')}\n"
+                f"  原因：{item.get('reason', '')}\n  字段：{json.dumps(item.get('payload', {}), ensure_ascii=False)}"
+            )
+        if plan.conflicts:
+            preview.extend(["", "冲突：", json.dumps(plan.conflicts, ensure_ascii=False, indent=2)])
+        answer = QMessageBox.question(
+            self,
+            "审批世界书变更",
+            "\n".join(preview)[:12000] + "\n\n批准后会先创建项目快照，再原子提交。是否批准？",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        from core.agent.world_bible_agent import WorldBibleAgentService
+        service = WorldBibleAgentService(self._novel_manager)
+        try:
+            if answer == QMessageBox.StandardButton.Yes:
+                applied = service.approve(self._novel_title_edit.text().strip(), plan.change_set_id)
+                self._agent_advisor_status.setText(
+                    f"世界书变更已批准并提交；状态：{applied.status}"
+                )
+            else:
+                service.reject(self._novel_title_edit.text().strip(), plan.change_set_id)
+                self._agent_advisor_status.setText("世界书变更已拒绝，正式数据未修改。")
+        except Exception as exc:
+            QMessageBox.critical(self, "世界书变更失败", str(exc))
+        finally:
+            self._agent_add_world_btn.setEnabled(self._last_advisor_result is not None)
+
+    def _on_agent_world_plan_error(self, error: str) -> None:
+        self._agent_world_running = False
+        self._agent_add_world_btn.setEnabled(self._last_advisor_result is not None)
+        self._agent_advisor_status.setText(f"世界书分析失败：{error}")
+        QMessageBox.warning(self, "世界书管理 Agent 失败", error)
+
     def _on_agent_generate_chapter(self) -> None:
         if self._novel_generation_mode != "agent":
             QMessageBox.information(self, "当前为原版模式", "请在设置中心切换到 Agent 写作模式。")
@@ -5422,21 +5607,49 @@ class DeepSeekChatGUI(QMainWindow):
         self, *, chapter_num: int, chapter_title: str, content: str,
         context: str, chapter_outline: str, requirements: str,
         target_words: int, xp_mode: bool, operation_prefix: str,
+        agent_mode: bool = False,
     ) -> tuple[str, dict]:
-        """Run the chapter supervision quality gate and return content plus report."""
+        """Use the Agent supervisor only for Agent writing mode; keep classic behavior unchanged."""
         if not content.strip():
             return content, {"status": "warning", "audit_failed": True, "error": "empty chapter"}
+
+        def progress(stage: str) -> None:
+            messages = {
+                "audit": "\n[Supervision] 正在审查计划、硬性要求和连续性……\n",
+                "repair": "[Supervision] 正在最小化修复未通过项……\n",
+                "reaudit": "[Supervision] 正在复检修复稿……\n",
+            }
+            self._stream_signals.token.emit(messages.get(stage, ""))
+
         try:
+            if agent_mode:
+                from core.agent.supervision_agent import AgentSupervisionService, SupervisionRequest
+                service = AgentSupervisionService(
+                    self._novel_manager,
+                    lambda action: self._usage_logged_client(f"{operation_prefix}_agent_supervision_{action}"),
+                    skills_enabled=bool(self._settings.get("agent_skills_enabled", True)),
+                )
+                supervised = service.supervise(SupervisionRequest(
+                    book_title=self._novel_title_edit.text().strip(),
+                    chapter_num=chapter_num,
+                    chapter_title=chapter_title,
+                    chapter_content=content,
+                    chapter_outline=chapter_outline,
+                    requirements=requirements,
+                    continuity_context=context,
+                    target_words=target_words,
+                    model=self._client.model,
+                    global_prompt=self._client.global_user_prompt,
+                    xp_mode=xp_mode,
+                ), progress=progress)
+                report = supervised.report
+                self._stream_signals.token.emit(
+                    f"[Agent Supervision] 完成；工具调用 {len(supervised.tool_calls)} 次，"
+                    f"修复轮次 {report.get('repair_rounds', 0)}。\n"
+                )
+                return supervised.content, report
+
             from utils.supervision import supervise_chapter
-
-            def progress(stage: str) -> None:
-                messages = {
-                    "audit": "\n[Supervision] Auditing outline, constraints, and continuity...\n",
-                    "repair": "[Supervision] Repairing failed checks...\n",
-                    "reaudit": "[Supervision] Re-auditing repaired chapter...\n",
-                }
-                self._stream_signals.token.emit(messages.get(stage, ""))
-
             final_content, result = supervise_chapter(
                 lambda action: self._usage_logged_client(f"{operation_prefix}_supervision_{action}"),
                 chapter_content=content,
@@ -5547,6 +5760,7 @@ class DeepSeekChatGUI(QMainWindow):
                 target_words=target_words,
                 xp_mode=xp_mode,
                 operation_prefix=operation_prefix,
+                agent_mode=agent_plan is not None,
             )
 
             if self._client._cancel_requested:
@@ -5628,8 +5842,8 @@ class DeepSeekChatGUI(QMainWindow):
             self._stream_signals.token.emit("\n📖 正在更新世界书...\n")
             maintenance = None
             if agent_plan is not None:
-                from core.agent.world_maintenance import WorldBibleMaintenanceService
-                maintenance = WorldBibleMaintenanceService(self._novel_manager).maintain(
+                from core.agent.world_bible_agent import WorldBibleAgentService
+                maintenance = WorldBibleAgentService(self._novel_manager).analyze_chapter(
                     self._usage_logged_client("agent_world_maintenance"),
                     title, chapter_num, saved_version,
                     model=self._client.model,
@@ -6176,6 +6390,20 @@ class DeepSeekChatGUI(QMainWindow):
                 self._cont_generate_btn.setEnabled(True)
             else:
                 return
+
+        if (
+            isinstance(self._client.strategy, NovelStrategy)
+            and self._novel_generation_mode == "agent"
+            and hasattr(self, "_agent_advisor_mode_check")
+            and self._agent_advisor_mode_check.isChecked()
+        ):
+            user_input = self._input_box.toPlainText().strip()
+            if not user_input:
+                return
+            self._input_box.clear()
+            self._append_user_message(user_input)
+            self._on_agent_advisor_ask(user_input)
+            return
 
         # 如果当前是小说模式且开启了章节续写 → 触发章节生成
         if (

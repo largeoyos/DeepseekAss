@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from dataclasses import dataclass, field
 from typing import Callable
 
@@ -39,6 +40,7 @@ class ToolSpec:
     produces_change_set: bool = False
     allowed_agents: list[str] = field(default_factory=list)
     max_result_chars: int = 12000
+    timeout_seconds: float = 30.0
     version: int = 1
 
     def openai_schema(self) -> dict:
@@ -73,7 +75,19 @@ class ToolRegistry:
             if PERMISSION_RANK[context.permission_level] < PERMISSION_RANK[spec.required_permission]:
                 raise AgentToolPermissionError("当前 Agent 权限不足")
             self._validate_arguments(spec.parameters, request.arguments)
-            value = spec.handler(context, request.arguments)
+            if spec.timeout_seconds and spec.timeout_seconds > 0:
+                executor = ThreadPoolExecutor(max_workers=1)
+                future = executor.submit(spec.handler, context, request.arguments)
+                try:
+                    value = future.result(timeout=spec.timeout_seconds)
+                except TimeoutError as exc:
+                    future.cancel()
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    raise AgentToolError(f"Tool timed out: {spec.name}") from exc
+                else:
+                    executor.shutdown(wait=True)
+            else:
+                value = spec.handler(context, request.arguments)
             if isinstance(value, str):
                 content, structured = value, {}
             else:

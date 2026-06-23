@@ -328,10 +328,52 @@ class SettingsDialog(QDialog):
         self._agent_skills.setChecked(bool(self._settings.get("agent_skills_enabled", True)))
         self._agent_skills.stateChanged.connect(self._save_agent_settings)
         layout.addWidget(self._agent_skills)
-        self._agent_web = QCheckBox("启用网页搜索工具（当前版本预留）")
+        web_group = QGroupBox("联网搜索")
+        web_form = QFormLayout(web_group)
+        self._agent_web = QCheckBox("启用受控网页搜索工具")
         self._agent_web.setChecked(bool(self._settings.get("agent_web_enabled", False)))
-        self._agent_web.setEnabled(False)
-        layout.addWidget(self._agent_web)
+        self._agent_web.stateChanged.connect(self._save_agent_settings)
+        web_form.addRow(self._agent_web)
+        self._agent_web_endpoint = QLineEdit(str(self._settings.get("agent_web_endpoint", "")))
+        self._agent_web_endpoint.setPlaceholderText("https://api.example.com/search")
+        web_form.addRow("HTTPS Endpoint", self._agent_web_endpoint)
+        self._agent_web_method = QLineEdit(str(self._settings.get("agent_web_method", "POST")))
+        web_form.addRow("请求方法", self._agent_web_method)
+        self._agent_web_key = QLineEdit(str(self._settings.get("agent_web_api_key", "")))
+        self._agent_web_key.setEchoMode(QLineEdit.EchoMode.Password)
+        web_form.addRow("API Key", self._agent_web_key)
+        self._agent_web_auth_header = QLineEdit(str(self._settings.get("agent_web_auth_header", "Authorization")))
+        self._agent_web_auth_prefix = QLineEdit(str(self._settings.get("agent_web_auth_prefix", "Bearer ")))
+        self._agent_web_query_field = QLineEdit(str(self._settings.get("agent_web_query_field", "query")))
+        web_form.addRow("认证 Header", self._agent_web_auth_header)
+        web_form.addRow("认证前缀", self._agent_web_auth_prefix)
+        web_form.addRow("查询字段", self._agent_web_query_field)
+        self._agent_web_results_path = QLineEdit(str(self._settings.get("agent_web_results_path", "results")))
+        web_form.addRow("结果路径", self._agent_web_results_path)
+        self._agent_web_title_field = QLineEdit(str(self._settings.get("agent_web_title_field", "title")))
+        self._agent_web_url_field = QLineEdit(str(self._settings.get("agent_web_url_field", "url")))
+        self._agent_web_snippet_field = QLineEdit(str(self._settings.get("agent_web_snippet_field", "content")))
+        web_form.addRow("标题字段", self._agent_web_title_field)
+        web_form.addRow("URL 字段", self._agent_web_url_field)
+        web_form.addRow("摘要字段", self._agent_web_snippet_field)
+        self._agent_web_max_results = QSpinBox()
+        self._agent_web_max_results.setRange(1, 10)
+        self._agent_web_max_results.setValue(int(self._settings.get("agent_web_max_results", 5)))
+        self._agent_web_timeout = QSpinBox()
+        self._agent_web_timeout.setRange(1, 30)
+        self._agent_web_timeout.setValue(int(self._settings.get("agent_web_timeout_seconds", 15)))
+        self._agent_web_timeout.setSuffix(" 秒")
+        web_form.addRow("最大结果数", self._agent_web_max_results)
+        web_form.addRow("请求超时", self._agent_web_timeout)
+        web_actions = QHBoxLayout()
+        web_save = QPushButton("保存搜索配置")
+        web_save.clicked.connect(self._save_agent_settings)
+        web_test = QPushButton("测试搜索")
+        web_test.clicked.connect(self._test_agent_web_search)
+        web_actions.addWidget(web_save)
+        web_actions.addWidget(web_test)
+        web_form.addRow(web_actions)
+        layout.addWidget(web_group)
         layout.addStretch()
         return page
 
@@ -359,10 +401,36 @@ class SettingsDialog(QDialog):
         settings["novel_generation_mode"] = mode
         settings["controlled_agent_enabled"] = mode == "agent"
         settings["agent_skills_enabled"] = self._agent_skills.isChecked()
-        settings["agent_web_enabled"] = False
+        settings["agent_web_enabled"] = self._agent_web.isChecked()
+        settings["agent_web_endpoint"] = self._agent_web_endpoint.text().strip()
+        settings["agent_web_method"] = self._agent_web_method.text().strip().upper() or "POST"
+        settings["agent_web_api_key"] = self._agent_web_key.text().strip()
+        settings["agent_web_auth_header"] = self._agent_web_auth_header.text().strip() or "Authorization"
+        settings["agent_web_auth_prefix"] = self._agent_web_auth_prefix.text()
+        settings["agent_web_query_field"] = self._agent_web_query_field.text().strip() or "query"
+        settings["agent_web_results_path"] = self._agent_web_results_path.text().strip() or "results"
+        settings["agent_web_title_field"] = self._agent_web_title_field.text().strip() or "title"
+        settings["agent_web_url_field"] = self._agent_web_url_field.text().strip() or "url"
+        settings["agent_web_snippet_field"] = self._agent_web_snippet_field.text().strip() or "content"
+        settings["agent_web_max_results"] = self._agent_web_max_results.value()
+        settings["agent_web_timeout_seconds"] = self._agent_web_timeout.value()
         self._settings_manager.save(settings)
         self._settings = settings
         self._settings_changed_callback()
+
+    def _test_agent_web_search(self) -> None:
+        self._save_agent_settings()
+        try:
+            from core.agent.web_search import WebSearchClient, WebSearchConfig
+            config = WebSearchConfig.from_settings(self._settings_manager.load())
+            response = WebSearchClient(config).search("小说创作素材测试", max_results=1)
+            results = response.get("results", [])
+            if results:
+                QMessageBox.information(self, "搜索测试成功", f"已返回结果：{results[0].get('title', '')}")
+            else:
+                QMessageBox.information(self, "搜索测试完成", "接口请求成功，但没有返回结果。")
+        except Exception as exc:
+            QMessageBox.warning(self, "搜索测试失败", str(exc))
 
     def _refresh_model_and_preset_lists(self) -> None:
         self._settings = self._settings_manager.load()

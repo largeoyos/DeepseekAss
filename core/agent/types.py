@@ -5,7 +5,15 @@ from datetime import datetime
 from typing import Literal
 
 AGENT_SCHEMA_VERSION = 1
-AgentKind = Literal["writing_orchestrator", "continuity_editor", "roleplay_director", "project_maintainer"]
+AgentKind = Literal[
+    "writing_orchestrator",
+    "writing_advisor",
+    "chapter_supervisor",
+    "world_bible_manager",
+    "continuity_editor",
+    "roleplay_director",
+    "project_maintainer",
+]
 AgentRunStatus = Literal["queued", "running", "waiting_approval", "paused", "completed", "failed", "cancelled"]
 PermissionLevel = Literal["read_only", "draft_write", "confirmed_write"]
 
