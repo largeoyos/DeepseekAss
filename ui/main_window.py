@@ -655,7 +655,7 @@ class DeepSeekChatGUI(QMainWindow):
         )
         self._stream_signals.agent_chapter_plan_ready.connect(self._on_agent_chapter_plan_ready)
         self._stream_signals.agent_chapter_plan_error.connect(self._on_agent_chapter_plan_error)
-        self._stream_signals.agent_maintenance_changed.connect(self._refresh_agent_maintenance_status)
+        self._stream_signals.agent_maintenance_changed.connect(self._on_agent_maintenance_changed)
         self._stream_signals.character_book_sync_status.connect(
             self._on_character_book_sync_status
         )
@@ -688,6 +688,8 @@ class DeepSeekChatGUI(QMainWindow):
         # 模式切换守卫：记录上次有效模式，用于 streaming 时回退
         self._last_mode: str = ""
         self._agent_chapter_planning = False
+        self._agent_maintenance_running = False
+        self._novel_generation_mode = "classic"
 
         # Step 1: 登录
         self._login_and_init()
@@ -1192,11 +1194,62 @@ class DeepSeekChatGUI(QMainWindow):
             )
             if not has_messages:
                 self._display.setHtml(INITIAL_HTML)
-        if hasattr(self, "_agent_generate_btn"):
-            self._agent_generate_btn.setVisible(bool(self._settings.get("controlled_agent_enabled", False)))
-        if hasattr(self, "_agent_chapter_group"):
-            self._agent_chapter_group.setVisible(bool(self._settings.get("controlled_agent_enabled", False)))
+        self.apply_novel_generation_mode(
+            self._settings.get("novel_generation_mode", "classic")
+        )
         self._update_status()
+
+    def _can_change_novel_generation_mode(self, requested_mode: str) -> tuple[bool, str]:
+        if requested_mode == self._novel_generation_mode:
+            return True, ""
+        if self._agent_chapter_planning:
+            return False, "Agent 正在规划章节，请等待规划完成或取消后再切换。"
+        if self._agent_maintenance_running:
+            return False, "世界书维护正在运行，请等待任务完成后再切换。"
+        if self._streaming or not self._chapter_finalized:
+            return False, "当前生成、审稿或渲染任务尚未完成，请先完成或取消任务。"
+        if requested_mode == "agent":
+            try:
+                from core.agent.chapter_generation import AgentChapterGenerationService  # noqa: F401
+                from core.agent.world_maintenance import WorldBibleMaintenanceService  # noqa: F401
+            except Exception as exc:
+                return False, f"Agent 模块不可用，已保留原版模式：{exc}"
+        return True, ""
+
+    def _clear_agent_transient_plan(self) -> None:
+        if hasattr(self, "_agent_plan_status"):
+            self._agent_plan_status.setText("Agent 尚未规划本章。")
+        if hasattr(self, "_agent_plan_preview"):
+            self._agent_plan_preview.clear()
+
+    def apply_novel_generation_mode(self, mode: str) -> None:
+        mode = mode if mode in {"classic", "agent"} else "classic"
+        if mode == "agent":
+            allowed, reason = self._can_change_novel_generation_mode(mode)
+            if not allowed and mode != self._novel_generation_mode:
+                mode = "classic"
+                settings = self._settings_manager.load()
+                settings["novel_generation_mode"] = "classic"
+                settings["controlled_agent_enabled"] = False
+                self._settings_manager.save(settings)
+                self._settings = settings
+                if hasattr(self, "_generation_mode_stack"):
+                    QMessageBox.warning(self, "Agent 模式不可用", reason)
+        previous = self._novel_generation_mode
+        self._novel_generation_mode = mode
+        if previous == "agent" and mode == "classic":
+            self._clear_agent_transient_plan()
+        if hasattr(self, "_generation_mode_stack"):
+            self._generation_mode_stack.setCurrentIndex(1 if mode == "agent" else 0)
+        if mode == "agent" and hasattr(self, "_agent_maintenance_status"):
+            self._refresh_agent_maintenance_status()
+
+    def dispatch_chapter_generation(self, source: str = "button") -> None:
+        del source
+        if self._novel_generation_mode == "agent":
+            self._on_agent_generate_chapter()
+        else:
+            self._on_generate_chapter()
 
     def _save_runtime_settings(self) -> None:
         if getattr(self, "_settings_applying", False):
@@ -1967,7 +2020,12 @@ class DeepSeekChatGUI(QMainWindow):
         word_row.addWidget(self._chapter_word_count, stretch=1)
         layout.addLayout(word_row)
 
-        # ── 生成章节按钮 ──
+        # ── 互斥生成操作区 ──
+        self._generation_mode_stack = QStackedWidget()
+        self._classic_generation_page = QWidget()
+        classic_generation_layout = QVBoxLayout(self._classic_generation_page)
+        classic_generation_layout.setContentsMargins(0, 0, 0, 0)
+
         self._generate_btn = QPushButton("🚀 生成下一章")
         self._generate_btn.setMinimumHeight(40)
         self._generate_btn.setStyleSheet("""
@@ -1997,8 +2055,10 @@ class DeepSeekChatGUI(QMainWindow):
                 border: 1px solid #555;
             }
         """)
-        self._generate_btn.clicked.connect(self._on_generate_chapter)
-        layout.addWidget(self._generate_btn)
+        self._generate_btn.clicked.connect(
+            lambda: self.dispatch_chapter_generation("button")
+        )
+        classic_generation_layout.addWidget(self._generate_btn)
 
         self._agent_chapter_group = QGroupBox("Agent 章节模块")
         self._agent_chapter_group.setCheckable(True)
@@ -2007,7 +2067,9 @@ class DeepSeekChatGUI(QMainWindow):
         self._agent_generate_btn = QPushButton("Agent 生成下一章")
         self._agent_generate_btn.setMinimumHeight(38)
         self._agent_generate_btn.setToolTip("先读取设定、规划剧情并筛选世界书/历史上下文，确认计划后生成正文")
-        self._agent_generate_btn.clicked.connect(self._on_agent_generate_chapter)
+        self._agent_generate_btn.clicked.connect(
+            lambda: self.dispatch_chapter_generation("agent_button")
+        )
         agent_layout.addWidget(self._agent_generate_btn)
         self._agent_plan_status = QLabel("Agent 尚未规划本章。")
         self._agent_plan_status.setWordWrap(True)
@@ -2024,10 +2086,12 @@ class DeepSeekChatGUI(QMainWindow):
         self._agent_retry_maintenance_btn.clicked.connect(self._on_retry_world_maintenance)
         self._agent_retry_maintenance_btn.setVisible(False)
         agent_layout.addWidget(self._agent_retry_maintenance_btn)
-        enabled = bool(self._settings.get("controlled_agent_enabled", False))
-        self._agent_chapter_group.setVisible(enabled)
-        self._agent_generate_btn.setVisible(enabled)
-        layout.addWidget(self._agent_chapter_group)
+        self._generation_mode_stack.addWidget(self._classic_generation_page)
+        self._generation_mode_stack.addWidget(self._agent_chapter_group)
+        layout.addWidget(self._generation_mode_stack)
+        self.apply_novel_generation_mode(
+            self._settings.get("novel_generation_mode", "classic")
+        )
 
         # ── 保存/加载设定按钮 ──
         save_settings_row = QHBoxLayout()
@@ -3622,6 +3686,7 @@ class DeepSeekChatGUI(QMainWindow):
             api_test_callback=self._test_api_config,
             settings_changed_callback=self._apply_settings_to_controls,
             password_changed_callback=self._on_password_changed,
+            mode_change_guard=self._can_change_novel_generation_mode,
         )
         dialog.exec()
 
@@ -4416,6 +4481,7 @@ class DeepSeekChatGUI(QMainWindow):
 
     def _on_book_selected(self, text: str) -> None:
         """书架选择变化 → 加载已有小说设定"""
+        self._clear_agent_transient_plan()
         title = text if text and not text.startswith("（暂无小说") else None
         if not title:
             self._novel_title_edit.setText("")
@@ -4471,7 +4537,8 @@ class DeepSeekChatGUI(QMainWindow):
             self._client.strategy.genre = meta.genre
             self._client.strategy.style_tone = meta.style_tone
             self._client.strategy.xp_mode = bool(meta.xp_mode)
-        self._refresh_agent_maintenance_status(title)
+        if self._novel_generation_mode == "agent":
+            self._refresh_agent_maintenance_status(title)
 
     def _on_novel_title_changed(self, text: str) -> None:
         if isinstance(self._client.strategy, NovelStrategy):
@@ -4959,10 +5026,10 @@ class DeepSeekChatGUI(QMainWindow):
     # ========== 🚀 生成章节 ==========
 
     def _on_agent_generate_chapter(self) -> None:
-        if self._streaming or not self._chapter_finalized or self._agent_chapter_planning:
+        if self._novel_generation_mode != "agent":
+            QMessageBox.information(self, "当前为原版模式", "请在设置中心切换到 Agent 写作模式。")
             return
-        if not self._settings.get("controlled_agent_enabled", False):
-            QMessageBox.information(self, "Agent 未启用", "请先在设置中心启用小说写作 Agent。")
+        if self._streaming or not self._chapter_finalized or self._agent_chapter_planning:
             return
         title = self._novel_title_edit.text().strip()
         if not title:
@@ -5071,7 +5138,10 @@ class DeepSeekChatGUI(QMainWindow):
         QMessageBox.critical(self, "Agent 规划失败", error)
 
     def _refresh_agent_maintenance_status(self, title: str = "") -> None:
-        if not hasattr(self, "_agent_maintenance_status"):
+        if (
+            self._novel_generation_mode != "agent"
+            or not hasattr(self, "_agent_maintenance_status")
+        ):
             return
         title = title or self._novel_title_edit.text().strip()
         if not title:
@@ -5096,6 +5166,7 @@ class DeepSeekChatGUI(QMainWindow):
             self._refresh_agent_maintenance_status(title)
             return
         task_id = pending[0].get("task_id", "")
+        self._agent_maintenance_running = True
         self._agent_retry_maintenance_btn.setEnabled(False)
         self._agent_maintenance_status.setText(f"正在重试 {task_id}……")
 
@@ -5115,8 +5186,14 @@ class DeepSeekChatGUI(QMainWindow):
 
         threading.Thread(target=retry, daemon=True).start()
 
+    def _on_agent_maintenance_changed(self, title: str) -> None:
+        self._agent_maintenance_running = False
+        self._refresh_agent_maintenance_status(title)
+
     def _on_generate_chapter(self) -> None:
         """生成下一章 → 完整工作流"""
+        if self._novel_generation_mode != "classic":
+            return
         if self._streaming or not self._chapter_finalized:
             return
 
@@ -5509,6 +5586,8 @@ class DeepSeekChatGUI(QMainWindow):
                 requirement=agent_request.requirement if agent_request is not None else "",
                 plot=plot_content,
                 agent_data=agent_data,
+                generation_mode="agent" if agent_plan is not None else "classic",
+                agent_run_id=agent_plan.plan_id if agent_plan is not None else None,
             )
             self._stream_signals.token.emit(f"✅ 已保存版本 v{saved_version} → `{file_path}`\n")
 
@@ -6098,7 +6177,7 @@ class DeepSeekChatGUI(QMainWindow):
             isinstance(self._client.strategy, NovelStrategy)
             and self._client.strategy.chapter_mode
         ):
-            self._on_generate_chapter()
+            self.dispatch_chapter_generation("send")
             return
 
         # 如果当前是续写模式且章节模式已勾选 → 触发续写章节生成

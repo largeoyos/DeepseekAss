@@ -27,6 +27,7 @@ DEFAULT_SETTINGS = {
     "theme": "dark",
     "snapshot_timed_enabled": True,
     "snapshot_interval_minutes": 30,
+    "novel_generation_mode": "classic",
     "controlled_agent_enabled": False,
     "agent_skills_enabled": True,
     "agent_web_enabled": False,
@@ -60,16 +61,29 @@ class SettingsManager:
                         data = json.load(f)
                 if isinstance(data, dict):
                     settings.update(data)
+                    if "novel_generation_mode" not in data:
+                        settings["novel_generation_mode"] = (
+                            "agent" if bool(data.get("controlled_agent_enabled", False)) else "classic"
+                        )
                     merged_presets = deepcopy(DEFAULT_PRESETS)
                     merged_presets.update(data.get("presets", {}) or {})
                     settings["presets"] = merged_presets
             except Exception:
                 pass
+        if settings.get("novel_generation_mode") not in {"classic", "agent"}:
+            settings["novel_generation_mode"] = "classic"
+        settings["controlled_agent_enabled"] = (
+            settings["novel_generation_mode"] == "agent"
+        )
         return settings
 
     def save(self, settings: dict) -> None:
         data = deepcopy(DEFAULT_SETTINGS)
         data.update(settings)
+        if data.get("novel_generation_mode") not in {"classic", "agent"}:
+            data["novel_generation_mode"] = "classic"
+        # Keep the legacy flag synchronized for one compatibility cycle.
+        data["controlled_agent_enabled"] = data["novel_generation_mode"] == "agent"
         if self._enc_key:
             self._crypto.encrypt_json(self._enc_key, self._actual_path(), data)
         else:

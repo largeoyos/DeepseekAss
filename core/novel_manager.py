@@ -1719,6 +1719,8 @@ class NovelManager:
         supervision_report: dict | None = None,
         agent_data: dict | None = None,
         world_maintenance_report: dict | None = None,
+        generation_mode: str = "classic",
+        agent_run_id: str | None = None,
     ) -> str:
         """
         保存一次生成的完整配置记录（独立文件）
@@ -1756,6 +1758,10 @@ class NovelManager:
             "max_tokens": max_tokens,
             "frequency_penalty": frequency_penalty,
             "content_preview": content_preview,
+            "generation_mode": (
+                generation_mode if generation_mode in {"classic", "agent"} else "classic"
+            ),
+            "agent_run_id": agent_run_id,
             "created_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         }
         if requirement:

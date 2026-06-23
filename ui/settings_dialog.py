@@ -4,6 +4,7 @@ import zipfile
 from copy import deepcopy
 
 from PyQt6.QtWidgets import (
+    QButtonGroup,
     QCheckBox,
     QDialog,
     QFileDialog,
@@ -15,6 +16,7 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QMessageBox,
     QPushButton,
+    QRadioButton,
     QSpinBox,
     QTabWidget,
     QVBoxLayout,
@@ -42,6 +44,7 @@ class SettingsDialog(QDialog):
         api_test_callback,
         settings_changed_callback,
         password_changed_callback,
+        mode_change_guard=None,
     ):
         super().__init__(parent)
         self._settings_manager = settings_manager
@@ -55,6 +58,8 @@ class SettingsDialog(QDialog):
         self._api_test_callback = api_test_callback
         self._settings_changed_callback = settings_changed_callback
         self._password_changed_callback = password_changed_callback
+        self._mode_change_guard = mode_change_guard
+        self._updating_agent_mode = False
 
         self.setWindowTitle("设置中心")
         self.resize(760, 620)
@@ -294,13 +299,31 @@ class SettingsDialog(QDialog):
     def _build_agent_tab(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout(page)
-        notice = QLabel("Agent 为实验功能，集成在小说写作面板中。它会先规划和筛选上下文，经确认后调用原章节生成流水线。")
+        notice = QLabel(
+            "选择小说写作的全局生成模式。两种模式共享书籍、章节树和世界书，"
+            "但生成入口与运行状态互相隔离。"
+        )
         notice.setWordWrap(True)
         layout.addWidget(notice)
-        self._agent_enabled = QCheckBox("启用小说写作 Agent")
-        self._agent_enabled.setChecked(bool(self._settings.get("controlled_agent_enabled", False)))
-        self._agent_enabled.stateChanged.connect(self._save_agent_settings)
-        layout.addWidget(self._agent_enabled)
+
+        mode_group = QGroupBox("小说写作模式")
+        mode_layout = QVBoxLayout(mode_group)
+        self._classic_mode_radio = QRadioButton("原版写作模式")
+        self._classic_mode_radio.setToolTip("直接使用现有章节生成、审稿、修复和保存流程")
+        self._agent_mode_radio = QRadioButton("Agent 写作模式")
+        self._agent_mode_radio.setToolTip("先规划并确认上下文，再调用现有章节生成流水线")
+        self._agent_mode_group = QButtonGroup(self)
+        self._agent_mode_group.addButton(self._classic_mode_radio)
+        self._agent_mode_group.addButton(self._agent_mode_radio)
+        mode = self._settings.get("novel_generation_mode", "classic")
+        self._agent_mode_radio.setChecked(mode == "agent")
+        self._classic_mode_radio.setChecked(mode != "agent")
+        self._classic_mode_radio.toggled.connect(self._on_agent_mode_toggled)
+        self._agent_mode_radio.toggled.connect(self._on_agent_mode_toggled)
+        mode_layout.addWidget(self._classic_mode_radio)
+        mode_layout.addWidget(self._agent_mode_radio)
+        layout.addWidget(mode_group)
+
         self._agent_skills = QCheckBox("启用内置及书籍级加密 Skills")
         self._agent_skills.setChecked(bool(self._settings.get("agent_skills_enabled", True)))
         self._agent_skills.stateChanged.connect(self._save_agent_settings)
@@ -312,12 +335,33 @@ class SettingsDialog(QDialog):
         layout.addStretch()
         return page
 
+    def _on_agent_mode_toggled(self, checked: bool) -> None:
+        if not checked or self._updating_agent_mode:
+            return
+        requested = "agent" if self._agent_mode_radio.isChecked() else "classic"
+        current = self._settings_manager.load().get("novel_generation_mode", "classic")
+        if requested == current:
+            return
+        if self._mode_change_guard is not None:
+            allowed, reason = self._mode_change_guard(requested)
+            if not allowed:
+                QMessageBox.warning(self, "无法切换写作模式", reason)
+                self._updating_agent_mode = True
+                self._agent_mode_radio.setChecked(current == "agent")
+                self._classic_mode_radio.setChecked(current != "agent")
+                self._updating_agent_mode = False
+                return
+        self._save_agent_settings()
+
     def _save_agent_settings(self) -> None:
         settings = self._settings_manager.load()
-        settings["controlled_agent_enabled"] = self._agent_enabled.isChecked()
+        mode = "agent" if self._agent_mode_radio.isChecked() else "classic"
+        settings["novel_generation_mode"] = mode
+        settings["controlled_agent_enabled"] = mode == "agent"
         settings["agent_skills_enabled"] = self._agent_skills.isChecked()
         settings["agent_web_enabled"] = False
         self._settings_manager.save(settings)
+        self._settings = settings
         self._settings_changed_callback()
 
     def _refresh_model_and_preset_lists(self) -> None:
