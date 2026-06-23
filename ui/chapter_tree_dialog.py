@@ -1,4 +1,4 @@
-﻿import re
+import re
 import threading
 import time
 
@@ -270,6 +270,16 @@ class ChapterTreeDialog(QDialog):
     def _load_tree(self) -> None:
         self._meta = self._novel_manager.ensure_chapter_tree(self._book_title)
         self._scene.clear()
+        self._tree_combo.blockSignals(True)
+        self._tree_combo.clear()
+        for tree in self._novel_manager.list_chapter_trees(self._book_title):
+            label = tree.get("title") or tree.get("tree_id")
+            if not tree.get("is_primary_tree"):
+                label = f"{label} · {tree.get('tree_kind', '')}"
+            self._tree_combo.addItem(label, tree.get("tree_id"))
+            if tree.get("active"):
+                self._tree_combo.setCurrentIndex(self._tree_combo.count() - 1)
+        self._tree_combo.blockSignals(False)
         nodes = self._meta.chapter_nodes
         active = set(self._meta.active_path)
         by_parent: dict[str | None, list[dict]] = {}
@@ -287,6 +297,20 @@ class ChapterTreeDialog(QDialog):
         self._update_path_label()
         self._on_tree_selection()
 
+
+    def _on_tree_combo_changed(self, index: int) -> None:
+        if index < 0 or not self._meta:
+            return
+        tree_id = self._tree_combo.itemData(index)
+        if not tree_id or tree_id == self._meta.active_tree_id:
+            return
+        if not self._novel_manager.switch_active_tree(self._book_title, str(tree_id)):
+            return
+        self._selected_node_id = None
+        self._rebuild_success_message = f"已切换阅读树：{self._tree_combo.currentText()}。剧情摘要和世界书已按该树重建。"
+        self._switch_btn.setEnabled(False)
+        self._load_tree()
+        threading.Thread(target=self._run_rebuild_memory, daemon=True).start()
     def _draw_layered_tree(
         self,
         roots: list[dict],
@@ -396,7 +420,7 @@ class ChapterTreeDialog(QDialog):
                 if node.get("virtual"):
                     parts.append("第零章")
                 else:
-                    parts.append(f"第{node.get('chapter_num')}章 v{node.get('version')}")
+                    parts.append(node.get("display_label") or f"第{node.get('chapter_num')}章 v{node.get('version')}")
         self._path_label.setText("活跃路径: " + (" → ".join(parts) if parts else "未设置"))
 
     def _selected_node(self) -> dict | None:
@@ -433,23 +457,24 @@ class ChapterTreeDialog(QDialog):
             )
             return
         content = self._novel_manager.read_chapter_node(self._book_title, node["id"]) or ""
-        record = self._novel_manager.load_generation_record(
-            self._book_title, int(node["chapter_num"]), int(node["version"])
-        ) or {}
+        record = self._novel_manager.load_node_generation_record(self._book_title, node["id"]) or {}
+        display_label = node.get("display_label") or f"第{node.get('chapter_num')}章"
+        summary = node.get("summary") or ""
         details = [
-            f"章节: 第{node.get('chapter_num')}章",
+            f"章节: {display_label}",
             f"标题: {node.get('title', '')}",
             f"版本: v{node.get('version')}",
             f"节点: {node.get('id')}",
+            f"节点类型: {node.get('node_kind', 'main')}",
+            f"阅读树: {node.get('tree_id', 'primary_tree')}",
+            f"参考节点: {', '.join(node.get('reference_node_ids', []) or []) or '(无)'}",
             f"父节点: {node.get('parent_id') or '(无)'}",
             f"子节点: {len(node.get('children_ids', []))}",
             f"创建: {node.get('created_at', '')}",
             f"中文字数: {count_cn(content)}",
             "",
             "节点剧情摘要:",
-            self._novel_manager.get_chapter_node_summary(
-                self._book_title, int(node["chapter_num"]), int(node["version"])
-            ) or "(未生成)",
+            summary or "(未生成)",
             "",
             "生成参数:",
             f"  模型: {record.get('model', '')}",
@@ -548,19 +573,17 @@ class ChapterTreeDialog(QDialog):
         if not self._client:
             QMessageBox.warning(self, "无法提取", "当前没有可用的模型客户端。")
             return
+        label = node.get("display_label") or f"第{node.get('chapter_num')}章 v{node.get('version')}"
         reply = QMessageBox.question(
             self,
             "提取当前章节世界书",
-            f"只重新提取第{node.get('chapter_num')}章 v{node.get('version')} 的世界书快照，"
-            "然后按活跃路径重新合并世界书。\n\n继续吗？",
+            f"只重新提取 {label} 的世界书快照，然后按活跃路径重新合并世界书。\n\n继续吗？",
             QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
             QMessageBox.StandardButton.No,
         )
         if reply != QMessageBox.StandardButton.Yes:
             return
-        self._rebuild_success_message = (
-            f"第{node.get('chapter_num')}章 v{node.get('version')} 世界书快照已刷新。"
-        )
+        self._rebuild_success_message = f"{label} 世界书快照已刷新。"
         self._details.setPlainText("正在提取当前章节世界书，请稍候...")
         threading.Thread(
             target=self._run_force_extract_current_world_bible,
@@ -570,13 +593,26 @@ class ChapterTreeDialog(QDialog):
 
     def _run_force_extract_current_world_bible(self, node_id: str) -> None:
         try:
-            report = self._novel_manager.extract_world_bible_for_node(
-                self._api_client("chapter_tree_world_bible"),
-                self._book_title,
-                node_id,
-                model=self._client.model,
-                global_user_prompt=self._client.global_user_prompt,
-            )
+            meta = self._novel_manager.ensure_chapter_tree(self._book_title)
+            node = meta.chapter_nodes.get(node_id) or {}
+            if node.get("storage_kind") == "extra_uuid":
+                report = self._novel_manager.extract_world_bible_for_extra_node(
+                    self._api_client("chapter_tree_world_bible"),
+                    self._book_title,
+                    node_id,
+                    model=self._client.model,
+                    global_user_prompt=self._client.global_user_prompt,
+                    xp_mode=self._novel_manager.load_meta(self._book_title).xp_mode,
+                    rebuild_active=True,
+                )
+            else:
+                report = self._novel_manager.extract_world_bible_for_node(
+                    self._api_client("chapter_tree_world_bible"),
+                    self._book_title,
+                    node_id,
+                    model=self._client.model,
+                    global_user_prompt=self._client.global_user_prompt,
+                )
             self.rebuild_done.emit(report)
         except Exception as exc:
             self.rebuild_failed.emit(str(exc))
@@ -606,9 +642,7 @@ class ChapterTreeDialog(QDialog):
             chapter_num = int(node.get("chapter_num", 0) or 0)
             version = int(node.get("version", 0) or 0)
             title = node.get("title") or f"第{chapter_num}章"
-            old_summary = self._novel_manager.get_chapter_node_summary(
-                self._book_title, chapter_num, version
-            )
+            old_summary = node.get("summary") or ""
             summary = self._novel_manager.generate_summary(
                 self._api_client("chapter_tree_summary"),
                 content,
@@ -621,11 +655,15 @@ class ChapterTreeDialog(QDialog):
             )
             if not summary.strip():
                 raise RuntimeError("模型返回了空摘要。节点摘要未修改，也未保存任何新内容。")
-            self._novel_manager.set_chapter_node_summary(
-                self._book_title, chapter_num, version, summary
-            )
+            if node.get("storage_kind") == "extra_uuid":
+                self._novel_manager.set_node_summary(self._book_title, node["id"], summary)
+            else:
+                self._novel_manager.set_chapter_node_summary(
+                    self._book_title, chapter_num, version, summary
+                )
             self._novel_manager.rebuild_plot_summary_from_tree(self._book_title)
-            self.summary_done.emit(f"第{chapter_num}章 v{version} 摘要已重新生成。")
+            label = node.get("display_label") or f"第{chapter_num}章 v{version}"
+            self.summary_done.emit(f"{label} 摘要已重新生成。")
         except Exception as exc:
             old_state = "原有摘要已保留" if old_summary else "节点摘要仍为空"
             self.summary_failed.emit(
@@ -975,12 +1013,14 @@ class ChapterTreeDialog(QDialog):
     def _on_generation_done(self, message: str) -> None:
         self._polish_btn.setEnabled(True)
         self._rewrite_btn.setEnabled(True)
+        self._extra_btn.setEnabled(True)
         QMessageBox.information(self, "完成", message)
         self._load_tree()
 
     def _on_generation_failed(self, message: str) -> None:
         self._polish_btn.setEnabled(True)
         self._rewrite_btn.setEnabled(True)
+        self._extra_btn.setEnabled(True)
         if "已取消" in message:
             QMessageBox.information(self, "已取消", message)
         else:

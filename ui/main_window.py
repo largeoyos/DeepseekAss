@@ -2086,8 +2086,21 @@ class DeepSeekChatGUI(QMainWindow):
             lambda: self.dispatch_chapter_generation("agent_button")
         )
         agent_layout.addWidget(self._agent_generate_btn)
-        self._agent_advisor_mode_check = QCheckBox("Agent 顾问模式（发送内容用于提问/构思，不生成章节）")
+        self._agent_advisor_mode_check = QCheckBox("Agent 顾问模式（使用下方输入框提问/构思，不生成章节）")
+        self._agent_advisor_mode_check.toggled.connect(self._on_agent_advisor_mode_toggled)
         agent_layout.addWidget(self._agent_advisor_mode_check)
+        self._agent_advisor_input = QTextEdit()
+        self._agent_advisor_input.setPlaceholderText("在这里问 Agent：例如“帮我构思下一章冲突”“补充某个城市设定”“这段剧情有什么漏洞？”")
+        self._agent_advisor_input.setMaximumHeight(90)
+        agent_layout.addWidget(self._agent_advisor_input)
+        advisor_ask_row = QHBoxLayout()
+        self._agent_ask_advisor_btn = QPushButton("发送给顾问")
+        self._agent_ask_advisor_btn.clicked.connect(self._ask_agent_advisor_from_panel)
+        self._agent_advice_library_btn = QPushButton("查看构思库")
+        self._agent_advice_library_btn.clicked.connect(self._show_agent_advice_library)
+        advisor_ask_row.addWidget(self._agent_ask_advisor_btn)
+        advisor_ask_row.addWidget(self._agent_advice_library_btn)
+        agent_layout.addLayout(advisor_ask_row)
         self._agent_advisor_status = QLabel("顾问：尚未提问")
         self._agent_advisor_status.setWordWrap(True)
         agent_layout.addWidget(self._agent_advisor_status)
@@ -4520,6 +4533,8 @@ class DeepSeekChatGUI(QMainWindow):
             self._agent_advisor_status.setText("顾问：尚未提问")
             self._agent_save_advice_btn.setEnabled(False)
             self._agent_add_world_btn.setEnabled(False)
+            if hasattr(self, "_agent_advisor_input"):
+                self._agent_advisor_input.clear()
         title = text if text and not text.startswith("（暂无小说") else None
         if not title:
             self._novel_title_edit.setText("")
@@ -5063,6 +5078,91 @@ class DeepSeekChatGUI(QMainWindow):
 
     # ========== 🚀 生成章节 ==========
 
+    def _agent_chapter_generation_enabled(self) -> bool:
+        advisor_checked = (
+            hasattr(self, "_agent_advisor_mode_check")
+            and self._agent_advisor_mode_check.isChecked()
+        )
+        return not advisor_checked and not self._agent_chapter_planning and not self._streaming
+    def _on_agent_advisor_mode_toggled(self, checked: bool) -> None:
+        if hasattr(self, "_agent_generate_btn"):
+            self._agent_generate_btn.setEnabled(self._agent_chapter_generation_enabled())
+            self._agent_generate_btn.setToolTip(
+                "顾问模式开启时请使用“发送给顾问”；关闭后可进行 Agent 生成下一章。"
+                if checked else
+                "先读取设定、规划剧情并筛选世界书/历史上下文，确认计划后生成正文"
+            )
+        if checked and hasattr(self, "_agent_advisor_input"):
+            self._agent_advisor_input.setFocus()
+        if hasattr(self, "_agent_advisor_status"):
+            self._agent_advisor_status.setText(
+                "顾问模式已开启：请在上方顾问输入框提问。" if checked else "顾问：尚未提问"
+            )
+
+    def _ask_agent_advisor_from_panel(self) -> None:
+        if not hasattr(self, "_agent_advisor_input"):
+            return
+        if self._novel_generation_mode != "agent":
+            QMessageBox.information(self, "Agent 顾问", "请先在设置中心切换到 Agent 写作模式。")
+            return
+        message = self._agent_advisor_input.toPlainText().strip()
+        if not message:
+            QMessageBox.information(self, "Agent 顾问", "请先在顾问输入框输入问题或构思要求。")
+            return
+        self._agent_advisor_input.clear()
+        if hasattr(self, "_agent_advisor_mode_check") and not self._agent_advisor_mode_check.isChecked():
+            self._agent_advisor_mode_check.setChecked(True)
+        self._append_user_message(message)
+        self._on_agent_advisor_ask(message)
+
+    def _show_agent_advice_library(self) -> None:
+        title = self._novel_title_edit.text().strip()
+        if not title:
+            QMessageBox.warning(self, "构思库", "请先选择或创建一本小说。")
+            return
+        from core.agent.advisor import WritingAdvisorService
+        service = WritingAdvisorService(self._novel_manager, self._usage_logged_client("agent_advisor_library"))
+        artifacts = service.list_advice(title)
+        if not artifacts:
+            QMessageBox.information(self, "构思库", "当前书籍还没有保存的 Agent 构思。")
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"构思库 · {title}")
+        dialog.resize(900, 650)
+        layout = QVBoxLayout(dialog)
+        list_widget = QListWidget()
+        preview = QTextEdit()
+        preview.setReadOnly(True)
+        for item in artifacts:
+            meta = item.get("metadata") or {}
+            label = f"{item.get('created_at', '')} · {meta.get('title', '写作构思')} · {item.get('artifact_id', '')}"
+            widget_item = QListWidgetItem(label)
+            widget_item.setData(Qt.ItemDataRole.UserRole, item)
+            list_widget.addItem(widget_item)
+        def show_selected() -> None:
+            current = list_widget.currentItem()
+            data = current.data(Qt.ItemDataRole.UserRole) if current else {}
+            meta = data.get("metadata") or {}
+            preview.setPlainText(
+                f"Artifact: {data.get('artifact_id', '')}\n"
+                f"Run: {data.get('run_id', '')}\n"
+                f"标题: {meta.get('title', '写作构思')}\n"
+                f"保存时间: {data.get('created_at', '')}\n"
+                f"保存位置: agent/artifacts/{data.get('artifact_id', '')}.json（加密工作区）\n\n"
+                f"{data.get('content', '')}"
+            )
+        list_widget.currentItemChanged.connect(lambda *_: show_selected())
+        layout.addWidget(QLabel("已保存构思（加密 Artifact）："))
+        layout.addWidget(list_widget, 1)
+        layout.addWidget(QLabel("内容预览："))
+        layout.addWidget(preview, 2)
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(dialog.accept)
+        layout.addWidget(close_btn)
+        list_widget.setCurrentRow(0)
+        dialog.exec()
+
+
     def _on_agent_advisor_ask(self, message: str) -> None:
         if self._agent_advisor_running:
             return
@@ -5073,6 +5173,8 @@ class DeepSeekChatGUI(QMainWindow):
         self._novel_manager.create_book(title)
         self._agent_advisor_running = True
         self._agent_advisor_status.setText("顾问正在读取章节、世界书和作者规划……")
+        if hasattr(self, "_agent_ask_advisor_btn"):
+            self._agent_ask_advisor_btn.setEnabled(False)
         self._agent_save_advice_btn.setEnabled(False)
         self._agent_add_world_btn.setEnabled(False)
 
@@ -5098,6 +5200,8 @@ class DeepSeekChatGUI(QMainWindow):
 
     def _on_agent_advisor_ready(self, result) -> None:
         self._agent_advisor_running = False
+        if hasattr(self, "_agent_ask_advisor_btn"):
+            self._agent_ask_advisor_btn.setEnabled(True)
         self._last_advisor_result = result
         answer = result.answer or "顾问未返回有效回答。"
         source_lines = []
@@ -5131,6 +5235,8 @@ class DeepSeekChatGUI(QMainWindow):
 
     def _on_agent_advisor_error(self, error: str) -> None:
         self._agent_advisor_running = False
+        if hasattr(self, "_agent_ask_advisor_btn"):
+            self._agent_ask_advisor_btn.setEnabled(True)
         self._agent_advisor_status.setText(f"顾问失败：{error}")
         QMessageBox.warning(self, "Agent 顾问失败", error)
 
@@ -5143,7 +5249,7 @@ class DeepSeekChatGUI(QMainWindow):
         artifact_id = WritingAdvisorService(
             self._novel_manager, self._usage_logged_client("agent_advisor_save")
         ).save_advice(title, result.run_id, result.answer)
-        self._agent_advisor_status.setText(f"构思已加密保存：{artifact_id}")
+        self._agent_advisor_status.setText(f"构思已加密保存：{artifact_id}；位置：agent/artifacts/{artifact_id}.json")
 
     def _on_add_advisor_to_world_bible(self) -> None:
         result = self._last_advisor_result
@@ -5324,7 +5430,7 @@ class DeepSeekChatGUI(QMainWindow):
 
     def _on_agent_chapter_plan_ready(self, request, plan, generation_target) -> None:
         self._agent_chapter_planning = False
-        self._agent_generate_btn.setEnabled(True)
+        self._agent_generate_btn.setEnabled(self._agent_chapter_generation_enabled())
         self._generate_btn.setEnabled(True)
         self._agent_plan_status.setText(
             f"规划完成：{plan.chapter_goal}\n"
@@ -5364,7 +5470,7 @@ class DeepSeekChatGUI(QMainWindow):
 
     def _on_agent_chapter_plan_error(self, error: str) -> None:
         self._agent_chapter_planning = False
-        self._agent_generate_btn.setEnabled(True)
+        self._agent_generate_btn.setEnabled(self._agent_chapter_generation_enabled())
         self._generate_btn.setEnabled(True)
         self._agent_plan_status.setText(f"Agent 规划失败：{error}")
         QMessageBox.critical(self, "Agent 规划失败", error)
@@ -6075,6 +6181,7 @@ class DeepSeekChatGUI(QMainWindow):
             client=client, model=self._client.model,
             global_user_prompt=self._client.global_user_prompt,
             mode="continue",
+            segmenter=self._build_agent_continuation_segmenter(book_title or ""),
         )
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
@@ -7052,7 +7159,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._chapter_finalized = True
         self._generate_btn.setEnabled(True)
         if hasattr(self, "_agent_generate_btn"):
-            self._agent_generate_btn.setEnabled(True)
+            self._agent_generate_btn.setEnabled(self._agent_chapter_generation_enabled())
         self._cont_generate_btn.setEnabled(True)
 
     def _on_stream_error(self, error_msg: str) -> None:
@@ -7062,7 +7169,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._chapter_finalized = True
         self._generate_btn.setEnabled(True)
         if hasattr(self, "_agent_generate_btn"):
-            self._agent_generate_btn.setEnabled(True)
+            self._agent_generate_btn.setEnabled(self._agent_chapter_generation_enabled())
         self._cont_generate_btn.setEnabled(True)
         self._stop_btn.setVisible(False)
         self._stop_btn.setEnabled(True)
@@ -7394,6 +7501,26 @@ class DeepSeekChatGUI(QMainWindow):
 
         return True
 
+    def _agent_continuation_enabled(self) -> bool:
+        return self._novel_generation_mode == "agent"
+
+    def _build_agent_continuation_segmenter(self, book_title: str):
+        if not self._agent_continuation_enabled():
+            return None
+        from core.agent.continuation import AgentContinuationService
+        def _segment(text: str):
+            service = AgentContinuationService(
+                self._novel_manager,
+                self._usage_logged_client("agent_continuation_segment"),
+                skills_enabled=bool(self._settings.get("agent_skills_enabled", True)),
+            )
+            return service.segment_text(
+                text,
+                self._client.model,
+                book_title=book_title,
+                global_user_prompt=self._client.global_user_prompt,
+            )
+        return _segment
     # ========== 🔍 续写分析流程 ==========
 
     def _on_analyze_continuation(self) -> None:
@@ -7452,6 +7579,7 @@ class DeepSeekChatGUI(QMainWindow):
             client=client, model=self._client.model,
             global_user_prompt=self._client.global_user_prompt,
             mode="analyze",
+            segmenter=self._build_agent_continuation_segmenter(title),
         )
         if dlg.exec() != QDialog.DialogCode.Accepted:
             return
@@ -7598,13 +7726,27 @@ class DeepSeekChatGUI(QMainWindow):
                     "global_foreshadowing": list(world_bible.global_foreshadowing),
                     "global_key_dialogues": list(world_bible.global_key_dialogues),
                 }
-                settings = generate_novel_settings_from_world_bible(
+                if self._agent_continuation_enabled():
+                    from core.agent.continuation import AgentContinuationService
+                    settings = AgentContinuationService(
+                        self._novel_manager,
+                        client,
+                        skills_enabled=bool(self._settings.get("agent_skills_enabled", True)),
+                    ).generate_settings_from_world_data(
+                        world_data if "world_data" in locals() else world_data_for_settings,
+                        self._client.model if hasattr(self, "_client") else model,
+                        book_title=title,
+                        global_user_prompt=_global_prompt,
+                        xp_mode=xp_mode,
+                    )
+                else:
+                    settings = generate_novel_settings_from_world_bible(
                     client,
                     world_data,
                     self._client.model,
                     global_user_prompt=_global_prompt,
                     xp_mode=xp_mode,
-                )
+                    )
                 self._novel_manager.save_meta(
                     title,
                     protagonist_bio=settings.get("protagonist_bio", ""),
@@ -7805,11 +7947,25 @@ class DeepSeekChatGUI(QMainWindow):
                 "plot_threads": [asdict(p) for p in world_bible.active_plot_threads],
                 "timeline": [asdict(t) for t in world_bible.timeline],
             }
-            settings = generate_novel_settings_from_world_bible(
+            if self._agent_continuation_enabled():
+                from core.agent.continuation import AgentContinuationService
+                settings = AgentContinuationService(
+                    self._novel_manager,
+                    client,
+                    skills_enabled=bool(self._settings.get("agent_skills_enabled", True)),
+                ).generate_settings_from_world_data(
+                    world_data if "world_data" in locals() else world_data_for_settings,
+                    self._client.model if hasattr(self, "_client") else model,
+                    book_title=title,
+                    global_user_prompt=_global_prompt,
+                    xp_mode=xp_mode,
+                )
+            else:
+                settings = generate_novel_settings_from_world_bible(
                 client, world_data_for_settings, model,
                 global_user_prompt=_global_prompt,
                 xp_mode=xp_mode,
-            )
+                )
             self._novel_manager.save_meta(
                 title,
                 protagonist_bio=settings.get("protagonist_bio", ""),
@@ -7871,7 +8027,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._streaming = True
         self._streaming_start_time = time.time()
         self._assistant_text_buffer = []
-        self._append_user_message("🎲 AI 建议发展方向")
+        self._append_user_message("🎲 Agent 建议发展方向" if self._agent_continuation_enabled() else "🎲 AI 建议发展方向")
         xp_mode = False
         title = self._get_current_book_title()
         if title:
@@ -7887,11 +8043,28 @@ class DeepSeekChatGUI(QMainWindow):
                 if self._client._cancel_requested:
                     self._stream_signals.finished.emit()
                     return
-                self._stream_signals.token.emit("\n\n🎲 AI 正在分析发展方向...\n\n")
-                directions = suggest_directions(client, setting, plot_outline,
-                                                self._client.model, world_data,
-                                                global_user_prompt=self._client.global_user_prompt,
-                                                xp_mode=xp_mode)
+                if self._agent_continuation_enabled():
+                    self._stream_signals.token.emit("\n\n🎲 Agent 正在分析发展方向...\n\n")
+                    from core.agent.continuation import AgentContinuationService
+                    directions = AgentContinuationService(
+                        self._novel_manager,
+                        client,
+                        skills_enabled=bool(self._settings.get("agent_skills_enabled", True)),
+                    ).suggest_directions(
+                        setting,
+                        plot_outline,
+                        self._client.model,
+                        book_title=title or "",
+                        world_data=world_data,
+                        global_user_prompt=self._client.global_user_prompt,
+                        xp_mode=xp_mode,
+                    )
+                else:
+                    self._stream_signals.token.emit("\n\n🎲 AI 正在分析发展方向...\n\n")
+                    directions = suggest_directions(client, setting, plot_outline,
+                                                    self._client.model, world_data,
+                                                    global_user_prompt=self._client.global_user_prompt,
+                                                    xp_mode=xp_mode)
                 self._stream_signals.finished.emit()
                 self._stream_signals.directions_ready.emit(directions, setting, plot_outline, word_count)
             except Exception as e:

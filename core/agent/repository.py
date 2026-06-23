@@ -76,6 +76,16 @@ class AgentRepository:
         data = self.storage.read_json(f"{self.root}/artifacts/{artifact_id}.json")
         return data if isinstance(data, dict) else None
 
+    def list_artifacts(self, kind: str | None = None) -> list[dict]:
+        result = []
+        for path in self.storage.list_files(f"{self.root}/artifacts"):
+            if not path.endswith(".json"):
+                continue
+            data = self.storage.read_json(path)
+            if isinstance(data, dict) and (kind is None or data.get("kind") == kind):
+                result.append(data)
+        return sorted(result, key=lambda item: item.get("created_at", ""), reverse=True)
+
     def save_draft(self, run_id: str, name: str, content: str) -> str:
         draft_id = f"draft_{uuid.uuid4().hex}"
         self.storage.write_json(f"{self.root}/drafts/{draft_id}.json", {"schema_version": 1, "draft_id": draft_id, "run_id": run_id, "name": name, "content": content, "created_at": now_iso()})

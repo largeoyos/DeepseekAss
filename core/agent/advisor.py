@@ -71,6 +71,10 @@ class WritingAdvisorService:
         repository = AgentRepository(self.manager.get_workspace(book_title))
         return repository.save_artifact(run_id or "manual", "writing_advice", text, {"title": title})
 
+    def list_advice(self, book_title: str) -> list[dict]:
+        repository = AgentRepository(self.manager.get_workspace(book_title))
+        return repository.list_artifacts("writing_advice")
+
     def _session(self, repository: AgentRepository, book_id: str, book_title: str):
         for session in repository.list_sessions():
             if session.book_id == book_id and session.agent_kind == "writing_advisor":

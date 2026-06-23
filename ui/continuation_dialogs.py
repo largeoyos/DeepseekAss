@@ -564,7 +564,8 @@ class SectionPreviewDialog(QDialog):
                  folder_path: str | None = None,
                  client=None, model: str = "",
                  global_user_prompt: str = "",
-                 mode: str = "analyze"):
+                 mode: str = "analyze",
+                 segmenter=None):
         super().__init__(parent)
         self._source_text = source_text
         self._folder_path = folder_path
@@ -572,6 +573,7 @@ class SectionPreviewDialog(QDialog):
         self._model = model
         self._global_prompt = global_user_prompt
         self._mode = mode
+        self._segmenter = segmenter
 
         # 存储结果
         self.result: dict | None = None
@@ -633,7 +635,7 @@ class SectionPreviewDialog(QDialog):
         btn_row = QHBoxLayout()
         btn_row.addStretch()
 
-        self._resegment_btn = QPushButton("🔄 AI 重新分段")
+        self._resegment_btn = QPushButton("🔄 Agent 重新分段" if self._segmenter else "🔄 AI 重新分段")
         self._resegment_btn.setStyleSheet("""
             QPushButton { background: #6b5a2d; color: white; border: none;
                           border-radius: 6px; padding: 8px 16px; font-weight: bold; }
@@ -673,7 +675,7 @@ class SectionPreviewDialog(QDialog):
         else:
             # 先显示全文，再在后台线程调用 AI 分段（不阻塞 UI）
             self._sections_data = [("全文", text)]
-            self._status_label.setText("⏳ 未检测到段落划分，正在由 AI 自动分段…")
+            self._status_label.setText("⏳ 未检测到段落划分，正在由 Agent 自动分段…" if self._segmenter else "⏳ 未检测到段落划分，正在由 AI 自动分段…")
             self._status_label.setStyleSheet(_status_style(self, "warn"))
             self._populate_sections()
             self._start_initial_segmentation()
@@ -707,7 +709,7 @@ class SectionPreviewDialog(QDialog):
 
         def _run():
             try:
-                sections = segment_by_ai(self._client, text, self._model,
+                sections = self._segmenter(text) if self._segmenter else segment_by_ai(self._client, text, self._model,
                                          global_user_prompt=self._global_prompt)
                 self._resegment_finished.emit(sections, None)
             except Exception as e:
@@ -723,14 +725,14 @@ class SectionPreviewDialog(QDialog):
 
         from utils.summarize import segment_by_ai
 
-        self._status_label.setText("⏳ AI 正在重新分段…")
+        self._status_label.setText("⏳ Agent 正在重新分段…" if self._segmenter else "⏳ AI 正在重新分段…")
         self._status_label.setStyleSheet(_status_style(self, "warn"))
         self._resegment_btn.setEnabled(False)
         self._confirm_btn.setEnabled(False)
 
         def _run():
             try:
-                sections = segment_by_ai(self._client, text, self._model,
+                sections = self._segmenter(text) if self._segmenter else segment_by_ai(self._client, text, self._model,
                                          global_user_prompt=self._global_prompt)
                 self._resegment_finished.emit(sections, None)
             except Exception as e:
@@ -760,7 +762,7 @@ class SectionPreviewDialog(QDialog):
                 pass
             self._status_label.setText(
                 f"⚠️「{self._folder_files[self._current_file_idx]['filename']}」"
-                f"AI 分段完成，共 {len(sections)} 个段落"
+                f"{'Agent' if self._segmenter else 'AI'} 分段完成，共 {len(sections)} 个段落"
             )
         else:
             self._status_label.setText(f"⚠️ AI 分段完成，共 {len(sections)} 个段落")
@@ -820,7 +822,7 @@ class SectionPreviewDialog(QDialog):
         auto_count = sum(1 for f in self._folder_files if f["needs_ai"])
         if auto_count > 0:
             self._status_label.setText(
-                f"📂 共 {len(self._folder_files)} 个文件，{auto_count} 个正在后台 AI 分段…"
+                f"📂 共 {len(self._folder_files)} 个文件，{auto_count} 个正在后台 Agent 分段…" if self._segmenter else f"📂 共 {len(self._folder_files)} 个文件，{auto_count} 个正在后台 AI 分段…"
             )
             self._status_label.setStyleSheet(_status_style(self, "warn"))
         else:
@@ -841,7 +843,7 @@ class SectionPreviewDialog(QDialog):
         for idx, f in enumerate(self._folder_files):
             if f["needs_ai"]:
                 try:
-                    sections = segment_by_ai(
+                    sections = self._segmenter(f["full_content"]) if self._segmenter else segment_by_ai(
                         self._client, f["full_content"], self._model,
                         global_user_prompt=self._global_prompt,
                     )
@@ -862,7 +864,7 @@ class SectionPreviewDialog(QDialog):
         pending = sum(1 for f in self._folder_files if f["needs_ai"])
         if pending == 0:
             self._status_label.setText(
-                f"✅ AI 分段完成，共 {len(self._folder_files)} 个文件，勾选后确认分析"
+                f"✅ Agent 分段完成，共 {len(self._folder_files)} 个文件，勾选后确认分析" if self._segmenter else f"✅ AI 分段完成，共 {len(self._folder_files)} 个文件，勾选后确认分析"
             )
             self._status_label.setStyleSheet(_status_style(self, "success"))
 
@@ -927,8 +929,8 @@ class SectionPreviewDialog(QDialog):
             pending = [f["filename"] for f in self._folder_files if f["checked"] and f["needs_ai"]]
             if pending:
                 reply = QMessageBox.question(
-                    self, "AI 分段未完成",
-                    f"以下 {len(pending)} 个文件仍在 AI 分段中，将使用全文导入：\n"
+                    self, "Agent 分段未完成" if self._segmenter else "AI 分段未完成",
+                    f"以下 {len(pending)} 个文件仍在 {'Agent' if self._segmenter else 'AI'} 分段中，将使用全文导入：\n"
                     + "\n".join(pending[:5])
                     + ("\n…" if len(pending) > 5 else "")
                     + "\n\n是否继续？",

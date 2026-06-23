@@ -2,6 +2,8 @@ import tempfile
 import time
 import unittest
 
+from core.agent.advisor import WritingAdvisorService
+from core.agent.continuation import AgentContinuationService
 from core.agent.changes import ChangeSetService
 from core.agent.domain_tools import build_domain_tool_registry
 from core.agent.profiles import get_agent_profile
@@ -13,6 +15,31 @@ from core.agent.web_search import WebSearchClient, WebSearchConfig
 from core.novel_manager import NovelManager
 from core.world_bible import ManualOverride, WorldBible, apply_manual_overrides
 
+
+
+class _FakeContinuationMessage:
+    def __init__(self, content):
+        self.content = content
+
+
+class _FakeContinuationChoice:
+    def __init__(self, content):
+        self.message = _FakeContinuationMessage(content)
+
+
+class _FakeContinuationCompletions:
+    def __init__(self, content):
+        self.content = content
+        self.calls = []
+
+    def create(self, **kwargs):
+        self.calls.append(kwargs)
+        return type("Resp", (), {"choices": [_FakeContinuationChoice(self.content)]})()
+
+
+class _FakeContinuationClient:
+    def __init__(self, content):
+        self.chat = type("Chat", (), {"completions": _FakeContinuationCompletions(content)})()
 
 class ExtendedAgentTests(unittest.TestCase):
     def test_new_agent_profiles_and_tools_are_registered(self):
@@ -49,6 +76,29 @@ class ExtendedAgentTests(unittest.TestCase):
             })
             self.assertEqual("web.search", enabled.schemas_for(["web.search"])[0]["function"]["name"])
 
+    def test_agent_continuation_segments_and_records_run(self):
+        with tempfile.TemporaryDirectory() as root:
+            manager = NovelManager(bookshelf_root=root)
+            manager.create_book("book")
+            client = _FakeContinuationClient('[{"title":"开端","content":"第一段正文"},{"title":"转折","content":"第二段正文"}]')
+            service = AgentContinuationService(manager, client)
+            sections = service.segment_text("第一段正文\n第二段正文", "model-x", book_title="book")
+            self.assertEqual([("开端", "第一段正文"), ("转折", "第二段正文")], sections)
+            workspace = manager.get_workspace("book")
+            runs = workspace.storage.list_files(f"{workspace.agent_root}/continuation_runs")
+            self.assertTrue(any(path.endswith(".json") for path in runs))
+            self.assertIn("续写导入分段 Agent", client.chat.completions.calls[0]["messages"][0]["content"])
+    def test_saved_advice_artifacts_are_listed_for_library(self):
+        with tempfile.TemporaryDirectory() as root:
+            manager = NovelManager(bookshelf_root=root)
+            manager.create_book("book")
+            service = WritingAdvisorService(manager, client=None)
+            first = service.save_advice("book", "run-1", "第一条构思", title="下章冲突")
+            second = service.save_advice("book", "run-2", "第二条构思", title="城市细节")
+            artifacts = service.list_advice("book")
+            self.assertEqual({first, second}, {item["artifact_id"] for item in artifacts})
+            self.assertTrue(all(item["kind"] == "writing_advice" for item in artifacts))
+            self.assertIn("content", artifacts[0])
     def test_tool_timeout_returns_failure_without_waiting_for_completion(self):
         registry = ToolRegistry()
         registry.register(ToolSpec(
@@ -150,9 +200,13 @@ class ExtendedAgentTests(unittest.TestCase):
             world = {item.skill_id for item in skills.select_for_task(
                 "world_bible_management", "world_bible_manager", "世界书伏笔"
             ).documents}
+            continuation = {item.skill_id for item in skills.select_for_task(
+                "continuation_segmentation", "writing_orchestrator", "续写分段和长篇上下文"
+            ).documents}
             self.assertIn("continuity-review", supervisor)
             self.assertIn("world-bible-maintenance", world)
             self.assertIn("foreshadowing", world)
+            self.assertIn("chapter-continuation", continuation)
 
 
 if __name__ == "__main__":

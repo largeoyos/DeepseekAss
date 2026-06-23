@@ -24,7 +24,7 @@ version: {version}
 
 
 BUILTIN_SKILL_TEXTS = {
-    "chapter-planning": _skill("chapter-planning", "生成新章节前建立可执行的场景计划。", "chapter_generation", """
+    "chapter-planning": _skill("chapter-planning", "生成新章节前建立可执行的场景计划。", "chapter_generation,extra_generation,continuation_segmentation,continuation_analysis,continuation_direction", """
 # 章节规划
 1. 明确本章在主线中的唯一目标、开场承接点和结尾钩子。
 2. 按场景拆分目标、冲突、信息释放、转折和结果。
@@ -32,7 +32,7 @@ BUILTIN_SKILL_TEXTS = {
 4. 每个角色变化必须由本章可见选择或代价支撑。
 5. 不为凑字数增加无功能场景。
 """, keywords="新章节,下一章,章节规划,场景", priority=100),
-    "chapter-continuation": _skill("chapter-continuation", "根据前文、角色状态和世界设定自然续写章节。", "chapter_generation", """
+    "chapter-continuation": _skill("chapter-continuation", "根据前文、角色状态和世界设定自然续写章节。", "chapter_generation,extra_generation,continuation_segmentation,continuation_analysis,continuation_direction", """
 # 章节续写
 1. 优先承接上一章未完成动作、情绪和现场状态。
 2. 读取近期摘要与必要旧章，不把作者规划误作历史事实。
@@ -40,25 +40,25 @@ BUILTIN_SKILL_TEXTS = {
 4. 正文直接开始叙事，不输出标题、提纲、解释或 Markdown。
 5. 完成本章计划后留下自然推进点，不强行制造悬念。
 """, keywords="续写,承接,下一章,正文", priority=95),
-    "continuity-review": _skill("continuity-review", "检查人物、地点、时间线、能力和剧情事实连续性。", "chapter_generation,chapter_polish,continuity_review,chapter_supervision", """
+    "continuity-review": _skill("continuity-review", "检查人物、地点、时间线、能力和剧情事实连续性。", "chapter_generation,extra_generation,continuation_segmentation,continuation_analysis,continuation_direction,chapter_polish,continuity_review,chapter_supervision", """
 # 连续性审查
 - 核对人物当前位置、身体状态、心理状态、目标、持有物和关系。
 - 核对时间先后、移动距离、信息知情范围和能力边界。
 - 旧事实被新事实替代时保留来源关系，不让冲突版本同时生效。
 - 不允许仅为文采改变事实、事件顺序或人物动机。
 """, agents="writing_orchestrator,continuity_editor,chapter_supervisor", keywords="连续性,人物状态,时间线,事实,世界观", priority=90),
-    "character-arc": _skill("character-arc", "检查角色目标、阻力、选择、代价和状态变化。", "chapter_generation", """
+    "character-arc": _skill("character-arc", "检查角色目标、阻力、选择、代价和状态变化。", "chapter_generation,extra_generation,continuation_segmentation,continuation_analysis,continuation_direction", """
 # 角色弧线
 对每个核心角色记录：进入场景时的目标、遭遇的阻力、作出的选择、承担的代价以及离开场景后的状态。变化必须由正文事件造成，不能用旁白宣告替代行动和对话。
 """, keywords="角色,人物,成长,弧线,关系", priority=75),
-    "foreshadowing": _skill("foreshadowing", "管理伏笔的埋设、推进、回收和来源。", "chapter_generation,world_maintenance,world_bible_management", """
+    "foreshadowing": _skill("foreshadowing", "管理伏笔的埋设、推进、回收和来源。", "chapter_generation,extra_generation,continuation_segmentation,continuation_analysis,continuation_direction,world_maintenance,world_bible_management", """
 # 伏笔管理
 - 新伏笔必须有可识别载体、预期作用和来源章节。
 - 推进伏笔时增加信息但避免提前解释答案。
 - 回收伏笔必须与既有线索对应。
 - 已回收伏笔标记 resolved，不再作为待处理伏笔注入。
 """, agents="writing_orchestrator,continuity_editor,world_bible_manager", keywords="伏笔,线索,悬念,回收", priority=70),
-    "scene-pacing": _skill("scene-pacing", "按场景功能、冲突升级和信息释放控制节奏。", "chapter_generation,chapter_polish,chapter_supervision", """
+    "scene-pacing": _skill("scene-pacing", "按场景功能、冲突升级和信息释放控制节奏。", "chapter_generation,extra_generation,continuation_segmentation,continuation_analysis,continuation_direction,chapter_polish,chapter_supervision", """
 # 场景节奏
 - 每个场景只承担少量清晰功能。
 - 动作、对话、感官和内心描写随冲突强度变化。
@@ -85,7 +85,7 @@ BUILTIN_SKILL_TEXTS = {
 - resident、人工修改和 manual override 条目禁止自动归档。
 - 有效历史数据只隐藏归档，不物理删除。
 """, agents="continuity_editor,project_maintainer,writing_orchestrator,world_bible_manager", keywords="世界书,归档,剧情线,角色状态", priority=90),
-    "long-context": _skill("long-context", "长篇上下文筛选与压缩时保护关键事实。", "chapter_generation,chapter_polish,context_compaction,chapter_supervision,writing_advice", """
+    "long-context": _skill("long-context", "长篇上下文筛选与压缩时保护关键事实。", "chapter_generation,extra_generation,continuation_segmentation,continuation_analysis,continuation_direction,chapter_polish,context_compaction,chapter_supervision,writing_advice", """
 # 长篇上下文
 优先保留系统约束、当前任务、上一章承接、近期摘要、当前角色状态、未完成剧情线、待回收伏笔和用户明确引用。压缩旧内容时保留已确认事实、用户决策、已执行操作、未完成事项和禁止遗失约束。
 """, agents="writing_orchestrator,project_maintainer,chapter_supervisor,writing_advisor", keywords="长篇,上下文,压缩,历史剧情", priority=60),

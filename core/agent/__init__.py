@@ -3,6 +3,8 @@
 from core.agent.profiles import AGENT_PROFILES, get_agent_profile
 from core.agent.runtime import AgentRuntime
 from core.agent.chapter_generation import AgentChapterGenerationService, AgentChapterPlan, AgentChapterRequest, AgentChapterResult
+from core.agent.extra_generation import AgentExtraGenerationService, AgentExtraPlan, AgentExtraRequest, AgentExtraResult
+from core.agent.continuation import AgentContinuationService
 from core.agent.world_maintenance import WorldBibleMaintenanceService, WorldMaintenanceResult
 from core.agent.advisor import AdvisorRequest, AdvisorResult, WritingAdvisorService
 from core.agent.supervision_agent import AgentSupervisionService, SupervisionRequest, SupervisionResult
@@ -12,6 +14,8 @@ from core.agent.types import AgentEvent, AgentProfile, AgentRunRequest, ChangeOp
 __all__ = [
     "AGENT_PROFILES", "AgentEvent", "AgentProfile", "AgentRunRequest", "AgentRuntime",
     "AgentChapterGenerationService", "AgentChapterPlan", "AgentChapterRequest", "AgentChapterResult",
+    "AgentExtraGenerationService", "AgentExtraPlan", "AgentExtraRequest", "AgentExtraResult",
+    "AgentContinuationService",
     "WorldBibleMaintenanceService", "WorldMaintenanceResult",
     "AdvisorRequest", "AdvisorResult", "WritingAdvisorService",
     "AgentSupervisionService", "SupervisionRequest", "SupervisionResult",
