@@ -65,6 +65,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._build_account_tab(), "账号安全")
         tabs.addTab(self._build_data_tab(), "数据管理")
         tabs.addTab(self._build_appearance_tab(), "外观")
+        tabs.addTab(self._build_agent_tab(), "Agent")
         layout.addWidget(tabs, stretch=1)
 
         row = QHBoxLayout()
@@ -194,6 +195,35 @@ class SettingsDialog(QDialog):
         layout.addWidget(self._dark_theme)
         layout.addStretch()
         return page
+
+    def _build_agent_tab(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        notice = QLabel("Agent 为实验功能。它只能调用受控领域工具；正式章节和世界书写入必须审批。")
+        notice.setWordWrap(True)
+        layout.addWidget(notice)
+        self._agent_enabled = QCheckBox("启用 Agent 工作台")
+        self._agent_enabled.setChecked(bool(self._settings.get("controlled_agent_enabled", False)))
+        self._agent_enabled.stateChanged.connect(self._save_agent_settings)
+        layout.addWidget(self._agent_enabled)
+        self._agent_skills = QCheckBox("启用内置及书籍级加密 Skills")
+        self._agent_skills.setChecked(bool(self._settings.get("agent_skills_enabled", True)))
+        self._agent_skills.stateChanged.connect(self._save_agent_settings)
+        layout.addWidget(self._agent_skills)
+        self._agent_web = QCheckBox("启用网页搜索工具（当前版本预留）")
+        self._agent_web.setChecked(bool(self._settings.get("agent_web_enabled", False)))
+        self._agent_web.setEnabled(False)
+        layout.addWidget(self._agent_web)
+        layout.addStretch()
+        return page
+
+    def _save_agent_settings(self) -> None:
+        settings = self._settings_manager.load()
+        settings["controlled_agent_enabled"] = self._agent_enabled.isChecked()
+        settings["agent_skills_enabled"] = self._agent_skills.isChecked()
+        settings["agent_web_enabled"] = False
+        self._settings_manager.save(settings)
+        self._settings_changed_callback()
 
     def _refresh_model_and_preset_lists(self) -> None:
         self._settings = self._settings_manager.load()

@@ -28,6 +28,8 @@ DEFAULT_SETTINGS = {
     "snapshot_timed_enabled": True,
     "snapshot_interval_minutes": 30,
     "controlled_agent_enabled": False,
+    "agent_skills_enabled": True,
+    "agent_web_enabled": False,
 }
 
 
