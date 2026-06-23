@@ -693,6 +693,10 @@ class NovelManager:
             })
         return entries
 
+    def list_active_summary_entries(self, title: str) -> list[dict]:
+        """Public read-only view of summaries on the current chapter-tree path."""
+        return copy.deepcopy(self._active_summary_entries(title))
+
     def build_active_path_summary(self, title: str) -> str:
         """按当前活跃路径拼接章节节点摘要，作为剧情记忆权威来源。"""
         entries = [e for e in self._active_summary_entries(title) if e.get("summary")]
@@ -1713,6 +1717,8 @@ class NovelManager:
         requirement: str = "",
         plot: str = "",
         supervision_report: dict | None = None,
+        agent_data: dict | None = None,
+        world_maintenance_report: dict | None = None,
     ) -> str:
         """
         保存一次生成的完整配置记录（独立文件）
@@ -1758,12 +1764,26 @@ class NovelManager:
             record["plot"] = plot
         if supervision_report is not None:
             record["supervision_report"] = supervision_report
+        if agent_data is not None:
+            record["agent"] = copy.deepcopy(agent_data)
+        if world_maintenance_report is not None:
+            record["world_maintenance"] = copy.deepcopy(world_maintenance_report)
 
         filename = f"ch{chapter_num:04d}_v{version:03d}.json"
         file_path = os.path.join(history_dir, filename)
         self._write_encrypted_json(file_path, record)
         written_path = self._encrypt_path(file_path)
         return written_path
+
+    def update_generation_record(self, title: str, chapter_num: int, version: int, **updates) -> str:
+        """Atomically merge post-generation reports into one existing generation record."""
+        record = self.load_generation_record(title, chapter_num, version) or {}
+        record.update(copy.deepcopy(updates))
+        history_dir = self._history_dir(title)
+        os.makedirs(history_dir, exist_ok=True)
+        file_path = os.path.join(history_dir, f"ch{chapter_num:04d}_v{version:03d}.json")
+        self._write_encrypted_json_atomic(file_path, record)
+        return self._encrypt_path(file_path)
 
     def load_generation_record(self, title: str, chapter_num: int, version: int) -> dict | None:
         """加载指定章节和版本的生成记录"""

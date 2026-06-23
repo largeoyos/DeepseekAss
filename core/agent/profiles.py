@@ -17,7 +17,7 @@ PROFILE_PROMPTS = {
 
 COMMON_READ_TOOLS = ["chapter.read", "chapter.search", "world_bible.read", "agent.context_report", "project.summary"]
 AGENT_PROFILES = {
-    "writing_orchestrator": AgentProfile("writing_orchestrator", "写作总管", "writing_orchestrator", COMMON_READ_TOOLS + ["agent.todo", "chapter.write_draft", "chapter.propose"], "confirmed_write", 30, 70000),
+    "writing_orchestrator": AgentProfile("writing_orchestrator", "写作总管", "writing_orchestrator", COMMON_READ_TOOLS + ["agent.todo", "chapter.write_draft"], "draft_write", 30, 70000),
     "continuity_editor": AgentProfile("continuity_editor", "连续性编辑", "continuity_editor", COMMON_READ_TOOLS + ["agent.todo", "world_bible.propose"], "confirmed_write", 24, 70000),
     "roleplay_director": AgentProfile("roleplay_director", "角色扮演导演", "roleplay_director", COMMON_READ_TOOLS + ["conversation.read", "agent.todo", "chapter.write_draft"], "draft_write", 20, 50000),
     "project_maintainer": AgentProfile("project_maintainer", "项目维护", "project_maintainer", COMMON_READ_TOOLS + ["project.integrity", "agent.todo", "chapter.write_draft"], "draft_write", 24, 60000),

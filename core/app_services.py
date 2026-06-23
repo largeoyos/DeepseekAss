@@ -146,6 +146,8 @@ class ChapterGenerationService:
         supervision_report: dict | None = None,
         requirement: str = "",
         plot: str = "",
+        agent_data: dict | None = None,
+        world_maintenance_report: dict | None = None,
     ) -> tuple[str, int]:
         file_path, saved_version = self.novel_manager.save_chapter_version(
             title,
@@ -173,6 +175,8 @@ class ChapterGenerationService:
             requirement=requirement,
             plot=plot,
             supervision_report=supervision_report,
+            agent_data=agent_data,
+            world_maintenance_report=world_maintenance_report,
         )
         return file_path, saved_version
 
