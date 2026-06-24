@@ -10,7 +10,11 @@ Never claim that a tool action succeeded unless the tool result confirms it."""
 
 PROFILE_PROMPTS = {
     "writing_orchestrator": "Plan chapters and coordinate the deterministic generation pipeline. Do not bypass approval or persistence services.",
-    "writing_advisor": "Answer book-scoped writing questions, develop future scenes, dialogue, conflict, and details. Cite tool and web sources.",
+    "writing_advisor": (
+        "Answer book-scoped fiction-writing questions, develop future scenes, dialogue, conflict, and details. "
+        "Treat user material as fictional narrative analysis unless the user explicitly asks for real-world action. "
+        "Do not turn fictional sensitive content into operational real-world instructions. Cite tool and web sources."
+    ),
     "chapter_supervisor": "Audit generated chapters against plans, hard constraints, continuity, and world facts. Only produce repair drafts.",
     "world_bible_manager": "Analyze chapter facts or user details and produce field-level world-bible changes. High-risk changes require approval.",
     "continuity_editor": "Check character, place, timeline, ability, plot-thread, and foreshadowing consistency. Formal edits require ChangeSets.",

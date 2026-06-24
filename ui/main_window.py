@@ -764,6 +764,7 @@ class DeepSeekChatGUI(QMainWindow):
             enc_key=self._enc_key,
         )
         self._settings = self._settings_manager.load()
+        self._novel_manager.configure_retrieval(self._settings)
         self._chapter_service = ChapterGenerationService(self._novel_manager)
         self._continuation_service = ContinuationService(self._novel_manager)
         self._roleplay_service = RoleplayService()
@@ -1171,6 +1172,7 @@ class DeepSeekChatGUI(QMainWindow):
 
     def _reload_user_settings(self) -> None:
         self._settings = self._settings_manager.load()
+        self._novel_manager.configure_retrieval(self._settings)
         self._presets = self._settings.get("presets", PRESETS).copy()
         self._model_options = self._build_model_options()
 
@@ -2093,6 +2095,12 @@ class DeepSeekChatGUI(QMainWindow):
         self._agent_advisor_mode_check = QCheckBox("Agent 顾问模式（使用下方输入框提问/构思，不生成章节）")
         self._agent_advisor_mode_check.toggled.connect(self._on_agent_advisor_mode_toggled)
         agent_layout.addWidget(self._agent_advisor_mode_check)
+        self._agent_advisor_fiction_check = QCheckBox("按“虚构小说创作任务”包装本次顾问提问")
+        self._agent_advisor_fiction_check.setChecked(True)
+        self._agent_advisor_fiction_check.setToolTip(
+            "降低模型把小说情节误判为现实行动请求的概率；不会绕过服务商安全策略。"
+        )
+        agent_layout.addWidget(self._agent_advisor_fiction_check)
         self._agent_advisor_input = QTextEdit()
         self._agent_advisor_input.setPlaceholderText("在这里问 Agent：例如“帮我构思下一章冲突”“补充某个城市设定”“这段剧情有什么漏洞？”")
         self._agent_advisor_input.setMaximumHeight(90)
@@ -2102,8 +2110,11 @@ class DeepSeekChatGUI(QMainWindow):
         self._agent_ask_advisor_btn.clicked.connect(self._ask_agent_advisor_from_panel)
         self._agent_advice_library_btn = QPushButton("查看构思库")
         self._agent_advice_library_btn.clicked.connect(self._show_agent_advice_library)
+        self._agent_advisor_history_btn = QPushButton("管理顾问会话")
+        self._agent_advisor_history_btn.clicked.connect(self._show_agent_advisor_history)
         advisor_ask_row.addWidget(self._agent_ask_advisor_btn)
         advisor_ask_row.addWidget(self._agent_advice_library_btn)
+        advisor_ask_row.addWidget(self._agent_advisor_history_btn)
         agent_layout.addLayout(advisor_ask_row)
         self._agent_advisor_status = QLabel("顾问：尚未提问")
         self._agent_advisor_status.setWordWrap(True)
@@ -5166,6 +5177,100 @@ class DeepSeekChatGUI(QMainWindow):
         list_widget.setCurrentRow(0)
         dialog.exec()
 
+    def _show_agent_advisor_history(self) -> None:
+        title = self._novel_title_edit.text().strip()
+        if not title:
+            QMessageBox.warning(self, "顾问会话", "请先选择或创建一本小说。")
+            return
+        if self._agent_advisor_running:
+            QMessageBox.information(self, "顾问会话", "顾问正在回答，请等待完成后再管理会话。")
+            return
+        from core.agent.advisor import WritingAdvisorService
+        service = WritingAdvisorService(
+            self._novel_manager,
+            self._usage_logged_client("agent_advisor_history"),
+        )
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"顾问会话 · {title}")
+        dialog.resize(900, 650)
+        layout = QVBoxLayout(dialog)
+        list_widget = QListWidget()
+        preview = QTextEdit()
+        preview.setReadOnly(True)
+        status = QLabel()
+
+        def refresh() -> None:
+            history = service.list_history(title)
+            list_widget.clear()
+            for item in history:
+                role_label = "用户" if item.get("role") == "user" else "顾问"
+                content = str(item.get("content", "")).replace("\n", " ").strip()
+                label = f"{item.get('index', 0) + 1}. {role_label} · {item.get('at', '')} · {content[:60]}"
+                widget_item = QListWidgetItem(label)
+                widget_item.setData(Qt.ItemDataRole.UserRole, item)
+                list_widget.addItem(widget_item)
+            status.setText(f"共 {len(history)} 条消息。删除或清空后，后续顾问请求不再携带这些上下文。")
+            preview.clear()
+            if history:
+                list_widget.setCurrentRow(0)
+
+        def show_selected() -> None:
+            current = list_widget.currentItem()
+            data = current.data(Qt.ItemDataRole.UserRole) if current else {}
+            role_label = "用户" if data.get("role") == "user" else "顾问"
+            preview.setPlainText(
+                f"角色：{role_label}\n时间：{data.get('at', '')}\n"
+                f"消息序号：{data.get('index', 0) + 1}\n\n{data.get('content', '')}"
+                if data else ""
+            )
+
+        def delete_selected() -> None:
+            current = list_widget.currentItem()
+            data = current.data(Qt.ItemDataRole.UserRole) if current else None
+            if not data:
+                return
+            if QMessageBox.question(
+                dialog,
+                "删除顾问消息",
+                f"确定删除第 {data.get('index', 0) + 1} 条消息？\n此操作只影响顾问上下文，不删除运行记录和构思库。",
+            ) != QMessageBox.StandardButton.Yes:
+                return
+            service.delete_history_message(title, int(data["index"]))
+            refresh()
+
+        def clear_all() -> None:
+            if list_widget.count() == 0:
+                return
+            if QMessageBox.question(
+                dialog,
+                "清空本书顾问会话",
+                "确定清空本书全部顾问消息和压缩上下文？\n运行记录和已保存构思不会删除。",
+            ) != QMessageBox.StandardButton.Yes:
+                return
+            removed = service.clear_history(title)
+            refresh()
+            status.setText(f"已清空 {removed} 条顾问消息。")
+
+        list_widget.currentItemChanged.connect(lambda *_: show_selected())
+        layout.addWidget(status)
+        layout.addWidget(list_widget, 1)
+        layout.addWidget(QLabel("消息内容："))
+        layout.addWidget(preview, 2)
+        actions = QHBoxLayout()
+        delete_btn = QPushButton("删除选中消息")
+        delete_btn.clicked.connect(delete_selected)
+        clear_btn = QPushButton("清空本书顾问会话")
+        clear_btn.clicked.connect(clear_all)
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(dialog.accept)
+        actions.addWidget(delete_btn)
+        actions.addWidget(clear_btn)
+        actions.addStretch(1)
+        actions.addWidget(close_btn)
+        layout.addLayout(actions)
+        refresh()
+        dialog.exec()
+
 
     def _on_agent_advisor_ask(self, message: str) -> None:
         if self._agent_advisor_running:
@@ -5181,6 +5286,10 @@ class DeepSeekChatGUI(QMainWindow):
             self._agent_ask_advisor_btn.setEnabled(False)
         self._agent_save_advice_btn.setEnabled(False)
         self._agent_add_world_btn.setEnabled(False)
+        fiction_context = (
+            self._agent_advisor_fiction_check.isChecked()
+            if hasattr(self, "_agent_advisor_fiction_check") else True
+        )
 
         def run_advisor() -> None:
             try:
@@ -5195,6 +5304,7 @@ class DeepSeekChatGUI(QMainWindow):
                     message=message,
                     model=self._client.model,
                     settings=dict(self._settings),
+                    fiction_context=fiction_context,
                 ))
                 self._stream_signals.agent_advisor_ready.emit(result)
             except Exception as exc:
@@ -5790,6 +5900,11 @@ class DeepSeekChatGUI(QMainWindow):
             }
             self._stream_signals.token.emit(messages.get(stage, ""))
 
+        def show_repair_changes(round_index: int, diff: str) -> None:
+            self._stream_signals.token.emit(
+                f'[Supervision] 第 {round_index} 轮修改内容：\n{diff}\n'
+            )
+
         try:
             if agent_mode:
                 from core.agent.supervision_agent import AgentSupervisionService, SupervisionRequest
@@ -5810,7 +5925,10 @@ class DeepSeekChatGUI(QMainWindow):
                     model=self._client.model,
                     global_prompt=self._client.global_user_prompt,
                     xp_mode=xp_mode,
-                ), progress=progress)
+                ),
+                    progress=progress,
+                    repair_change_callback=show_repair_changes,
+                )
                 report = supervised.report
                 self._stream_signals.token.emit(
                     f"[Agent Supervision] 完成；工具调用 {len(supervised.tool_calls)} 次，"
@@ -5833,6 +5951,7 @@ class DeepSeekChatGUI(QMainWindow):
                 xp_mode=xp_mode,
                 max_repair_rounds=2,
                 progress=progress,
+                repair_change_callback=show_repair_changes,
             )
             fulfilled = sum(1 for item in result.outline_items if item.get("status") == "fulfilled")
             total = len(result.outline_items)

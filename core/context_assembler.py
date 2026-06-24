@@ -16,6 +16,7 @@ DEFAULT_BUDGETS = {
     "world_index": 6000,
     "manual": 8000,
     "history": 4000,
+    "retrieval": 6000,
 }
 
 
@@ -171,6 +172,27 @@ class ContextAssembler:
             query=query,
             manual_entity_ids=set(manual_entity_ids or []),
         )
+        try:
+            backend = self.novel_manager.retrieval_backend()
+            retrieved = backend.search(
+                title,
+                query,
+                filters={"manual_entity_ids": list(manual_entity_ids or [])},
+                limit=8,
+            )
+            retrieval_text = "\n\n".join(
+                f"[{item.source_type}:{item.source_id}] {item.reason}\n{item.content}"
+                for item in retrieved
+            )
+            self._add(
+                report,
+                "retrieval",
+                "混合检索补充",
+                retrieval_text,
+                "关键词、实体与语义检索融合结果",
+            )
+        except Exception:
+            pass
         try:
             history = self.novel_manager.build_history_summary(title, exclude_chapter=chapter_num)
             if history not in ("暂无历史记录。", "暂无历史记录（排除当前章节后）。"):

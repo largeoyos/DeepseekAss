@@ -2,7 +2,7 @@ import tempfile
 import time
 import unittest
 
-from core.agent.advisor import WritingAdvisorService
+from core.agent.advisor import FICTION_CONTEXT_PREFIX, WritingAdvisorService
 from core.agent.continuation import AgentContinuationService
 from core.agent.changes import ChangeSetService
 from core.agent.domain_tools import build_domain_tool_registry
@@ -122,6 +122,34 @@ class ExtendedAgentTests(unittest.TestCase):
             self.assertEqual({first, second}, {item["artifact_id"] for item in artifacts})
             self.assertTrue(all(item["kind"] == "writing_advice" for item in artifacts))
             self.assertIn("content", artifacts[0])
+
+    def test_advisor_fiction_wrapper_and_history_management(self):
+        with tempfile.TemporaryDirectory() as root:
+            manager = NovelManager(bookshelf_root=root)
+            manager.create_book("book")
+            service = WritingAdvisorService(manager, client=None)
+            repository = AgentRepository(manager.get_workspace("book"))
+            manifest = manager.ensure_workspace("book")
+            session = repository.create_session(
+                manifest.book_id, "book", "writing_advisor", "写作顾问"
+            )
+            wrapped = service.wrap_fiction_request("分析这段虚构冲突")
+            self.assertTrue(wrapped.startswith(FICTION_CONTEXT_PREFIX))
+            session.messages = [
+                {"role": "user", "content": wrapped, "at": "2026-01-01T00:00:00"},
+                {"role": "assistant", "content": "顾问回答", "at": "2026-01-01T00:00:01"},
+            ]
+            session.epochs = [{"summary": "旧压缩上下文"}]
+            repository.save_session(session)
+
+            history = service.list_history("book")
+            self.assertEqual("分析这段虚构冲突", history[0]["content"])
+            self.assertTrue(service.delete_history_message("book", 0))
+            self.assertEqual(["顾问回答"], [item["content"] for item in service.list_history("book")])
+            self.assertEqual(1, service.clear_history("book"))
+            saved = repository.load_session(session.session_id)
+            self.assertEqual([], saved.messages)
+            self.assertEqual([], saved.epochs)
     def test_tool_timeout_returns_failure_without_waiting_for_completion(self):
         registry = ToolRegistry()
         registry.register(ToolSpec(

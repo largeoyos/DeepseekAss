@@ -26,6 +26,11 @@ class WorkspaceManifest:
         "agent_runtime": False,
         "agent_schema_version": 1,
         "agent_skills": False,
+        "langgraph_runtime": False,
+        "llama_index": False,
+        "retrieval_schema_version": 1,
+        "embedding_model": "",
+        "index_revision": 0,
     })
 
 

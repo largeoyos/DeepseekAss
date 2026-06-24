@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import difflib
 import json
 import re
 from typing import Any, Callable
@@ -60,6 +61,23 @@ def count_content_units(text: str) -> int:
     hanzi = len(re.findall(r"[\u3400-\u4dbf\u4e00-\u9fff]", text or ""))
     words = len(re.findall(r"[A-Za-z0-9]+", text or ""))
     return hanzi + words
+
+
+def format_repair_diff(before: str, after: str, max_chars: int = 6000) -> str:
+    diff = ''.join(difflib.unified_diff(
+        (before or '').splitlines(keepends=True),
+        (after or '').splitlines(keepends=True),
+        fromfile='修复前',
+        tofile='修复后',
+        n=1,
+        lineterm='\n',
+    )).strip()
+    if not diff:
+        return '（正文内容未发生可见变化）'
+    if max_chars > 0 and len(diff) > max_chars:
+        omitted = len(diff) - max_chars
+        return f'{diff[:max_chars].rstrip()}\n……（其余 {omitted} 个字符已省略）'
+    return diff
 
 
 def _parse_json(text: str) -> dict[str, Any] | None:
@@ -267,6 +285,7 @@ def supervise_chapter(
     xp_mode: bool = False,
     max_repair_rounds: int = 2,
     progress: Callable[[str], None] | None = None,
+    repair_change_callback: Callable[[int, str], None] | None = None,
 ) -> tuple[str, SupervisionResult]:
     """运行审计—定向修订—复检质量闸门。"""
     content = chapter_content
@@ -312,5 +331,13 @@ def supervise_chapter(
         if not repaired:
             final_result.status = "warning"
             return content, final_result
+        if repair_change_callback:
+            try:
+                repair_change_callback(
+                    round_index + 1,
+                    format_repair_diff(content, repaired),
+                )
+            except Exception:
+                pass
         content = repaired
     return content, final_result

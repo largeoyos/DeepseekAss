@@ -64,6 +64,8 @@ class ToolRegistry:
 
     def schemas_for(self, allowed_tools: list[str]) -> list[dict]:
         return [self._tools[name].openai_schema() for name in allowed_tools if name in self._tools]
+    def specs_for(self, allowed_tools: list[str]) -> list[ToolSpec]:
+        return [self._tools[name] for name in allowed_tools if name in self._tools]
 
     def execute(self, request: ToolCallRequest, context: ToolContext, allowed_tools: list[str]) -> ToolResult:
         if request.tool_name not in allowed_tools:

@@ -2,7 +2,7 @@ import json
 import unittest
 from types import SimpleNamespace
 
-from utils.supervision import audit_chapter, supervise_chapter
+from utils.supervision import audit_chapter, format_repair_diff, supervise_chapter
 
 
 def response(content):
@@ -97,6 +97,31 @@ class SupervisionTests(unittest.TestCase):
         self.assertEqual("warning", result.status)
         self.assertEqual(2, result.repair_rounds)
         self.assertEqual(5, client.completions.calls)
+
+    def test_repair_change_callback_receives_each_round(self):
+        changes = []
+        client = FakeClient([
+            audit_payload('missing'), 'b' * 300,
+            audit_payload('missing'), 'c' * 300,
+            audit_payload(),
+        ])
+        content, result = supervise_chapter(
+            lambda action: client,
+            chapter_content='a' * 300,
+            chapter_title='Chapter 1',
+            chapter_outline='Open the sealed door',
+            model='test',
+            repair_change_callback=lambda round_index, diff: changes.append((round_index, diff)),
+        )
+        self.assertEqual('c' * 300, content)
+        self.assertEqual('passed', result.status)
+        self.assertEqual([1, 2], [item[0] for item in changes])
+        self.assertIn('-' + 'a' * 300, changes[0][1])
+        self.assertIn('+' + 'b' * 300, changes[0][1])
+
+    def test_repair_diff_is_truncated(self):
+        diff = format_repair_diff('a' * 300, 'b' * 300, max_chars=80)
+        self.assertIn('已省略', diff)
 
     def test_invalid_audit_fails_open_without_repair(self):
         original = "a" * 300

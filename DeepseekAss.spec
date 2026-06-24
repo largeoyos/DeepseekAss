@@ -3,7 +3,15 @@ from PyInstaller.utils.hooks import collect_all
 
 datas = [('E:\\Projects\\DeepseekAss\\ui\\icon.svg', 'ui')]
 binaries = []
-hiddenimports = ['PyQt6.QtWebEngineWidgets']
+hiddenimports = [
+    'PyQt6.QtWebEngineWidgets',
+    'langchain.agents',
+    'langchain_core.tools',
+    'langchain_openai',
+    'langgraph.types',
+    'langgraph.checkpoint.base',
+    'llama_index.embeddings.openai',
+]
 tmp_ret = collect_all('PyQt6')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
@@ -17,7 +25,26 @@ a = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=[
+        'torch',
+        'pandas',
+        'scipy',
+        'matplotlib',
+        'sklearn',
+        'transformers',
+        'nltk',
+        'tkinter',
+        'langchain_classic',
+        'onnxruntime',
+        'tensorflow',
+        'playwright',
+        'sqlalchemy',
+        'pdfminer',
+        'pypdfium2',
+        'grpc',
+        'opentelemetry',
+        'PIL',
+    ],
     noarchive=False,
     optimize=0,
 )

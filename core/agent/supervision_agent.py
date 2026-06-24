@@ -42,7 +42,12 @@ class AgentSupervisionService:
         self.client_factory = client_factory
         self.skills_enabled = skills_enabled
 
-    def supervise(self, request: SupervisionRequest, progress=None) -> SupervisionResult:
+    def supervise(
+        self,
+        request: SupervisionRequest,
+        progress=None,
+        repair_change_callback=None,
+    ) -> SupervisionResult:
         workspace = self.manager.get_workspace(request.book_title)
         manifest = workspace.ensure_manifest()
         repository = AgentRepository(workspace)
@@ -101,6 +106,7 @@ class AgentSupervisionService:
             xp_mode=request.xp_mode,
             max_repair_rounds=2,
             progress=progress,
+            repair_change_callback=repair_change_callback,
         )
         report = result.to_dict()
         report.update({

@@ -43,6 +43,12 @@ DEFAULT_SETTINGS = {
     "agent_web_snippet_field": "content",
     "agent_web_max_results": 5,
     "agent_web_timeout_seconds": 15,
+    "agent_runtime_backend": "legacy",
+    "retrieval_backend": "classic",
+    "embedding_base_url": "",
+    "embedding_api_key": "",
+    "embedding_model": "",
+    "framework_auto_fallback": True,
 }
 
 

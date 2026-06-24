@@ -15,7 +15,7 @@ from core.agent.changes import ChangeSetService
 from core.agent.domain_tools import build_domain_tool_registry
 from core.agent.profiles import AGENT_PROFILES
 from core.agent.repository import AgentRepository
-from core.agent.runtime import AgentRuntime
+from core.agent.backends import build_agent_backend
 from core.agent.queue import AgentTaskQueue
 from core.agent.types import AgentRunRequest
 from ui.dialog_utils import apply_responsive_dialog_size
@@ -88,7 +88,14 @@ class AgentWorkbenchDialog(QDialog):
         self.bridge.event.connect(self._on_event)
         self.bridge.finished.connect(self._on_finished)
         settings = getattr(parent, "_settings", {}) or {}
-        self.runtime = AgentRuntime(novel_manager=novel_manager, client=client, tool_registry=build_domain_tool_registry(novel_manager, conversation_manager), event_sink=self.bridge.event.emit, skills_enabled=bool(settings.get("agent_skills_enabled", True)))
+        self.runtime, self.backend_status = build_agent_backend(
+            settings=settings,
+            novel_manager=novel_manager,
+            client=client,
+            tool_registry=build_domain_tool_registry(novel_manager, conversation_manager),
+            event_sink=self.bridge.event.emit,
+            skills_enabled=bool(settings.get("agent_skills_enabled", True)),
+        )
         self.task_queue = AgentTaskQueue(read_concurrency=2)
         self.current_session = None
         self.current_run_id = ""
@@ -214,7 +221,14 @@ class AgentWorkbenchDialog(QDialog):
         if self.current_run_id: self.runtime.pause(self.current_run_id)
 
     def _resume(self) -> None:
-        if self.current_run_id: self.runtime.resume(self.current_run_id)
+        if not self.current_run_id:
+            return
+        repository = self._repository()
+        run = repository.load_run(self.current_run_id) if repository else None
+        if run and run.status == "waiting_approval":
+            QMessageBox.information(self, "等待审批", "请在待审批列表中批准或拒绝变更后继续。")
+            return
+        self.runtime.resume(self.current_run_id, {"resume": True})
 
     def _refresh_pending(self) -> None:
         self.pending.clear(); repo = self._repository()
@@ -234,6 +248,8 @@ class AgentWorkbenchDialog(QDialog):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             try:
                 ChangeSetService(self.manager, self.book_combo.currentText(), self._repository()).approve(change.change_set_id, dialog.approved_ids)
+                if self.current_run_id:
+                    self.runtime.resume(self.current_run_id, {"approved": True, "change_set_id": change.change_set_id})
                 QMessageBox.information(self, "完成", "变更已应用并创建项目快照。")
             except Exception as exc:
                 QMessageBox.critical(self, "应用失败", str(exc))
@@ -243,6 +259,8 @@ class AgentWorkbenchDialog(QDialog):
         change = self._selected_change()
         if change:
             ChangeSetService(self.manager, self.book_combo.currentText(), self._repository()).reject(change.change_set_id)
+            if self.current_run_id:
+                self.runtime.resume(self.current_run_id, {"approved": False, "change_set_id": change.change_set_id})
             self._refresh_pending()
 
     def closeEvent(self, event) -> None:

@@ -5,6 +5,7 @@ from copy import deepcopy
 
 from PyQt6.QtWidgets import (
     QButtonGroup,
+    QComboBox,
     QCheckBox,
     QDialog,
     QFileDialog,
@@ -328,6 +329,51 @@ class SettingsDialog(QDialog):
         self._agent_skills.setChecked(bool(self._settings.get("agent_skills_enabled", True)))
         self._agent_skills.stateChanged.connect(self._save_agent_settings)
         layout.addWidget(self._agent_skills)
+
+        framework_group = QGroupBox("Agent 框架与混合检索（开发预览）")
+        framework_form = QFormLayout(framework_group)
+        self._agent_runtime_backend = QComboBox()
+        self._agent_runtime_backend.addItem("现有自研运行时", "legacy")
+        self._agent_runtime_backend.addItem("LangChain + LangGraph", "langgraph")
+        runtime_index = self._agent_runtime_backend.findData(self._settings.get("agent_runtime_backend", "legacy"))
+        self._agent_runtime_backend.setCurrentIndex(max(0, runtime_index))
+        framework_form.addRow("Agent 运行时", self._agent_runtime_backend)
+        self._retrieval_backend = QComboBox()
+        self._retrieval_backend.addItem("现有关键词检索", "classic")
+        self._retrieval_backend.addItem("LlamaIndex 混合检索", "hybrid")
+        retrieval_index = self._retrieval_backend.findData(self._settings.get("retrieval_backend", "classic"))
+        self._retrieval_backend.setCurrentIndex(max(0, retrieval_index))
+        framework_form.addRow("上下文检索", self._retrieval_backend)
+        self._embedding_base_url = QLineEdit(str(self._settings.get("embedding_base_url", "")))
+        self._embedding_base_url.setPlaceholderText("留空则继承当前 OpenAI 兼容 API 地址")
+        self._embedding_api_key = QLineEdit(str(self._settings.get("embedding_api_key", "")))
+        self._embedding_api_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self._embedding_api_key.setPlaceholderText("留空则继承当前 API Key")
+        self._embedding_model = QLineEdit(str(self._settings.get("embedding_model", "")))
+        self._embedding_model.setPlaceholderText("例如 text-embedding-3-small")
+        framework_form.addRow("Embedding 地址", self._embedding_base_url)
+        framework_form.addRow("Embedding Key", self._embedding_api_key)
+        framework_form.addRow("Embedding 模型", self._embedding_model)
+        self._framework_auto_fallback = QCheckBox("框架异常时自动回退现有实现")
+        self._framework_auto_fallback.setChecked(bool(self._settings.get("framework_auto_fallback", True)))
+        framework_form.addRow(self._framework_auto_fallback)
+        framework_actions = QHBoxLayout()
+        framework_save = QPushButton("保存框架配置")
+        framework_save.clicked.connect(self._save_agent_settings)
+        embedding_test = QPushButton("测试 Embedding")
+        embedding_test.clicked.connect(self._test_embedding)
+        rebuild_index = QPushButton("重建当前书籍索引")
+        rebuild_index.clicked.connect(self._rebuild_retrieval_index)
+        clear_index = QPushButton("清除当前书籍索引")
+        clear_index.clicked.connect(self._clear_retrieval_index)
+        for button in (framework_save, embedding_test, rebuild_index, clear_index):
+            framework_actions.addWidget(button)
+        framework_form.addRow(framework_actions)
+        self._framework_status = QLabel("索引按需创建；未启用混合检索时不会加载新框架。")
+        self._framework_status.setWordWrap(True)
+        framework_form.addRow(self._framework_status)
+        layout.addWidget(framework_group)
+
         web_group = QGroupBox("联网搜索")
         web_form = QFormLayout(web_group)
         self._agent_web = QCheckBox("启用受控网页搜索工具")
@@ -414,9 +460,59 @@ class SettingsDialog(QDialog):
         settings["agent_web_snippet_field"] = self._agent_web_snippet_field.text().strip() or "content"
         settings["agent_web_max_results"] = self._agent_web_max_results.value()
         settings["agent_web_timeout_seconds"] = self._agent_web_timeout.value()
+        settings["agent_runtime_backend"] = str(self._agent_runtime_backend.currentData() or "legacy")
+        settings["retrieval_backend"] = str(self._retrieval_backend.currentData() or "classic")
+        settings["embedding_base_url"] = self._embedding_base_url.text().strip()
+        settings["embedding_api_key"] = self._embedding_api_key.text().strip()
+        settings["embedding_model"] = self._embedding_model.text().strip()
+        settings["framework_auto_fallback"] = self._framework_auto_fallback.isChecked()
         self._settings_manager.save(settings)
         self._settings = settings
         self._settings_changed_callback()
+
+    def _test_embedding(self) -> None:
+        self._save_agent_settings()
+        try:
+            from core.retrieval import LlamaIndexHybridBackend
+            parent = self.parent()
+            manager = getattr(parent, "_novel_manager", None)
+            if manager is None:
+                raise RuntimeError("当前窗口无法访问书籍管理器")
+            backend = LlamaIndexHybridBackend(manager, self._settings_manager.load())
+            vector = backend._embedder.get_query_embedding("小说语义检索测试")
+            self._framework_status.setText(f"Embedding 测试成功，向量维度：{len(vector)}")
+        except Exception as exc:
+            self._framework_status.setText(f"Embedding 测试失败：{exc}")
+            QMessageBox.warning(self, "Embedding 测试失败", str(exc))
+
+    def _current_retrieval_target(self):
+        parent = self.parent()
+        manager = getattr(parent, "_novel_manager", None)
+        title = parent._get_current_book_title() if hasattr(parent, "_get_current_book_title") else ""
+        if manager is None or not title:
+            raise RuntimeError("请先在主界面选择一本小说")
+        manager.configure_retrieval(self._settings_manager.load())
+        return manager, title
+
+    def _rebuild_retrieval_index(self) -> None:
+        self._save_agent_settings()
+        try:
+            manager, title = self._current_retrieval_target()
+            report = manager.retrieval_backend().rebuild(title)
+            self._framework_status.setText(
+                f"索引重建完成：{report.document_count} 个文档，新增向量 {report.embedded_count}，revision={report.revision}"
+            )
+        except Exception as exc:
+            QMessageBox.warning(self, "索引重建失败", str(exc))
+
+    def _clear_retrieval_index(self) -> None:
+        try:
+            manager, title = self._current_retrieval_target()
+            backend = manager.retrieval_backend()
+            cleared = bool(getattr(backend, "clear", lambda _title: False)(title))
+            self._framework_status.setText("当前书籍派生索引已清除。" if cleared else "当前后端没有可清除的派生索引。")
+        except Exception as exc:
+            QMessageBox.warning(self, "清除索引失败", str(exc))
 
     def _test_agent_web_search(self) -> None:
         self._save_agent_settings()

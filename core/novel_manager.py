@@ -1,4 +1,4 @@
-﻿"""
+"""
 小说管理器模块
 负责：
 - 书架管理（创建/列出/删除小说项目）
@@ -142,6 +142,28 @@ class NovelManager:
     def _assert_workspace_writable(self, title: str) -> None:
         if title in self._workspace_errors:
             raise RuntimeError(self._workspace_errors[title])
+
+    def configure_retrieval(self, settings: dict | None = None) -> None:
+        self._retrieval_settings = dict(settings or {})
+        self._retrieval_backend_instance = None
+        self._retrieval_fallback_reason = ""
+
+    def retrieval_backend(self):
+        if getattr(self, "_retrieval_backend_instance", None) is None:
+            from core.retrieval import build_retrieval_backend
+            backend, reason = build_retrieval_backend(self, getattr(self, "_retrieval_settings", {}) or {})
+            self._retrieval_backend_instance = backend
+            self._retrieval_fallback_reason = reason
+        return self._retrieval_backend_instance
+
+    def retrieval_fallback_reason(self) -> str:
+        return str(getattr(self, "_retrieval_fallback_reason", "") or "")
+
+    def mark_retrieval_dirty(self, title: str, changes: list[dict] | None = None) -> None:
+        try:
+            self.retrieval_backend().update_documents(title, changes or [])
+        except Exception:
+            pass
 
     def context_assembler(self):
         from core.context_assembler import ContextAssembler
@@ -697,6 +719,7 @@ class NovelManager:
 
         meta.compressed_early_summary = ""
         self._save_meta(title, meta)
+        self.mark_retrieval_dirty(title, [{"source_type": "chapter_summary", "source_id": node_id}])
 
     def get_chapter_node_summary(self, title: str, chapter_num: int, version: int) -> str:
         """读取指定章节树节点摘要，不存在则返回空字符串。"""
@@ -927,6 +950,7 @@ class NovelManager:
             self._save_meta(title, meta)
             if generation_record is not None:
                 workspace.storage.write_json(self._extra_history_path(node_id), generation_record)
+            self.mark_retrieval_dirty(title, [{"source_type": "chapter", "source_id": node_id}])
             return copy.deepcopy(node)
         except Exception:
             workspace.storage.delete(node["file"])
@@ -950,6 +974,7 @@ class NovelManager:
         node["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
         meta.compressed_early_summary = ""
         self._save_meta(title, meta)
+        self.mark_retrieval_dirty(title, [{"source_type": "chapter_summary", "source_id": node_id}])
 
     def delete_chapter_node(self, title: str, node_id: str) -> bool:
         meta = self.ensure_chapter_tree(title)
@@ -1146,6 +1171,7 @@ class NovelManager:
 
         self._normalize_chapter_tree(meta)
         self._save_meta(title, meta)
+        self.mark_retrieval_dirty(title, [{"source_type": "chapter", "source_id": node_id}])
         return written_path, version
 
     def set_active_version(self, title: str, chapter_num: int, version: int) -> None:
@@ -2246,6 +2272,7 @@ class NovelManager:
         wb_path = self._world_bible_path(title)
         self._write_encrypted_json_atomic(wb_path, world_bible_to_dict(bible))
         self._world_bible_load_errors.pop(title, None)
+        self.mark_retrieval_dirty(title, [{"source_type": "world_bible", "source_id": "world_bible"}])
     def world_bible_load_error(self, title: str) -> str:
         return self._world_bible_load_errors.get(title, "")
 
