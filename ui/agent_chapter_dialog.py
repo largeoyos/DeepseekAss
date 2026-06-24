@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QLabel, QTabWidget, QTextBrowser, QVBoxLayout, QWidget
 
+from ui.dialog_utils import apply_responsive_dialog_size
+
 
 class AgentChapterPlanDialog(QDialog):
     """Read-only approval dialog for a prepared Agent chapter plan."""
@@ -11,7 +13,6 @@ class AgentChapterPlanDialog(QDialog):
         self.request = request
         self.plan = plan
         self.setWindowTitle(f"确认 Agent 章节计划 · 第{request.chapter_num}章")
-        self.resize(900, 720)
         layout = QVBoxLayout(self)
         notice = QLabel("确认后将自动生成正文、执行监督修复、写入章节树并维护世界书。取消不会修改正式数据。")
         notice.setWordWrap(True)
@@ -45,3 +46,4 @@ class AgentChapterPlanDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+        apply_responsive_dialog_size(self, 840, 620, minimum_width=460, minimum_height=320)

@@ -18,6 +18,7 @@ from core.agent.repository import AgentRepository
 from core.agent.runtime import AgentRuntime
 from core.agent.queue import AgentTaskQueue
 from core.agent.types import AgentRunRequest
+from ui.dialog_utils import apply_responsive_dialog_size
 
 
 class AgentSignalBridge(QObject):
@@ -31,7 +32,6 @@ class ChangeApprovalDialog(QDialog):
         self.change_set = change_set
         self.approved_ids: list[str] = []
         self.setWindowTitle("审批 Agent 变更")
-        self.resize(820, 620)
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel(f"原因：{change_set.reason or '未提供'}\n批准前会自动创建项目快照。"))
         self.operations = QListWidget()
@@ -55,6 +55,7 @@ class ChangeApprovalDialog(QDialog):
         layout.addWidget(buttons)
         if change_set.operations:
             self.operations.setCurrentRow(0)
+        apply_responsive_dialog_size(self, 760, 560, minimum_width=440, minimum_height=300)
 
     def _show_operation(self, row: int, manager, title: str) -> None:
         if row < 0:
@@ -92,8 +93,8 @@ class AgentWorkbenchDialog(QDialog):
         self.current_session = None
         self.current_run_id = ""
         self.setWindowTitle("Agent 工作台")
-        self.resize(1180, 760)
         self._build_ui()
+        apply_responsive_dialog_size(self, 1080, 700, minimum_width=640, minimum_height=420)
         self._refresh_books()
 
     def _build_ui(self) -> None:

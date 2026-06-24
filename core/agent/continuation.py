@@ -48,28 +48,43 @@ class AgentContinuationService:
             "1. 保持原文顺序，不改写正文。\n"
             "2. 每段必须有简短标题。\n"
             "3. 不要丢失任何正文内容。\n"
-            "4. 只输出 JSON 数组，格式：[{\"title\":\"...\",\"content\":\"...\"}]。\n"
+            "4. 不要在响应中复制整段正文，只返回每段在原文中的起始锚点。\n"
+            "5. start_quote 必须逐字复制该段开头 20-60 个字符，并确保能在原文中定位；第一段填空字符串。\n"
+            "6. 只输出 JSON 数组，格式：[{\"title\":\"...\",\"start_quote\":\"\"},"
+            "{\"title\":\"...\",\"start_quote\":\"该段开头的原文\"}]。\n"
             f"\n【可用写作 Skills】\n{skills.text}\n"
             f"\n【用户偏好】\n{global_user_prompt}\n"
             f"\n【原文】\n{text[:50000]}"
         )
-        response = self.client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.2,
-            max_tokens=6000,
-        )
-        raw = response.choices[0].message.content or ""
-        sections = self._parse_sections(raw)
-        if not sections:
-            raise ValueError("Agent 分段返回为空或格式无效")
+        parse_error = ""
+        try:
+            response = self.client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.2,
+                max_tokens=2000,
+            )
+            raw = response.choices[0].message.content or ""
+            sections = self._parse_sections(raw, text)
+            if not sections:
+                raise ValueError("Agent 分段返回为空或格式无效")
+        except Exception as exc:
+            from utils.summarize import split_text_locally
+            parse_error = str(exc)
+            sections = split_text_locally(text)
+            if not sections:
+                sections = [("全文", text)]
         self._save_run(book_title, AgentContinuationRun(
             run_id=f"cont_seg_{uuid.uuid4().hex}",
             task="continuation_segmentation",
             book_title=book_title,
             selected_skills=skills.summaries,
             input_chars=len(text),
-            output_summary={"segments": len(sections)},
+            output_summary={
+                "segments": len(sections),
+                "fallback": bool(parse_error),
+                "parse_error": parse_error[:500],
+            },
         ))
         return sections
 
@@ -148,19 +163,60 @@ class AgentContinuationService:
         ))
         return result
 
-    def _parse_sections(self, raw: str) -> list[tuple[str, str]]:
+    def _parse_sections(self, raw: str, source_text: str = "") -> list[tuple[str, str]]:
         text = (raw or "").strip()
         text = re.sub(r"^```(?:json)?\s*", "", text)
         text = re.sub(r"\s*```$", "", text)
         data = json.loads(text)
         if not isinstance(data, list):
             raise ValueError("Agent 分段必须返回 JSON 数组")
+
+        if source_text and any(isinstance(item, dict) and "start_quote" in item for item in data):
+            return self._sections_from_anchors(data, source_text)
+
         result = []
         for idx, item in enumerate(data, 1):
             if not isinstance(item, dict):
                 continue
             title = str(item.get("title") or f"分段 {idx}").strip()
             content = str(item.get("content") or "").strip()
+            if content:
+                result.append((title, content))
+        return result
+
+    @staticmethod
+    def _sections_from_anchors(data: list, source_text: str) -> list[tuple[str, str]]:
+        source = (source_text or "").strip()
+        if not source:
+            return []
+
+        boundaries: list[tuple[int, str]] = [(0, "分段 1")]
+        search_from = 0
+        for idx, item in enumerate(data, 1):
+            if not isinstance(item, dict):
+                continue
+            title = str(item.get("title") or f"分段 {idx}").strip()
+            quote = str(item.get("start_quote") or "").strip()
+            if idx == 1 and not quote:
+                boundaries[0] = (0, title)
+                continue
+            if not quote:
+                continue
+            position = source.find(quote, search_from)
+            if position < 0:
+                raise ValueError(f"Agent 分段锚点无法在原文定位: {quote[:40]}")
+            if position == 0:
+                boundaries[0] = (0, title)
+                search_from = len(quote)
+                continue
+            boundaries.append((position, title))
+            search_from = position + len(quote)
+
+        boundaries = sorted(dict(boundaries).items())
+        result = []
+        for index, (start, title) in enumerate(boundaries):
+            end = boundaries[index + 1][0] if index + 1 < len(boundaries) else len(source)
+            content = source[start:end].strip()
             if content:
                 result.append((title, content))
         return result

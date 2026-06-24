@@ -88,6 +88,29 @@ class ExtendedAgentTests(unittest.TestCase):
             runs = workspace.storage.list_files(f"{workspace.agent_root}/continuation_runs")
             self.assertTrue(any(path.endswith(".json") for path in runs))
             self.assertIn("续写导入分段 Agent", client.chat.completions.calls[0]["messages"][0]["content"])
+
+    def test_agent_continuation_uses_boundary_anchors_without_copying_content(self):
+        source = "第一幕发生在车站。\n\n第二幕转到雨夜的小巷。\n\n第三幕回到清晨的旅馆。"
+        client = _FakeContinuationClient(
+            '[{"title":"车站","start_quote":""},'
+            '{"title":"雨夜","start_quote":"第二幕转到雨夜的小巷。"},'
+            '{"title":"清晨","start_quote":"第三幕回到清晨的旅馆。"}]'
+        )
+        sections = AgentContinuationService(client=client).segment_text(source, "model-x")
+        self.assertEqual(3, len(sections))
+        self.assertEqual(source.replace("\n\n", ""), "".join(content for _, content in sections))
+        prompt = client.chat.completions.calls[0]["messages"][0]["content"]
+        self.assertIn("start_quote", prompt)
+        self.assertIn("不要在响应中复制整段正文", prompt)
+
+    def test_agent_continuation_truncated_json_falls_back_locally(self):
+        source = "第一段正文。\n\n第二段正文。\n\n第三段正文。"
+        client = _FakeContinuationClient(
+            '[{"title":"开端","start_quote":""},{"title":"转折","start_quote":"第二段'
+        )
+        sections = AgentContinuationService(client=client).segment_text(source, "model-x")
+        self.assertEqual(3, len(sections))
+        self.assertEqual(["第一段正文。", "第二段正文。", "第三段正文。"], [item[1] for item in sections])
     def test_saved_advice_artifacts_are_listed_for_library(self):
         with tempfile.TemporaryDirectory() as root:
             manager = NovelManager(bookshelf_root=root)

@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
+from ui.dialog_utils import apply_responsive_dialog_size
 from utils.prompts import Prompts
 
 SUGGESTION_PROMPT = """你是一位资深小说编辑。请根据以下完整世界观设定、待回收伏笔和剧情进展，为下一章提供 3-5 个发展方向建议。
@@ -506,20 +507,22 @@ class DirectionSelectionDialog(QDialog):
         super().__init__(parent)
         self.selected_direction: str | None = None
         self.setWindowTitle("选择发展方向")
-        self.resize(500, 350)
         self.setModal(True)
 
         layout = QVBoxLayout(self)
         layout.addWidget(QLabel("请选择下一章的发展方向："))
 
-        self._group = QButtonGroup(self)
-        for i, d in enumerate(directions):
-            btn = QRadioButton(d)
-            self._group.addButton(btn, i)
-            btn.setStyleSheet("padding: 6px 0; font-size: 13px;")
-            layout.addWidget(btn)
-            if i == 0:
-                btn.setChecked(True)
+        self._directions = QListWidget()
+        self._directions.setWordWrap(True)
+        self._directions.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._directions.setTextElideMode(Qt.TextElideMode.ElideNone)
+        self._directions.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        for direction in directions:
+            self._directions.addItem(QListWidgetItem(direction))
+        if directions:
+            self._directions.setCurrentRow(0)
+        self._directions.itemDoubleClicked.connect(lambda _item: self._on_confirm())
+        layout.addWidget(self._directions, 1)
 
         btn_row = QHBoxLayout()
         confirm_btn = QPushButton("确定")
@@ -530,12 +533,11 @@ class DirectionSelectionDialog(QDialog):
         btn_row.addWidget(confirm_btn)
         btn_row.addWidget(cancel_btn)
         layout.addLayout(btn_row)
+        apply_responsive_dialog_size(self, 640, 440, minimum_width=380, minimum_height=260)
 
     def _on_confirm(self):
-        checked_id = self._group.checkedId()
-        if checked_id >= 0:
-            btn = self._group.button(checked_id)
-            self.selected_direction = btn.text() if btn else None
+        item = self._directions.currentItem()
+        self.selected_direction = item.text() if item else None
         self.accept()
 
 

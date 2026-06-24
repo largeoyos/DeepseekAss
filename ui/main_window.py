@@ -45,6 +45,8 @@ from PyQt6.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QAbstractItemView,
+    QDialogButtonBox,
+    QTextBrowser,
 )
 from PyQt6.QtGui import QColor, QIcon
 from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -92,6 +94,7 @@ from core.app_services import (
 from core.agent.skills import HUMANIZER_ZH_STYLE_BRIEF
 from core.settings_manager import SettingsManager
 from core.token_log_manager import TokenLogManager
+from ui.dialog_utils import apply_responsive_dialog_size
 from strategies import (
     RolePlayStrategy,
     NovelStrategy,
@@ -5334,16 +5337,31 @@ class DeepSeekChatGUI(QMainWindow):
             )
         if plan.conflicts:
             preview.extend(["", "冲突：", json.dumps(plan.conflicts, ensure_ascii=False, indent=2)])
-        answer = QMessageBox.question(
-            self,
-            "审批世界书变更",
-            "\n".join(preview)[:12000] + "\n\n批准后会先创建项目快照，再按上述作用域原子提交。是否批准？",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        approval_dialog = QDialog(self)
+        approval_dialog.setWindowTitle("审批世界书变更")
+        approval_layout = QVBoxLayout(approval_dialog)
+        approval_notice = QLabel("批准后会先创建项目快照，再按上述作用域原子提交。")
+        approval_notice.setWordWrap(True)
+        approval_layout.addWidget(approval_notice)
+        approval_preview = QTextBrowser()
+        approval_preview.setPlainText("\n".join(preview)[:12000])
+        approval_layout.addWidget(approval_preview, 1)
+        approval_buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Yes | QDialogButtonBox.StandardButton.No
         )
+        approval_buttons.button(QDialogButtonBox.StandardButton.Yes).setText("批准并提交")
+        approval_buttons.button(QDialogButtonBox.StandardButton.No).setText("拒绝")
+        approval_buttons.accepted.connect(approval_dialog.accept)
+        approval_buttons.rejected.connect(approval_dialog.reject)
+        approval_layout.addWidget(approval_buttons)
+        apply_responsive_dialog_size(
+            approval_dialog, 760, 560, minimum_width=440, minimum_height=300
+        )
+        approved = approval_dialog.exec() == QDialog.DialogCode.Accepted
         from core.agent.world_bible_agent import WorldBibleAgentService
         service = WorldBibleAgentService(self._novel_manager)
         try:
-            if answer == QMessageBox.StandardButton.Yes:
+            if approved:
                 service.confirm_scopes(book_title, plan.change_set_id, plan.operations)
                 applied = service.approve(book_title, plan.change_set_id)
                 self._agent_advisor_status.setText(

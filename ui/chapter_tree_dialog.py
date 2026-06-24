@@ -1036,31 +1036,27 @@ class ChapterTreeDialog(QDialog):
             QMessageBox.information(self, "Agent 番外", "请先在设置中心切换到 Agent 写作模式。")
             return
         from ui.agent_extra_dialog import AgentExtraRequestDialog
-        dialog = AgentExtraRequestDialog(self, start_node=node, reference_node=node)
+        tree_id = str(node.get("tree_id", ""))
+        selectable_nodes = [
+            item for item in self._meta.chapter_nodes.values()
+            if not item.get("virtual") and str(item.get("tree_id", "")) == tree_id
+        ]
+        dialog = AgentExtraRequestDialog(
+            self,
+            nodes=selectable_nodes,
+            initial_node_id=str(node["id"]),
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             return
         values = dialog.values()
         extra_type = values["extra_type"]
-        start_node_id = node["id"] if extra_type in {"enrichment", "if_line"} else ""
-        reference_node_id = node["id"] if extra_type in {"prequel", "sequel"} else ""
-        end_node_id = ""
-        if extra_type in {"enrichment", "if_line"}:
-            children = [self._meta.chapter_nodes[item] for item in node.get("children_ids", []) if item in self._meta.chapter_nodes]
-            if not children:
-                QMessageBox.warning(self, "Agent 番外", "当前节点没有直接下一节点，无法选择连续的两个点。")
-                return
-            labels = [f"{item.get('display_label') or item.get('title')} [{item['id']}]" for item in children]
-            selected, ok = QInputDialog.getItem(self, "选择终点", "请选择与起点直接相连的下一节点：", labels, 0, False)
-            if not ok:
-                return
-            end_node_id = children[labels.index(selected)]["id"]
         from core.agent.extra_generation import AgentExtraGenerationService, AgentExtraRequest
         request = AgentExtraRequest(
             book_title=self._book_title,
             extra_type=extra_type,
-            start_node_id=start_node_id,
-            end_node_id=end_node_id,
-            reference_node_id=reference_node_id,
+            start_node_id=values["start_node_id"],
+            end_node_id=values["end_node_id"],
+            reference_node_id=values["reference_node_id"],
             title=values["title"],
             plot=values["plot"],
             requirement=values["requirement"],
@@ -1280,6 +1276,3 @@ class ChapterTreeDialog(QDialog):
         self._rebuild_success_message = "章节子树已删除，剧情记忆和世界书已按剩余活跃路径同步。"
         self._details.setPlainText("正在同步删除后的剧情记忆和世界书，请稍候...")
         threading.Thread(target=self._run_rebuild_memory, daemon=True).start()
-
-
-

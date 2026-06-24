@@ -7,6 +7,8 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
 )
 
+from ui.dialog_utils import apply_responsive_dialog_size
+
 
 class AgentPolishPlanDialog(QDialog):
     """Read-only approval dialog for a prepared Agent polish plan."""
@@ -14,7 +16,6 @@ class AgentPolishPlanDialog(QDialog):
     def __init__(self, parent, request, plan) -> None:
         super().__init__(parent)
         self.setWindowTitle(f"确认 Agent 润色方案 · 第{request.chapter_num}章")
-        self.resize(900, 720)
         layout = QVBoxLayout(self)
         notice = QLabel(
             "确认后将润色完整原文并执行保真审查。润色版会保存为新版本，"
@@ -62,3 +63,4 @@ class AgentPolishPlanDialog(QDialog):
         buttons.accepted.connect(self.accept)
         buttons.rejected.connect(self.reject)
         layout.addWidget(buttons)
+        apply_responsive_dialog_size(self, 840, 620, minimum_width=460, minimum_height=320)
