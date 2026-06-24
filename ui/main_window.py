@@ -89,6 +89,7 @@ from core.app_services import (
     RoleplayService,
     TaskRunner,
 )
+from core.agent.skills import HUMANIZER_ZH_STYLE_BRIEF
 from core.settings_manager import SettingsManager
 from core.token_log_manager import TokenLogManager
 from strategies import (
@@ -5689,6 +5690,7 @@ class DeepSeekChatGUI(QMainWindow):
             parts.append(f"【用户偏好提示】: \n{global_prompt}\n")
         if xp_mode:
             parts.append(f"{Prompts.XP_MODE_SYSTEM}\n")
+        parts.append(f"【humanizer-zh 风格硬约束】\n{HUMANIZER_ZH_STYLE_BRIEF}\n")
 
         return "\n".join(parts)
 
@@ -6373,6 +6375,7 @@ class DeepSeekChatGUI(QMainWindow):
                 user_parts.append(f"【用户偏好提示】: \n{global_prompt}\n")
             if xp_mode:
                 user_parts.append(f"{Prompts.XP_MODE_SYSTEM}\n")
+            user_parts.append(f"【humanizer-zh 风格硬约束】\n{HUMANIZER_ZH_STYLE_BRIEF}\n")
 
             user_parts.append(
                 f"请直接输出续写正文，不要加任何解释或前言。"
@@ -8599,6 +8602,7 @@ class DeepSeekChatGUI(QMainWindow):
                         user_parts.append(f"【用户偏好提示】: \n{global_prompt}\n")
                     if xp_mode:
                         user_parts.append(f"{Prompts.XP_MODE_SYSTEM}\n")
+                    user_parts.append(f"【humanizer-zh 风格硬约束】\n{HUMANIZER_ZH_STYLE_BRIEF}\n")
                     user_parts.append(f"请直接输出第 {chapter_num} 章正文。字数不少于{target_words}字，通过丰富环境细节、增加对话交互和内心描写来充实内容。")
                     messages.append({"role": "user", "content": "\n".join(user_parts)})
 

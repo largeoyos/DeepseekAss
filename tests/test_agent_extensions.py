@@ -8,7 +8,7 @@ from core.agent.changes import ChangeSetService
 from core.agent.domain_tools import build_domain_tool_registry
 from core.agent.profiles import get_agent_profile
 from core.agent.repository import AgentRepository
-from core.agent.skills import SkillService
+from core.agent.skills import HUMANIZER_ZH_STYLE_BRIEF, SkillService
 from core.agent.tools import ToolContext, ToolRegistry, ToolSpec
 from core.agent.types import ToolCallRequest
 from core.agent.web_search import WebSearchClient, WebSearchConfig
@@ -203,10 +203,24 @@ class ExtendedAgentTests(unittest.TestCase):
             continuation = {item.skill_id for item in skills.select_for_task(
                 "continuation_segmentation", "writing_orchestrator", "续写分段和长篇上下文"
             ).documents}
+            chapter = {item.skill_id for item in skills.select_for_task(
+                "chapter_generation", "writing_orchestrator", "去AI腔，描写自然"
+            ).documents}
+            polish = {item.skill_id for item in skills.select_for_task(
+                "chapter_polish", "writing_orchestrator", "润色去AI腔，不改剧情"
+            ).documents}
             self.assertIn("continuity-review", supervisor)
             self.assertIn("world-bible-maintenance", world)
             self.assertIn("foreshadowing", world)
             self.assertIn("chapter-continuation", continuation)
+            self.assertIn("humanizer-zh", supervisor)
+            self.assertIn("humanizer-zh", chapter)
+            self.assertIn("humanizer-zh", polish)
+
+    def test_humanizer_style_brief_blocks_common_ai_patterns(self):
+        self.assertIn("不是", HUMANIZER_ZH_STYLE_BRIEF)
+        self.assertIn("不仅", HUMANIZER_ZH_STYLE_BRIEF)
+        self.assertIn("描写要多样化", HUMANIZER_ZH_STYLE_BRIEF)
 
 
 if __name__ == "__main__":

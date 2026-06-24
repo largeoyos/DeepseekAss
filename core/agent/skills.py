@@ -104,7 +104,8 @@ BUILTIN_SKILL_TEXTS = {
 5. 句子长短混合，段落结尾不要总是升华主题。
 6. 用具体场景承载情绪和主题，不用旁白替读者解释。
 7. 保留原意、事实和人物行为；去 AI 腔不能改剧情。
-""", agents="writing_orchestrator,chapter_supervisor,writing_advisor", keywords="去AI腔,人味,自然,润色,文风,描写,不是而是,不仅而且", priority=98),    "long-context": _skill("long-context", "长篇上下文筛选与压缩时保护关键事实。", "chapter_generation,extra_generation,continuation_segmentation,continuation_analysis,continuation_direction,chapter_polish,context_compaction,chapter_supervision,writing_advice", """
+""", agents="writing_orchestrator,chapter_supervisor,writing_advisor", keywords="去AI腔,人味,自然,润色,文风,描写,不是而是,不仅而且", priority=98),
+    "long-context": _skill("long-context", "长篇上下文筛选与压缩时保护关键事实。", "chapter_generation,extra_generation,continuation_segmentation,continuation_analysis,continuation_direction,chapter_polish,context_compaction,chapter_supervision,writing_advice", """
 # 长篇上下文
 优先保留系统约束、当前任务、上一章承接、近期摘要、当前角色状态、未完成剧情线、待回收伏笔和用户明确引用。压缩旧内容时保留已确认事实、用户决策、已执行操作、未完成事项和禁止遗失约束。
 """, agents="writing_orchestrator,project_maintainer,chapter_supervisor,writing_advisor", keywords="长篇,上下文,压缩,历史剧情", priority=60),
