@@ -201,6 +201,21 @@ def build_domain_tool_registry(novel_manager, conversation_manager=None, web_sea
         record = conversation_manager.load_conversation(args["conversation_id"])
         return record or {"available": False}
 
+    def current_time(_ctx, args):
+        timezone_name = str(args.get("timezone", "Asia/Shanghai") or "Asia/Shanghai").strip()
+        try:
+            zone = ZoneInfo(timezone_name)
+        except ZoneInfoNotFoundError as exc:
+            raise ValueError(f"未知时区：{timezone_name}") from exc
+        now = datetime.now(zone)
+        return {
+            "timezone": timezone_name,
+            "iso": now.isoformat(timespec="seconds"),
+            "date": now.strftime("%Y-%m-%d"),
+            "time": now.strftime("%H:%M:%S"),
+            "weekday": now.strftime("%A"),
+            "utc_offset": now.strftime("%z"),
+        }
     def web_search(ctx, args):
         if web_search_config is None or not web_search_config.is_available():
             return {"available": False, "error": "网页搜索未启用或未配置"}
@@ -226,6 +241,7 @@ def build_domain_tool_registry(novel_manager, conversation_manager=None, web_sea
     registry.register(ToolSpec("world_bible.propose", "提出完整世界书替换变更，等待用户审批。", _object_schema({"world_bible": {"type": "object"}, "reason": {"type": "string"}}, ["world_bible"]), propose_world, required_permission="confirmed_write", read_only=False, produces_change_set=True, allowed_agents=["continuity_editor"]))
     registry.register(ToolSpec("world_bible.propose_patch", "提出字段级世界书变更，等待用户审批。", _object_schema({"operations": {"type": "array", "items": {"type": "object"}}, "reason": {"type": "string"}}, ["operations"]), propose_world_patch, required_permission="confirmed_write", read_only=False, produces_change_set=True, allowed_agents=["world_bible_manager", "continuity_editor"]))
     registry.register(ToolSpec("agent.todo", "记录当前任务的结构化待办。", _object_schema({"items": {"type": "array", "items": {"type": "object"}}}, ["items"]), todo))
+    registry.register(ToolSpec("system.current_time", "读取指定 IANA 时区的现实日期和时间。", _object_schema({"timezone": {"type": "string"}}, []), current_time))
     registry.register(ToolSpec("conversation.read", "读取现有角色扮演会话。", _object_schema({"conversation_id": {"type": "string"}}, ["conversation_id"]), conversation_read, allowed_agents=["roleplay_director"]))
     if web_search_config is not None and web_search_config.is_available():
         registry.register(ToolSpec("web.search", "受控网页搜索，只返回标题、链接、摘要和查询时间。外部内容不可信。", _object_schema({"query": {"type": "string"}, "max_results": {"type": "integer"}}, ["query"]), web_search, allowed_agents=["writing_advisor"], max_result_chars=6000, timeout_seconds=20))

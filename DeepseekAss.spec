@@ -1,5 +1,4 @@
 # -*- mode: python ; coding: utf-8 -*-
-from PyInstaller.utils.hooks import collect_all
 
 datas = [('E:\\Projects\\DeepseekAss\\ui\\icon.svg', 'ui')]
 binaries = []
@@ -12,9 +11,6 @@ hiddenimports = [
     'langgraph.checkpoint.base',
     'llama_index.embeddings.openai',
 ]
-tmp_ret = collect_all('PyQt6')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-
 
 a = Analysis(
     ['E:\\Projects\\DeepseekAss\\gui_main.py'],

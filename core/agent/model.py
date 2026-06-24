@@ -24,10 +24,10 @@ class AgentModelAdapter:
         self.max_tokens = max_tokens
         self.tool_capability: bool | None = None
 
-    def complete(self, messages: list[dict], tools: list[dict]) -> ModelTurn:
+    def complete(self, messages: list[dict], tools: list[dict], *, require_tool: bool = False) -> ModelTurn:
         kwargs = {"model": self.model, "messages": messages, "temperature": self.temperature, "max_tokens": self.max_tokens}
         if tools and self.tool_capability is not False:
-            kwargs.update({"tools": tools, "tool_choice": "auto"})
+            kwargs.update({"tools": tools, "tool_choice": "required" if require_tool else "auto"})
         try:
             response = self.client.chat.completions.create(**kwargs)
         except Exception as exc:

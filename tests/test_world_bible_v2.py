@@ -250,6 +250,48 @@ class WorldBibleV2Tests(unittest.TestCase):
         self.assertFalse(bible.diagnostics["last_validation"]["valid"])
         self.assertEqual(bible.rules, ["有效规则"])
         self.assertEqual(bible.characters, [])
+    def test_story_clock_keeps_chapter_history(self):
+        bible = merge_extracted_world_bible_data(
+            WorldBible(),
+            {"story_clock": {"current_date": "三月一日", "time_of_day": "清晨", "story_phase": "启程"}},
+            chapter_num=1, chapter_version=1, run_dedup=False,
+        )
+        bible = merge_extracted_world_bible_data(
+            bible,
+            {"story_clock": {"current_date": "三月二日", "time_of_day": "深夜", "story_phase": "追踪"}},
+            chapter_num=2, chapter_version=1, run_dedup=False,
+        )
+        self.assertEqual(bible.story_clock["current_date"], "三月二日")
+        self.assertEqual(len(bible.story_clock_history), 2)
+        self.assertEqual(bible.story_clock_history[0]["source_chapter"], 1)
+        self.assertIn("current_date", bible.story_clock_history[1]["changed_fields"])
+        restored = dict_to_world_bible(world_bible_to_dict(bible))
+        self.assertEqual(len(restored.story_clock_history), 2)
+
+    def test_detailed_worldbuilding_retains_full_passage_and_constraints(self):
+        full_passage = "月门规则：" + ("只有持印者可以通过，强行闯入会失去一段记忆。" * 80) + "终点标记。"
+        bible = merge_extracted_world_bible_data(
+            WorldBible(),
+            {"key_worldbuilding": [{
+                "topic": "月门通行规则",
+                "core_summary": "月门对通行资格和违规代价有严格限制。",
+                "full_passage": full_passage,
+                "constraints": ["仅持印者可通过", "强闯会失忆"],
+                "keywords": ["月门", "持印者", "记忆代价"],
+            }]},
+            chapter_content=full_passage,
+            chapter_num=3, chapter_version=1, run_dedup=False,
+        )
+        setting = bible.key_worldbuilding_passages[0]
+        self.assertGreater(len(setting["full_passage"]), 300)
+        self.assertIn("终点标记", setting["full_passage"])
+        self.assertEqual(setting["constraints"], ["仅持印者可通过", "强闯会失忆"])
+        text = format_relevant_world_bible_for_prompt(
+            bible, "主角准备穿过月门", token_budget=3000,
+        )
+        self.assertIn("月门通行规则", text)
+        self.assertIn("强闯会失忆", text)
+        self.assertIn("完整设定原文", text)
     def test_encrypted_round_trip_and_snapshot_deletion(self):
         class PlainCrypto:
             @staticmethod

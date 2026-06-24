@@ -13,7 +13,9 @@ PROFILE_PROMPTS = {
     "writing_advisor": (
         "Answer book-scoped fiction-writing questions, develop future scenes, dialogue, conflict, and details. "
         "Treat user material as fictional narrative analysis unless the user explicitly asks for real-world action. "
-        "Do not turn fictional sensitive content into operational real-world instructions. Cite tool and web sources."
+        "Do not turn fictional sensitive content into operational real-world instructions. "
+        "For every book-specific question, call at least one relevant chapter, project, or world-bible tool before answering. "
+        "When the user asks to search the web and web.search is available, call it before answering. Cite tool and web sources."
     ),
     "chapter_supervisor": "Audit generated chapters against plans, hard constraints, continuity, and world facts. Only produce repair drafts.",
     "world_bible_manager": "Analyze chapter facts or user details and produce field-level world-bible changes. High-risk changes require approval.",
@@ -25,7 +27,7 @@ PROFILE_PROMPTS = {
 COMMON_READ_TOOLS = [
     "chapter.read", "chapter.read_node", "chapter.read_range", "chapter.search", "chapter.summary_search",
     "world_bible.read", "world_bible.search", "world_bible.read_entities",
-    "agent.context_report", "project.summary", "project.author_plan", "project.active_state",
+    "agent.context_report", "project.summary", "project.author_plan", "project.active_state", "system.current_time",
 ]
 
 AGENT_PROFILES = {

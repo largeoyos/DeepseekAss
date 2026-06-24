@@ -105,7 +105,11 @@ class AgentRuntime:
                     if epoch:
                         session.epochs.append(epoch)
                         self._emit(repository, run.run_id, "context_compacted", epoch)
-                turn = adapter.complete(run.messages, self.tool_registry.schemas_for(profile.allowed_tools))
+                turn = adapter.complete(
+                    run.messages,
+                    self.tool_registry.schemas_for(profile.allowed_tools),
+                    require_tool=(run.agent_kind == "writing_advisor" and iteration == 1),
+                )
                 run.planning_only = run.planning_only or turn.planning_only
                 run.usage = self._merge_usage(run.usage, turn.usage)
                 self._emit(repository, run.run_id, "usage_updated", run.usage)

@@ -82,17 +82,28 @@ class LlamaIndexHybridBackend(ClassicRetrievalBackend):
     def _build_embedder(settings: dict):
         try:
             from llama_index.embeddings.openai import OpenAIEmbedding
+        except ModuleNotFoundError as exc:
+            missing = getattr(exc, "name", "") or "llama-index-embeddings-openai"
+            raise RuntimeError(
+                f"当前 Python 环境缺少 Embedding 组件：{missing}。"
+                "请在启动程序所用的环境中安装 llama-index-embeddings-openai。"
+            ) from exc
         except Exception as exc:
-            raise RuntimeError("LlamaIndex Embedding 组件未安装") from exc
+            raise RuntimeError(f"LlamaIndex Embedding 组件加载失败：{exc}") from exc
         model = str(settings.get("embedding_model", "") or "").strip()
         if not model:
             raise RuntimeError("尚未配置 Embedding 模型")
-        kwargs = {"model": model}
         from config import Config
         base_url = str(settings.get("embedding_base_url", "") or Config.BASE_URL or "").strip()
         api_key = str(settings.get("embedding_api_key", "") or Config.API_KEY or "").strip()
+        kwargs = {
+            "model_name": model,
+            "embed_batch_size": max(1, min(32, int(settings.get("embedding_batch_size", 8) or 8))),
+            "timeout": float(settings.get("embedding_timeout_seconds", 20) or 20),
+            "max_retries": max(0, min(3, int(settings.get("embedding_max_retries", 1) or 1))),
+        }
         if base_url:
-            kwargs["api_base"] = base_url
+            kwargs["api_base"] = base_url.rstrip("/")
         if api_key:
             kwargs["api_key"] = api_key
         return OpenAIEmbedding(**kwargs)
@@ -160,23 +171,35 @@ class LlamaIndexHybridBackend(ClassicRetrievalBackend):
             or previous.get("dirty")
             or checksums != stored
         ):
-            report = self._write_index(book_title, documents, previous=previous if isinstance(previous, dict) else {})
+            report = self._write_index(
+                book_title,
+                documents,
+                previous=previous if isinstance(previous, dict) else {},
+            )
             previous = workspace.storage.read_json(self._index_path(workspace), default={}) or {}
             previous["last_report"] = asdict(report)
         return previous
-
     def _write_index(self, book_title: str, documents: list[dict], previous: dict) -> IndexReport:
         workspace = self.manager.get_workspace(book_title)
         old_vectors = dict(previous.get("vectors") or {})
         vectors: dict[str, list[float]] = {}
-        embedded = 0
+        pending: list[dict] = []
         for document in documents:
             checksum = document["metadata"]["source_checksum"]
             if checksum in old_vectors:
                 vectors[checksum] = old_vectors[checksum]
-                continue
-            vectors[checksum] = list(self._embedder.get_text_embedding(document["content"]))
-            embedded += 1
+            else:
+                pending.append(document)
+        if pending and hasattr(self._embedder, "get_text_embedding_batch"):
+            batch_vectors = self._embedder.get_text_embedding_batch([item["content"] for item in pending])
+            for document, vector in zip(pending, batch_vectors):
+                vectors[document["metadata"]["source_checksum"]] = list(vector)
+        else:
+            for document in pending:
+                vectors[document["metadata"]["source_checksum"]] = list(
+                    self._embedder.get_text_embedding(document["content"])
+                )
+        embedded = len(pending)
         revision = int(previous.get("revision", 0) or 0) + 1
         payload = {
             "schema_version": RETRIEVAL_SCHEMA_VERSION,

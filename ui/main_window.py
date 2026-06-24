@@ -119,6 +119,7 @@ from ui.architecture_dialogs import (
 from ui.presets import PRESETS, CUSTOM_LABEL
 from ui.settings_dialog import SettingsDialog
 from ui.token_log_dialog import TokenLogDialog
+from ui.markdown_workspace import MarkdownWorkspaceWidget
 from ui.chapter_tree_dialog import ChapterTreeDialog
 from ui.continuation_dialogs import (
     analyze_source_text, suggest_directions,
@@ -1348,7 +1349,16 @@ class DeepSeekChatGUI(QMainWindow):
         splitter.setStretchFactor(1, 2)
         splitter.setSizes([450, 750])
 
-        main_layout.addWidget(splitter, stretch=1)
+        self._workspace_stack = QStackedWidget()
+        self._workspace_stack.addWidget(splitter)
+        self._markdown_workspace = MarkdownWorkspaceWidget(
+            self,
+            user_dir=self._user_dir,
+            auth=self._auth,
+            enc_key=self._enc_key,
+        )
+        self._workspace_stack.addWidget(self._markdown_workspace)
+        main_layout.addWidget(self._workspace_stack, stretch=1)
         root_layout.addWidget(main_area, stretch=1)
         self.setCentralWidget(central)
 
@@ -1381,6 +1391,7 @@ class DeepSeekChatGUI(QMainWindow):
             ("角色扮演", "🎭", "聊天"),
             ("小说写作", "📚", "写作"),
             ("续写小说", "📄", "续写"),
+            ("Markdown笔记", "📝", "笔记"),
         ]
         for mode_name, icon, label in nav_items:
             btn = QPushButton(f"{icon}\n{label}")
@@ -1414,8 +1425,20 @@ class DeepSeekChatGUI(QMainWindow):
     def _set_mode_from_sidebar(self, mode_name: str) -> None:
         if not hasattr(self, "_mode_combo"):
             return
+        if mode_name == "Markdown笔记":
+            if hasattr(self, "_workspace_stack"):
+                self._workspace_stack.setCurrentIndex(1)
+            self._sync_mode_sidebar()
+            self._top_status_label.setText("模式: Markdown 笔记 | 本地加密工作区")
+            return
+        if hasattr(self, "_workspace_stack") and self._workspace_stack.currentIndex() == 1:
+            if not self._markdown_workspace.can_leave():
+                self._sync_mode_sidebar()
+                return
+            self._workspace_stack.setCurrentIndex(0)
         if self._mode_combo.currentText() == mode_name:
             self._sync_mode_sidebar()
+            self._update_status()
             return
         self._mode_combo.setCurrentText(mode_name)
         self._sync_mode_sidebar()
@@ -1423,10 +1446,10 @@ class DeepSeekChatGUI(QMainWindow):
     def _sync_mode_sidebar(self) -> None:
         if not hasattr(self, "_mode_nav_buttons") or not hasattr(self, "_mode_combo"):
             return
-        current = self._mode_combo.currentText()
+        is_markdown = hasattr(self, "_workspace_stack") and self._workspace_stack.currentIndex() == 1
+        current = "Markdown笔记" if is_markdown else self._mode_combo.currentText()
         for mode_name, btn in self._mode_nav_buttons.items():
             btn.setChecked(mode_name == current)
-
     def _build_top_toolbar(self) -> QWidget:
         bar = QFrame()
         bar.setObjectName("topToolbar")
@@ -3269,6 +3292,8 @@ class DeepSeekChatGUI(QMainWindow):
 
     def _on_mode_changed(self, text: str) -> None:
         """模式变化（由左侧导航栏驱动，隐藏下拉框承载旧状态）。"""
+        if hasattr(self, "_workspace_stack"):
+            self._workspace_stack.setCurrentIndex(0)
         if self._streaming:
             self._mode_combo.blockSignals(True)
             self._mode_combo.setCurrentText(self._last_mode)

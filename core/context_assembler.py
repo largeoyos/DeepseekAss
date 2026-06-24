@@ -97,13 +97,14 @@ def _world_entities(bible) -> list[tuple[str, str, str, object]]:
         ("plot_thread", "active_plot_threads"),
         ("rule", "world_rules"),
         ("timeline", "timeline"),
+        ("setting", "key_worldbuilding_passages"),
     ]
     result: list[tuple[str, str, str, object]] = []
     for kind, attr in groups:
         for index, item in enumerate(getattr(bible, attr, []) or []):
             data = _plain(item)
             entity_id = str(data.get("id") or f"{kind}_{index}")
-            name = str(data.get("name") or data.get("event") or entity_id)
+            name = str(data.get("name") or data.get("topic") or data.get("event") or entity_id)
             if data.get("hidden"):
                 continue
             result.append((entity_id, kind, name, item))

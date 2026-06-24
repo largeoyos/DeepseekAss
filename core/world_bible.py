@@ -27,6 +27,49 @@ def _stable_id(kind: str, name: str, chapter: int = 0, salt: str = "") -> str:
     return f"{kind}_{uuid.uuid5(_ENTITY_NAMESPACE, seed).hex[:16]}"
 
 
+def repair_duplicate_entity_ids(bible) -> list[dict]:
+    """Repair missing/duplicate stable IDs without deleting or merging entities.
+
+    The first occurrence keeps its ID. Later collisions receive deterministic IDs
+    derived from their own type, label, source chapter, and collision position.
+    Existing references therefore continue to resolve to the original entity.
+    """
+    groups = (
+        ("char", getattr(bible, "characters", []) or [], "name", "first_appearance"),
+        ("loc", getattr(bible, "locations", []) or [], "name", "first_appearance"),
+        ("event", getattr(bible, "timeline", []) or [], "event", "chapter"),
+        ("thread", getattr(bible, "active_plot_threads", []) or [], "name", "opened_chapter"),
+        ("rule", getattr(bible, "world_rules", []) or [], "name", "valid_from"),
+    )
+    used: set[str] = set()
+    repairs: list[dict] = []
+    for kind, entities, label_field, chapter_field in groups:
+        for position, entity in enumerate(entities):
+            old_id = str(getattr(entity, "id", "") or "")
+            label = str(getattr(entity, label_field, "") or getattr(entity, "content", "") or f"{kind}-{position + 1}")
+            chapter = int(getattr(entity, chapter_field, 0) or 0)
+            if old_id and old_id not in used:
+                used.add(old_id)
+                continue
+            salt_index = 1
+            while True:
+                candidate = _stable_id(kind, label, chapter, f"repair:{position}:{salt_index}")
+                if candidate not in used:
+                    break
+                salt_index += 1
+            setattr(entity, "id", candidate)
+            used.add(candidate)
+            repairs.append({
+                "entity_type": kind,
+                "label": label,
+                "old_id": old_id,
+                "new_id": candidate,
+                "reason": "duplicate" if old_id else "missing",
+            })
+    if repairs and hasattr(bible, "diagnostics"):
+        bible.diagnostics["entity_id_repairs"] = repairs[-100:]
+    return repairs
+
 @dataclass
 class SourceRef:
     chapter: int = 0
@@ -214,6 +257,7 @@ class WorldBible:
     timeline: list[TimelineEntry] = field(default_factory=list)
     active_plot_threads: list[PlotThread] = field(default_factory=list)
     story_clock: dict = field(default_factory=dict)                    # 当前故事日期、时段、已流逝时间和阶段
+    story_clock_history: list[dict] = field(default_factory=list)       # 按章节保留时间状态演进历史
     last_updated_chapter: int = 0
     chapter_world_entries: dict[str, dict] = field(default_factory=dict)  # {"ch0001_v001": raw extracted JSON}
     key_worldbuilding_passages: list[dict] = field(default_factory=list)  # [{chapter, passage, topic}]
@@ -276,6 +320,10 @@ def _ensure_entity_metadata(bible: WorldBible) -> None:
         item.setdefault("confidence", 1.0)
         item.setdefault("source_refs", [_source_ref(item.get("chapter", 0), item.get("version", 0))] if item.get("chapter") else [])
         item.setdefault("locked", bool(item.get("locked")))
+        item.setdefault("core_summary", str(item.get("description") or ""))
+        item.setdefault("full_passage", str(item.get("passage") or ""))
+        item.setdefault("constraints", [])
+        item.setdefault("keywords", [])
     for item in bible.global_foreshadowing:
         item.setdefault("id", _stable_id("foreshadow", item.get("hint", ""), item.get("introduced_chapter", 0)))
         item.setdefault("knowledge_type", "author_plan")
@@ -314,6 +362,7 @@ def _flat_view_dict(bible: WorldBible) -> dict:
         "timeline": [asdict(item) for item in bible.timeline],
         "active_plot_threads": [asdict(item) for item in bible.active_plot_threads],
         "story_clock": copy.deepcopy(bible.story_clock),
+        "story_clock_history": copy.deepcopy(bible.story_clock_history),
         "last_updated_chapter": bible.last_updated_chapter,
         "key_worldbuilding_passages": copy.deepcopy(bible.key_worldbuilding_passages),
         "global_foreshadowing": copy.deepcopy(bible.global_foreshadowing),
@@ -338,6 +387,7 @@ def _from_dict(cls, data: dict):
             timeline=[TimelineEntry(**_filter_fields(TimelineEntry, item)) for item in data.get("timeline", []) if isinstance(item, dict)],
             active_plot_threads=[PlotThread(**_filter_fields(PlotThread, item)) for item in data.get("active_plot_threads", []) if isinstance(item, dict)],
             story_clock=dict(data.get("story_clock", {})),
+            story_clock_history=copy.deepcopy(data.get("story_clock_history", [])),
             last_updated_chapter=int(data.get("last_updated_chapter", 0) or 0),
             chapter_world_entries=copy.deepcopy(snapshots),
             chapter_snapshots=copy.deepcopy(snapshots),
@@ -708,7 +758,10 @@ def format_world_bible_for_prompt(bible: WorldBible, max_entries: int = 10) -> s
     extras = []
     if visible_passages:
         for item in visible_passages[:3]:
-            extras.append(f"- 设定·{item.get('topic', '')}：{item.get('passage', '')[:100]}")
+            summary = item.get("core_summary") or item.get("passage", "")
+            extras.append(f"- 设定·{item.get('topic', '')}：{str(summary)[:180]}")
+            if item.get("constraints"):
+                extras.append("  约束：" + "；".join(str(value) for value in item.get("constraints", [])[:4]))
     if visible_foreshadowing:
         for item in visible_foreshadowing[:5]:
             line = f"- 伏笔·{item.get('hint', '')[:60]}"
@@ -956,7 +1009,14 @@ def format_relevant_world_bible_for_prompt(
     )[:8]
     selected_settings = sorted(
         visible_settings,
-        key=lambda item: (bool(item.get("locked")), text_score(item.get("topic"), item.get("passage")), int(item.get("chapter", 0) or 0)),
+        key=lambda item: (
+            bool(item.get("locked")),
+            text_score(
+                item.get("topic"), item.get("core_summary"), item.get("full_passage") or item.get("passage"),
+                " ".join(item.get("constraints", [])), " ".join(item.get("keywords", [])),
+            ),
+            int(item.get("chapter", 0) or 0),
+        ),
         reverse=True,
     )[:5]
     selected_foreshadowing = sorted(
@@ -985,7 +1045,13 @@ def format_relevant_world_bible_for_prompt(
             lines.append(text)
         for item in selected_settings:
             if item.get("locked") or item.get("knowledge_type") == "constraint":
-                lines.append(f"- 设定·{item.get('topic', '')}：{item.get('passage', '')[:160]}")
+                summary = item.get("core_summary") or item.get("passage", "")
+                lines.append(f"- 设定·{item.get('topic', '')}：{str(summary)[:300]}")
+                if item.get("constraints"):
+                    lines.append("  约束：" + "；".join(str(value) for value in item.get("constraints", [])[:8]))
+                full_passage = str(item.get("full_passage") or item.get("passage") or "")
+                if full_passage and full_passage != summary:
+                    lines.append(f"  完整设定原文：{full_passage[:1800]}")
 
     if selected_chars or selected_locations or selected_threads:
         lines.append("\n【当前章节相关 Canon 事实】")
@@ -1966,6 +2032,8 @@ EXTRACT_PROMPT = """你是一个小说信息深度提取专家。请严格根据
 - 对于标注了【原文引用】的字段，直接从原文复制原文，不要改写或概括
 - 对于未标注【原文引用】的字段，可以适当概括但保留所有关键信息
 - 宁多勿少，不确定该不该提取的信息请提取出来
+- 遇到包含多条信息、规则链、限制条件或因果约束的长段落，不要压缩成一句话；拆成多个 key_worldbuilding 条目，并保留 full_passage
+- 同一设定同时提取 core_summary、完整原文和 constraints；摘要用于检索，完整原文用于命中后的精确跟随
 
 请严格按照以下 JSON 格式输出，不包含任何其他文字：
 
@@ -2012,7 +2080,15 @@ EXTRACT_PROMPT = """你是一个小说信息深度提取专家。请严格根据
       "atmosphere": "【200字内】该地点的氛围/给人的感觉"
     }
   ],
-  "rules": ["世界观规则1（完整保留原文描述）", "规则2"],
+  "rules": [
+    {
+      "name": "规则名称",
+      "content": "完整规则内容；保留条件、限制、代价、例外和后果，不得只写结论",
+      "category": "能力/社会/地理/历史/科技/魔法/组织/其他",
+      "priority": 50,
+      "exceptions": ["明确例外或边界条件"]
+    }
+  ],
   "timeline": [
     {
       "event": "【200字内】核心事件的详细描述",
@@ -2036,7 +2112,14 @@ EXTRACT_PROMPT = """你是一个小说信息深度提取专家。请严格根据
     }
   ],
   "key_worldbuilding": [
-    {"topic": "设定主题", "passage": "【原文引用】从原文中直接复制重要的世界观设定段落（300字内）"}
+    {
+      "topic": "可检索的设定主题",
+      "core_summary": "核心内容摘要：说明这项设定是什么、影响什么（200字内）",
+      "full_passage": "【原文引用】完整复制承载该设定的关键原文块；可以保留多个自然段，单项最多2000字",
+      "constraints": ["必须遵守的规则、条件、限制、代价、例外、禁止事项和因果后果"],
+      "keywords": ["实体名", "术语", "地点", "能力", "组织"],
+      "passage": "兼容字段：与 full_passage 相同或填写最关键原文"
+    }
   ],
   "global_key_dialogues": [
     {"speaker": "说话者", "dialogue": "【原文引用】重要对话原文", "context": "对话背景（30字内）"}
@@ -2176,16 +2259,41 @@ def merge_extracted_world_bible_data(
     incoming_clock = data.get("story_clock", {})
     if isinstance(incoming_clock, dict):
         clock = dict(bible.story_clock or {})
-        for field_name in ("current_date", "time_of_day", "elapsed_time", "story_phase", "calendar_system"):
+        clock_fields = ("current_date", "time_of_day", "elapsed_time", "story_phase", "calendar_system")
+        before_clock = {key: clock.get(key, "") for key in clock_fields}
+        for field_name in clock_fields:
             value = str(incoming_clock.get(field_name, "")).strip()
             if value:
                 clock[field_name] = value[:120]
-        if any(clock.get(field_name) for field_name in ("current_date", "time_of_day", "elapsed_time", "story_phase", "calendar_system")):
+        clock_values = {key: clock.get(key, "") for key in clock_fields}
+        if any(clock_values.values()):
             if chapter_num:
                 clock["source_chapter"] = int(chapter_num)
                 clock["source_version"] = int(chapter_version or 0)
             bible.story_clock = clock
-
+            history_entry = {
+                **clock_values,
+                "source_chapter": int(chapter_num or 0),
+                "source_version": int(chapter_version or 0),
+                "changed_fields": [
+                    key for key, value in clock_values.items()
+                    if value and value != before_clock.get(key, "")
+                ],
+            }
+            history_key = (
+                history_entry["source_chapter"], history_entry["source_version"],
+                tuple((key, history_entry.get(key, "")) for key in clock_fields),
+            )
+            existing_keys = {
+                (
+                    int(item.get("source_chapter", 0) or 0),
+                    int(item.get("source_version", 0) or 0),
+                    tuple((key, item.get(key, "")) for key in clock_fields),
+                )
+                for item in bible.story_clock_history if isinstance(item, dict)
+            }
+            if history_entry["changed_fields"] and history_key not in existing_keys:
+                bible.story_clock_history.append(history_entry)
     # === 合并角色 ===
     for ch_data in data.get("characters", []):
         name = ch_data.get("name", "").strip()
@@ -2398,23 +2506,47 @@ def merge_extracted_world_bible_data(
 
     # === 合并顶层字段：世界观设定、全局伏笔、关键对话 ===
     for item in data.get("key_worldbuilding", []):
-        topic = item.get("topic", "").strip()
-        passage = _verify_verbatim(item.get("passage", "").strip(), chapter_content)
-        if topic and passage:
-            if not any(ex.get("topic") == topic for ex in bible.key_worldbuilding_passages):
-                bible.key_worldbuilding_passages.append({
-                    "id": _stable_id("setting", topic, chapter_num),
-                    "chapter": chapter_num,
-                    "version": chapter_version,
-                    "topic": topic,
-                    "passage": passage[:300],
-                    "knowledge_type": "canon",
-                    "confidence": 1.0,
-                    "source_refs": [_source_ref(chapter_num, chapter_version, passage)],
-                    "locked": False,
-                    "hidden": False,
-                })
-
+        if not isinstance(item, dict):
+            continue
+        topic = str(item.get("topic", "")).strip()
+        core_summary = str(item.get("core_summary") or item.get("description") or "").strip()[:500]
+        raw_passage = str(item.get("full_passage") or item.get("passage") or "").strip()
+        full_passage = _verify_verbatim(raw_passage, chapter_content)[:12000]
+        constraints = [str(value).strip()[:500] for value in _as_list(item.get("constraints", [])) if str(value).strip()]
+        keywords = [str(value).strip()[:80] for value in _as_list(item.get("keywords", [])) if str(value).strip()]
+        if not topic or not (full_passage or core_summary or constraints):
+            continue
+        existing = next((ex for ex in bible.key_worldbuilding_passages if _norm_key(ex.get("topic", "")) == _norm_key(topic)), None)
+        if existing is None:
+            bible.key_worldbuilding_passages.append({
+                "id": _stable_id("setting", topic, chapter_num),
+                "chapter": chapter_num,
+                "version": chapter_version,
+                "topic": topic,
+                "core_summary": core_summary,
+                "full_passage": full_passage,
+                "passage": full_passage or core_summary,
+                "constraints": list(dict.fromkeys(constraints)),
+                "keywords": list(dict.fromkeys(keywords)),
+                "knowledge_type": "constraint" if constraints else "canon",
+                "confidence": 1.0,
+                "source_refs": [_source_ref(chapter_num, chapter_version, full_passage or core_summary)],
+                "locked": False,
+                "hidden": False,
+            })
+        else:
+            if core_summary:
+                existing["core_summary"] = _append_text_unique(str(existing.get("core_summary", "")), core_summary, 1200)
+            if full_passage:
+                existing["full_passage"] = _append_text_unique(str(existing.get("full_passage") or existing.get("passage", "")), full_passage, 24000)
+                existing["passage"] = existing["full_passage"]
+            existing["constraints"] = list(dict.fromkeys([*existing.get("constraints", []), *constraints]))
+            existing["keywords"] = list(dict.fromkeys([*existing.get("keywords", []), *keywords]))
+            existing.setdefault("source_refs", []).append(_source_ref(chapter_num, chapter_version, full_passage or core_summary))
+            existing["chapter"] = chapter_num or existing.get("chapter", 0)
+            existing["version"] = chapter_version or existing.get("version", 0)
+            if constraints:
+                existing["knowledge_type"] = "constraint"
     for item in data.get("global_key_dialogues", []):
         dialogue = _verify_verbatim(item.get("dialogue", "").strip(), chapter_content)
         if dialogue:
@@ -2505,6 +2637,7 @@ def _world_bible_to_extracted_data(bible: WorldBible) -> dict:
     return {
         "characters": [asdict(item) for item in bible.characters],
         "story_clock": copy.deepcopy(bible.story_clock),
+        "story_clock_history": copy.deepcopy(bible.story_clock_history),
         "locations": [asdict(item) for item in bible.locations],
         "rules": [item.content for item in bible.world_rules if item.content] or list(bible.rules),
         "world_rules": [asdict(item) for item in bible.world_rules],

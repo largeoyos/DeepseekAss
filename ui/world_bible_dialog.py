@@ -162,17 +162,30 @@ class WorldBibleDialog(QDialog):
     def _kind_card_entries(self, kind: str) -> list[dict]:
         entries = [entry for entry in self._card_entries() if entry["kind"] == kind]
         if kind == "时间状态":
-            data = dict(self._bible.story_clock or {})
-            entries = [{
-                "kind": kind,
-                "index": 0,
-                "title": data.get("current_date") or data.get("story_phase") or "当前故事时间",
-                "subtitle": "；".join(str(data.get(key, "")) for key in ("time_of_day", "elapsed_time", "story_phase") if data.get(key)),
-                "source": self._card_source_label(data),
-                "data": data,
-                "hidden": False,
-                "resolved": False,
-            }]
+            current = dict(self._bible.story_clock or {})
+            entries = []
+            if current:
+                entries.append({
+                    "kind": kind, "index": 0,
+                    "title": current.get("current_date") or current.get("story_phase") or "当前故事时间",
+                    "subtitle": "；".join(str(current.get(key, "")) for key in ("time_of_day", "elapsed_time", "story_phase") if current.get(key)),
+                    "source": self._card_source_label(current),
+                    "data": {**current, "history_state": "current"},
+                    "hidden": False, "resolved": False, "editable": True,
+                })
+            for history_index, history in enumerate(reversed(self._bible.story_clock_history or []), 1):
+                if not isinstance(history, dict):
+                    continue
+                chapter = int(history.get("source_chapter", 0) or 0)
+                version = int(history.get("source_version", 0) or 0)
+                entries.append({
+                    "kind": kind, "index": -history_index,
+                    "title": history.get("current_date") or history.get("story_phase") or f"历史状态 {history_index}",
+                    "subtitle": "；".join(str(history.get(key, "")) for key in ("time_of_day", "elapsed_time", "story_phase") if history.get(key)),
+                    "source": self._card_snapshot_label(chapter, version),
+                    "data": {**history, "history_state": "history"},
+                    "hidden": False, "resolved": False, "editable": False,
+                })
         elif kind == "规则":
             entries = []
             for idx, rule in enumerate(self._bible.rules):
@@ -271,18 +284,23 @@ class WorldBibleDialog(QDialog):
             status_badges.append(self._make_badge("隐藏", "#4f3a3a", "#ffd6d6"))
         if entry.get("resolved"):
             status_badges.append(self._make_badge("已解决", "#34513a", "#d8f5dc"))
-        edit_btn = QPushButton("编辑")
-        edit_btn.clicked.connect(lambda _=False, k=entry["kind"], i=entry["index"]: self._edit_card(k, i))
-        delete_btn = QPushButton("×")
-        delete_btn.setToolTip("删除条目")
-        delete_btn.clicked.connect(lambda _=False, k=entry["kind"], i=entry["index"]: self._delete_card(k, i))
+        editable = entry.get("editable", True)
+        edit_btn = QPushButton("编辑") if editable else None
+        delete_btn = QPushButton("×") if editable else None
+        if edit_btn is not None:
+            edit_btn.clicked.connect(lambda _=False, k=entry["kind"], i=entry["index"]: self._edit_card(k, i))
+        if delete_btn is not None:
+            delete_btn.setToolTip("删除条目")
+            delete_btn.clicked.connect(lambda _=False, k=entry["kind"], i=entry["index"]: self._delete_card(k, i))
         head.addWidget(title, stretch=1)
         head.addWidget(kind_badge)
         for badge in status_badges:
             head.addWidget(badge)
         head.addWidget(source)
-        head.addWidget(edit_btn)
-        head.addWidget(delete_btn)
+        if edit_btn is not None:
+            head.addWidget(edit_btn)
+        if delete_btn is not None:
+            head.addWidget(delete_btn)
         layout.addLayout(head)
         self._render_entry_body(layout, entry)
         return card
@@ -368,6 +386,27 @@ class WorldBibleDialog(QDialog):
         row.addStretch()
         layout.addLayout(row)
 
+    def _add_collapsible_details(self, layout: QVBoxLayout, render_callback) -> None:
+        details = QWidget()
+        details_layout = QVBoxLayout(details)
+        details_layout.setContentsMargins(8, 2, 0, 0)
+        details_layout.setSpacing(7)
+        render_callback(details_layout)
+        details.setVisible(False)
+        toggle = QPushButton("展开更多详情 ▾")
+        toggle.setCheckable(True)
+        toggle.setStyleSheet(
+            "QPushButton { text-align:left; color:#9cdcfe; background:transparent; border:none; padding:5px 2px; }"
+            "QPushButton:hover { color:#ffffff; }"
+        )
+
+        def on_toggled(checked: bool) -> None:
+            details.setVisible(checked)
+            toggle.setText("收起详情 ▴" if checked else "展开更多详情 ▾")
+
+        toggle.toggled.connect(on_toggled)
+        layout.addWidget(toggle)
+        layout.addWidget(details)
     def _field_label(self, key: str) -> str:
         labels = {
             "name": "名称", "aliases": "别名", "traits": "角色特征", "relationships": "关系",
@@ -435,6 +474,11 @@ class WorldBibleDialog(QDialog):
             self._render_generic_card(layout, data)
 
     def _render_story_clock_card(self, layout: QVBoxLayout, data: dict) -> None:
+        state = data.get("history_state", "current")
+        layout.addWidget(self._make_badge(
+            "当前状态" if state == "current" else "历史状态",
+            "#34513a" if state == "current" else "#4a445c", "#ffffff",
+        ))
         self._add_meta_row(layout, data, [
             ("current_date", "当前日期"), ("time_of_day", "当前时段"),
             ("elapsed_time", "累计流逝"), ("story_phase", "故事阶段"),
@@ -445,50 +489,57 @@ class WorldBibleDialog(QDialog):
 
     def _render_character_card(self, layout: QVBoxLayout, data: dict) -> None:
         self._add_meta_row(layout, data, [
-            ("status", "状态"), ("importance", "重要性"), ("first_appearance", "首次出现"),
-            ("source_chapter", "来源章"), ("source_version", "来源版本"),
-            ("last_updated_chapter", "最近更新章"), ("last_updated_version", "最近版本"),
+            ("status", "状态"), ("importance", "重要性"),
+            ("current_location", "当前位置"), ("current_goal", "当前目标"),
+            ("current_emotion", "当前情绪"),
         ])
         self._add_text_block(layout, "角色特征", data.get("traits"))
-        self._add_text_block(layout, "动机", data.get("motivation"))
-        self._add_text_block(layout, "成长弧线", data.get("arc"))
-        self._add_meta_row(layout, data, [
-            ("birth_date", "出生日期/纪年"), ("current_age", "当前年龄"),
-            ("life_stage", "人生/身份阶段"), ("age_basis", "年龄依据"),
-        ])
-        self._add_meta_row(layout, data, [
-            ("current_location", "当前位置"), ("current_goal", "当前目标"),
-            ("current_emotion", "当前情绪"), ("recent_action", "近期行动"),
-        ])
-        self._add_text_block(layout, "已知信息", data.get("knowledge_state"))
-        self._add_list_block(layout, "关键细节", data.get("key_details"), quote=True)
-        self._add_list_block(layout, "关键台词", data.get("key_dialogues"), quote=True)
-        self._add_list_block(layout, "未解决冲突", data.get("unresolved_conflicts"))
-        relationships = data.get("relationships") or []
-        if relationships:
-            self._add_section_label(layout, "关系")
-            for rel in relationships:
-                if not isinstance(rel, dict):
-                    continue
-                target = rel.get("target", "")
-                rel_type = rel.get("type", "")
-                desc = rel.get("description", "")
-                text = " / ".join(part for part in [target, rel_type, desc] if part)
-                self._add_text_block(layout, "", text)
-        self._add_fact_sources_block(layout, data)
 
+        def render_details(details_layout: QVBoxLayout) -> None:
+            self._add_meta_row(details_layout, data, [
+                ("first_appearance", "首次出现"), ("source_chapter", "来源章"),
+                ("source_version", "来源版本"), ("last_updated_chapter", "最近更新章"),
+                ("last_updated_version", "最近版本"),
+            ])
+            self._add_text_block(details_layout, "动机", data.get("motivation"))
+            self._add_text_block(details_layout, "成长弧线", data.get("arc"))
+            self._add_meta_row(details_layout, data, [
+                ("birth_date", "出生日期/纪年"), ("current_age", "当前年龄"),
+                ("life_stage", "人生/身份阶段"), ("age_basis", "年龄依据"),
+            ])
+            self._add_text_block(details_layout, "近期行动", data.get("recent_action"))
+            self._add_text_block(details_layout, "已知信息", data.get("knowledge_state"))
+            self._add_list_block(details_layout, "关键细节", data.get("key_details"), quote=True)
+            self._add_list_block(details_layout, "关键台词", data.get("key_dialogues"), quote=True)
+            self._add_list_block(details_layout, "未解决冲突", data.get("unresolved_conflicts"))
+            relationships = data.get("relationships") or []
+            if relationships:
+                self._add_section_label(details_layout, "关系")
+                for rel in relationships:
+                    if not isinstance(rel, dict):
+                        continue
+                    text = " / ".join(part for part in [rel.get("target", ""), rel.get("type", ""), rel.get("description", "")] if part)
+                    self._add_text_block(details_layout, "", text)
+            self._add_fact_sources_block(details_layout, data)
+
+        self._add_collapsible_details(layout, render_details)
     def _render_location_card(self, layout: QVBoxLayout, data: dict) -> None:
         self._add_meta_row(layout, data, [
-            ("first_appearance", "首次出现"), ("source_chapter", "来源章"),
-            ("source_version", "来源版本"), ("last_updated_chapter", "最近更新章"),
-            ("last_updated_version", "最近版本"),
+            ("first_appearance", "首次出现"), ("last_updated_chapter", "最近更新章"),
         ])
         self._add_text_block(layout, "描述", data.get("description"))
         self._add_text_block(layout, "作用", data.get("significance"))
-        self._add_list_block(layout, "原文细节", data.get("key_details"), quote=True)
-        self._add_text_block(layout, "氛围", data.get("atmosphere"), quote=self._is_quote_text(data.get("atmosphere")))
-        self._add_fact_sources_block(layout, data)
 
+        def render_details(details_layout: QVBoxLayout) -> None:
+            self._add_meta_row(details_layout, data, [
+                ("source_chapter", "来源章"), ("source_version", "来源版本"),
+                ("last_updated_version", "最近版本"),
+            ])
+            self._add_text_block(details_layout, "氛围", data.get("atmosphere"), quote=self._is_quote_text(data.get("atmosphere")))
+            self._add_list_block(details_layout, "完整原文细节", data.get("key_details"), quote=True)
+            self._add_fact_sources_block(details_layout, data)
+
+        self._add_collapsible_details(layout, render_details)
     def _render_plot_thread_card(self, layout: QVBoxLayout, data: dict) -> None:
         self._add_meta_row(layout, data, [
             ("status", "状态"), ("importance", "重要性"), ("opened_chapter", "开启章"),
@@ -508,10 +559,11 @@ class WorldBibleDialog(QDialog):
             ("chapter", "章节"), ("version", "版本"), ("source_chapter", "来源章"),
             ("source_version", "来源版本"), ("last_updated_chapter", "最近更新章"),
         ])
-        self._add_text_block(layout, "主题", data.get("topic"))
-        self._add_text_block(layout, "设定内容", data.get("passage"), quote=self._is_quote_text(data.get("passage")))
-        self._add_text_block(layout, "说明", data.get("description"))
-
+        self._add_text_block(layout, "核心内容", data.get("core_summary") or data.get("description"))
+        self._add_list_block(layout, "规则与约束", data.get("constraints"))
+        self._add_tags_block(layout, "检索关键词", data.get("keywords"))
+        full_passage = data.get("full_passage") or data.get("passage")
+        self._add_text_block(layout, "完整关键设定原文", full_passage, quote=True)
     def _render_foreshadowing_card(self, layout: QVBoxLayout, data: dict) -> None:
         self._add_meta_row(layout, data, [
             ("status", "状态"), ("introduced_chapter", "埋入章"),
@@ -906,7 +958,17 @@ class WorldBibleDialog(QDialog):
     def _replace_card_data(self, kind: str, index: int, payload: dict) -> None:
         if kind == "时间状态":
             allowed = {"current_date", "time_of_day", "elapsed_time", "story_phase", "calendar_system", "source_chapter", "source_version"}
-            self._bible.story_clock = {key: value for key, value in payload.items() if key in allowed}
+            previous = dict(self._bible.story_clock or {})
+            updated = {key: value for key, value in payload.items() if key in allowed}
+            if previous and previous != updated:
+                history = {
+                    **previous,
+                    "changed_fields": [key for key in allowed if previous.get(key) != updated.get(key)],
+                    "change_source": "manual_edit",
+                }
+                if history not in self._bible.story_clock_history:
+                    self._bible.story_clock_history.append(history)
+            self._bible.story_clock = updated
         elif kind == "角色":
             from core.world_bible import CharacterEntry, Relationship
             rels = [Relationship(**r) for r in payload.get("relationships", []) if isinstance(r, dict)]

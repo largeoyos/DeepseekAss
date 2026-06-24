@@ -1,8 +1,10 @@
 import os
 import shutil
+import threading
 import zipfile
 from copy import deepcopy
 
+from PyQt6.QtCore import QObject, pyqtSignal
 from PyQt6.QtWidgets import (
     QButtonGroup,
     QComboBox,
@@ -16,6 +18,7 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QListWidget,
     QMessageBox,
+    QScrollArea,
     QPushButton,
     QRadioButton,
     QSpinBox,
@@ -26,6 +29,11 @@ from PyQt6.QtWidgets import (
 
 from core.auth_manager import AuthError, AuthManager
 from core.settings_manager import DEFAULT_PRESETS, SettingsManager
+
+
+class _SettingsAsyncSignals(QObject):
+    completed = pyqtSignal(str, bool, str)
+
 
 
 class SettingsDialog(QDialog):
@@ -61,9 +69,12 @@ class SettingsDialog(QDialog):
         self._password_changed_callback = password_changed_callback
         self._mode_change_guard = mode_change_guard
         self._updating_agent_mode = False
+        self._async_signals = _SettingsAsyncSignals(self)
+        self._async_signals.completed.connect(self._on_async_completed)
+        self._async_buttons: dict[str, QPushButton] = {}
 
         self.setWindowTitle("设置中心")
-        self.resize(760, 620)
+        self.setFixedSize(780, 640)
         self._init_ui()
 
     def _init_ui(self) -> None:
@@ -298,8 +309,10 @@ class SettingsDialog(QDialog):
         return page
 
     def _build_agent_tab(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
+        page = QScrollArea()
+        page.setWidgetResizable(True)
+        content = QWidget()
+        layout = QVBoxLayout(content)
         notice = QLabel(
             "选择小说写作的全局生成模式。两种模式共享书籍、章节树和世界书，"
             "但生成入口与运行状态互相隔离。"
@@ -368,6 +381,8 @@ class SettingsDialog(QDialog):
         clear_index.clicked.connect(self._clear_retrieval_index)
         for button in (framework_save, embedding_test, rebuild_index, clear_index):
             framework_actions.addWidget(button)
+        self._async_buttons["embedding"] = embedding_test
+        self._async_buttons["rebuild"] = rebuild_index
         framework_form.addRow(framework_actions)
         self._framework_status = QLabel("索引按需创建；未启用混合检索时不会加载新框架。")
         self._framework_status.setWordWrap(True)
@@ -421,6 +436,8 @@ class SettingsDialog(QDialog):
         web_form.addRow(web_actions)
         layout.addWidget(web_group)
         layout.addStretch()
+        self._async_buttons["web_search"] = web_test
+        page.setWidget(content)
         return page
 
     def _on_agent_mode_toggled(self, checked: bool) -> None:
@@ -472,18 +489,22 @@ class SettingsDialog(QDialog):
 
     def _test_embedding(self) -> None:
         self._save_agent_settings()
-        try:
+        self._framework_status.setText("正在后台测试 Embedding，请稍候……")
+
+        parent = self.parent()
+        manager = getattr(parent, "_novel_manager", None)
+        if manager is None:
+            QMessageBox.warning(self, "Embedding 测试失败", "当前窗口无法访问书籍管理器")
+            return
+        settings = self._settings_manager.load()
+
+        def task():
             from core.retrieval import LlamaIndexHybridBackend
-            parent = self.parent()
-            manager = getattr(parent, "_novel_manager", None)
-            if manager is None:
-                raise RuntimeError("当前窗口无法访问书籍管理器")
-            backend = LlamaIndexHybridBackend(manager, self._settings_manager.load())
+            backend = LlamaIndexHybridBackend(manager, settings)
             vector = backend._embedder.get_query_embedding("小说语义检索测试")
-            self._framework_status.setText(f"Embedding 测试成功，向量维度：{len(vector)}")
-        except Exception as exc:
-            self._framework_status.setText(f"Embedding 测试失败：{exc}")
-            QMessageBox.warning(self, "Embedding 测试失败", str(exc))
+            return f"Embedding 测试成功，向量维度：{len(vector)}"
+
+        self._run_async("embedding", task)
 
     def _current_retrieval_target(self):
         parent = self.parent()
@@ -496,14 +517,21 @@ class SettingsDialog(QDialog):
 
     def _rebuild_retrieval_index(self) -> None:
         self._save_agent_settings()
+        self._framework_status.setText("正在后台重建当前书籍索引……")
         try:
             manager, title = self._current_retrieval_target()
-            report = manager.retrieval_backend().rebuild(title)
-            self._framework_status.setText(
-                f"索引重建完成：{report.document_count} 个文档，新增向量 {report.embedded_count}，revision={report.revision}"
-            )
         except Exception as exc:
             QMessageBox.warning(self, "索引重建失败", str(exc))
+            return
+
+        def task():
+            report = manager.retrieval_backend().rebuild(title)
+            return (
+                f"索引重建完成：{report.document_count} 个文档，"
+                f"新增向量 {report.embedded_count}，revision={report.revision}"
+            )
+
+        self._run_async("rebuild", task)
 
     def _clear_retrieval_index(self) -> None:
         try:
@@ -516,18 +544,47 @@ class SettingsDialog(QDialog):
 
     def _test_agent_web_search(self) -> None:
         self._save_agent_settings()
-        try:
+        self._framework_status.setText("正在后台测试联网搜索……")
+
+        settings = self._settings_manager.load()
+
+        def task():
             from core.agent.web_search import WebSearchClient, WebSearchConfig
-            config = WebSearchConfig.from_settings(self._settings_manager.load())
+            config = WebSearchConfig.from_settings(settings)
             response = WebSearchClient(config).search("小说创作素材测试", max_results=1)
             results = response.get("results", [])
             if results:
-                QMessageBox.information(self, "搜索测试成功", f"已返回结果：{results[0].get('title', '')}")
-            else:
-                QMessageBox.information(self, "搜索测试完成", "接口请求成功，但没有返回结果。")
-        except Exception as exc:
-            QMessageBox.warning(self, "搜索测试失败", str(exc))
+                return f"搜索测试成功：{results[0].get('title', '')}"
+            return "搜索接口请求成功，但没有返回结果。"
 
+        self._run_async("web_search", task)
+
+    def _run_async(self, operation: str, task) -> None:
+        button = self._async_buttons.get(operation)
+        if button is not None:
+            button.setEnabled(False)
+
+        def worker():
+            try:
+                message = str(task())
+                self._async_signals.completed.emit(operation, True, message)
+            except Exception as exc:
+                self._async_signals.completed.emit(operation, False, str(exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _on_async_completed(self, operation: str, ok: bool, message: str) -> None:
+        button = self._async_buttons.get(operation)
+        if button is not None:
+            button.setEnabled(True)
+        self._framework_status.setText(message if ok else f"操作失败：{message}")
+        if not ok:
+            title = {
+                "embedding": "Embedding 测试失败",
+                "rebuild": "索引重建失败",
+                "web_search": "搜索测试失败",
+            }.get(operation, "操作失败")
+            QMessageBox.warning(self, title, message)
     def _refresh_model_and_preset_lists(self) -> None:
         self._settings = self._settings_manager.load()
         self._preset_list.clear()

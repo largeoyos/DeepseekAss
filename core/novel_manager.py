@@ -2263,9 +2263,10 @@ class NovelManager:
 
     def save_world_bible(self, title: str, bible, *, force: bool = False) -> None:
         """Atomically save; refuse corrupt-source and error-level consistency overwrites."""
-        from core.world_bible import audit_world_bible_consistency, world_bible_to_dict
+        from core.world_bible import audit_world_bible_consistency, repair_duplicate_entity_ids, world_bible_to_dict
         if title in self._world_bible_load_errors and not force:
             raise RuntimeError(self._world_bible_load_errors[title])
+        repair_duplicate_entity_ids(bible)
         blocking = [item for item in audit_world_bible_consistency(bible) if item.get("severity") == "error"]
         if blocking and not force:
             raise RuntimeError("世界书存在阻断性一致性错误：" + "；".join(item.get("message", "") for item in blocking[:3]))
