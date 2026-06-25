@@ -2,7 +2,7 @@
 登录/注册对话框
 启动时弹出，用户通过后方能进入主界面
 """
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import (
     QDialog,
     QLabel,
@@ -25,6 +25,7 @@ class LoginDialog(QDialog):
         self.password = ""
         self.enc_key: bytes | None = None
         self._auth = AuthManager()
+        self._login_attempt_active = False
 
         self.setWindowTitle("DeepSeekAss - 登录")
         self.setFixedSize(380, 300)
@@ -69,6 +70,8 @@ class LoginDialog(QDialog):
         # 登录按钮
         btn_layout = QHBoxLayout()
         self._login_btn = QPushButton("登 录")
+        self._login_btn.setDefault(True)
+        self._login_btn.setAutoDefault(True)
         btn_layout.addWidget(self._login_btn)
         layout.addLayout(btn_layout)
 
@@ -89,7 +92,7 @@ class LoginDialog(QDialog):
         self._register_btn.clicked.connect(self._on_register)
         self._switch_btn.clicked.connect(self._toggle_mode)
         self._username_input.returnPressed.connect(self._password_input.setFocus)
-        self._password_input.returnPressed.connect(self._on_login)
+
         self._confirm_input.returnPressed.connect(self._on_register)
         self._password_input.textChanged.connect(self._update_strength)
 
@@ -130,20 +133,32 @@ class LoginDialog(QDialog):
             self._strength_label.setStyleSheet("font-size: 12px; color: #d7ba7d;")
 
     def _on_login(self):
+        if self._login_attempt_active:
+            return
         username = self._username_input.text().strip()
         password = self._password_input.text()
         if not username or not password:
             QMessageBox.warning(self, "提示", "请输入用户名和密码")
             return
 
-        success, enc_key = self._auth.authenticate(username, password)
-        if success:
-            self.username = username
-            self.password = password
-            self.enc_key = enc_key
-            self.accept()
-        else:
-            QMessageBox.critical(self, "登录失败", "用户名或密码错误")
+        self._login_attempt_active = True
+        self._login_btn.setEnabled(False)
+        try:
+            success, enc_key = self._auth.authenticate(username, password)
+            if success:
+                self.username = username
+                self.password = password
+                self.enc_key = enc_key
+                self.accept()
+            else:
+                QMessageBox.critical(self, "登录失败", "用户名或密码错误")
+        finally:
+            if self.result() != QDialog.DialogCode.Accepted:
+                QTimer.singleShot(0, self._finish_login_attempt)
+
+    def _finish_login_attempt(self) -> None:
+        self._login_attempt_active = False
+        self._login_btn.setEnabled(True)
 
     def _on_register(self):
         username = self._username_input.text().strip()

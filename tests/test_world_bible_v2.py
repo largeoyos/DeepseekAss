@@ -250,6 +250,37 @@ class WorldBibleV2Tests(unittest.TestCase):
         self.assertFalse(bible.diagnostics["last_validation"]["valid"])
         self.assertEqual(bible.rules, ["有效规则"])
         self.assertEqual(bible.characters, [])
+
+    def test_extraction_sanitizes_object_values_in_quote_fields(self):
+        chapter = "顾川推开木门。门轴发出一声长响。"
+        bible = merge_extracted_world_bible_data(
+            WorldBible(),
+            {
+                "characters": [{
+                    "name": "顾川",
+                    "key_details": [{"text": "顾川推开木门。"}, {"unexpected": "丢弃"}],
+                    "key_dialogues": [{"quote": "门轴发出一声长响。"}],
+                }],
+                "timeline": [{
+                    "event": "顾川进屋",
+                    "key_passages": [{"content": "顾川推开木门。"}],
+                }],
+                "global_key_dialogues": [{
+                    "speaker": {"name": "顾川"},
+                    "dialogue": {"text": "门轴发出一声长响。"},
+                    "context": {"description": "进屋时"},
+                }],
+            },
+            chapter_content=chapter,
+            chapter_num=1,
+            run_dedup=False,
+        )
+        self.assertEqual(bible.characters[0].key_details, ["顾川推开木门。"])
+        self.assertEqual(bible.characters[0].key_dialogues, ["门轴发出一声长响。"])
+        self.assertEqual(bible.timeline[0].key_passages, ["顾川推开木门。"])
+        self.assertEqual(bible.global_key_dialogues[0]["speaker"], "顾川")
+        self.assertEqual(bible.global_key_dialogues[0]["dialogue"], "门轴发出一声长响。")
+
     def test_story_clock_keeps_chapter_history(self):
         bible = merge_extracted_world_bible_data(
             WorldBible(),

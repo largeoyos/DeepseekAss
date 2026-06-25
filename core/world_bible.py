@@ -2216,11 +2216,87 @@ def validate_extracted_world_bible_data(data: dict) -> list[str]:
 def _sanitize_extracted_world_bible_data(data: dict) -> dict:
     clean = copy.deepcopy(data) if isinstance(data, dict) else {}
     for field_name in ("characters", "locations", "rules", "timeline", "plot_threads", "key_worldbuilding", "global_key_dialogues", "global_foreshadowing"):
-        if not isinstance(clean.get(field_name, []), list):
-            clean[field_name] = []
+        value = clean.get(field_name)
+        clean[field_name] = value if isinstance(value, list) else []
     if not isinstance(clean.get("story_clock", {}), dict):
         clean["story_clock"] = {}
+
+    object_collections = (
+        "characters", "locations", "timeline", "plot_threads",
+        "key_worldbuilding", "global_key_dialogues", "global_foreshadowing",
+    )
+    for field_name in object_collections:
+        clean[field_name] = [
+            item for item in clean[field_name] if isinstance(item, dict)
+        ]
+
+    list_text_fields = {
+        "characters": ("aliases", "key_details", "key_dialogues", "unresolved_conflicts"),
+        "locations": ("key_details",),
+        "timeline": ("key_passages", "foreshadowing_hints"),
+        "plot_threads": ("involved_characters", "key_details", "foreshadowing_related"),
+        "key_worldbuilding": ("constraints", "keywords"),
+    }
+    scalar_text_fields = {
+        "characters": (
+            "name", "traits", "status", "importance", "motivation", "arc",
+            "birth_date", "current_age", "age_basis", "life_stage",
+            "current_location", "current_goal", "current_emotion",
+            "recent_action", "knowledge_state",
+        ),
+        "locations": ("name", "description", "significance", "atmosphere"),
+        "timeline": ("event", "significance"),
+        "plot_threads": (
+            "name", "status", "importance", "description",
+            "expected_payoff", "payoff_hint",
+        ),
+        "key_worldbuilding": (
+            "topic", "passage", "description", "core_summary", "full_passage",
+        ),
+        "global_key_dialogues": ("speaker", "dialogue", "context"),
+        "global_foreshadowing": (
+            "hint", "relates_to", "status", "next_step", "reveal_rule",
+        ),
+    }
+    for collection, fields in list_text_fields.items():
+        for item in clean[collection]:
+            for field_name in fields:
+                item[field_name] = _coerce_extracted_text_list(item.get(field_name, []))
+    for collection, fields in scalar_text_fields.items():
+        for item in clean[collection]:
+            for field_name in fields:
+                if field_name in item:
+                    item[field_name] = _coerce_extracted_text(item.get(field_name))
     return clean
+
+
+def _coerce_extracted_text(value) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        for key in (
+            "text", "content", "quote", "dialogue", "passage",
+            "description", "hint", "name", "value",
+        ):
+            text = _coerce_extracted_text(value.get(key))
+            if text:
+                return text
+        return ""
+    if isinstance(value, (list, tuple)):
+        return "；".join(filter(None, (_coerce_extracted_text(item) for item in value)))
+    if value is None:
+        return ""
+    return str(value).strip()
+
+
+def _coerce_extracted_text_list(value) -> list[str]:
+    values = value if isinstance(value, list) else [value]
+    result: list[str] = []
+    for item in values:
+        text = _coerce_extracted_text(item)
+        if text and text not in result:
+            result.append(text)
+    return result
 
 def merge_extracted_world_bible_data(
     existing_bible: WorldBible | None,

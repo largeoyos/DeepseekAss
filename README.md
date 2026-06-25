@@ -1,92 +1,201 @@
-# DeepSeek 多功能聊天客户端
+# DeepseekAss
 
-基于 PyQt6 的 DeepSeek API 聊天客户端，支持角色扮演、小说写作与续写，配备书架管理、世界书系统、智能摘要等深度写作功能。
+DeepseekAss 是一个面向长篇小说创作和角色对话的本地桌面客户端。它通过 OpenAI 兼容接口调用 DeepSeek 或其他兼容模型，并在本地维护用户账号、加密配置、小说章节树、世界书、角色簿、顾问会话、项目快照和 Token 日志。
 
-## 功能一览
+项目当前提供四个工作区：
 
-### 🎭 角色扮演
-- 自定义角色描述、故事背景
-- 第一人称 / 第三人称叙述切换
-- 对话历史保存、加载、导出
+- 角色扮演：多角色私聊/群聊、人物书、场景状态、分支与时间线。
+- 小说写作：书架、章节生成、经典/Agent 双模式、章节树和世界书。
+- 续写小说：导入 TXT/Markdown、分段分析、生成设定并继续写作。
+- Markdown 笔记：按用户隔离的本地笔记、预览和导出。
 
-### 📚 小说写作
-- **书架管理**：多部小说项目管理、章节版本控制
-- **章节续写**：自动前情提要注入 + 智能摘要压缩
-- **世界书系统**：从已生成章节自动提取角色、地点、规则、剧情线，防止设定矛盾
-- **字数控制**：设定目标字数，生成不足自动补充
-- **分段摘要**：对参考文档按标题/段落分段生成摘要
-- **导出**：支持 TXT / MD / HTML / DOCX 格式导出单章或全书
+详细操作见 [用户手册](用户手册.md)，内部设计见 [架构说明](ARCHITECTURE.md)。
 
-### 📄 续写小说
-- 支持源文档（.txt / .md）或文件夹
-- **分析流程**：AI 自动提取核心设定、角色关系、剧情概要
-- **两种续写模式**：
-  - 自由续写：AI 给出 3-5 个发展方向，用户选择后生成
-  - 指定续写：用户自定义剧情方向后生成
+## 主要能力
 
-## 快速开始
+### 小说项目
 
-```bash
-# 安装依赖
+- 多书架管理，保存主角设定、世界背景、写作要求、作者规划、题材和风格。
+- 同一章节可保存多个版本，并通过章节树表达平行分支。
+- 活跃路径决定剧情摘要、世界书聚合和下一章生成位置。
+- 支持章节编辑、重写、润色、插入番外、删除子树和单章/全书导出。
+- 自动生成章节摘要，并将摘要绑定到具体章节版本。
+
+### 两种写作模式
+
+经典模式直接使用设定、前情摘要、世界书和用户要求构造章节提示词。
+
+Agent 模式在正式生成前增加受控流程：
+
+1. 读取作者规划、连续性契约、世界书索引和历史章节摘要。
+2. 规划章节目标、场景、角色变化、剧情线和伏笔动作。
+3. 选择实际需要的世界书实体与历史章节。
+4. 向用户展示计划和实际注入上下文，确认后生成正文。
+5. 执行章节监督、摘要、世界书维护和项目快照。
+
+Agent 不具备任意文件系统访问能力。正式章节或世界书变更通过应用服务及审批流程提交；失败的世界书维护会保存为可重试任务，不会撤销已经保存的章节。
+
+### 写作顾问
+
+写作顾问可围绕当前书籍回答剧情、人物、场景、冲突和对白问题。顾问首次回答前必须调用至少一个书籍领域工具，可按需读取：
+
+- 作者规划、主角设定、世界背景和写作要求；
+- 活跃章节路径、章节正文和章节摘要；
+- 前情提要、连续性契约和项目状态；
+- 世界书全文、检索结果或指定实体；
+- 当前顾问会话历史和用户手动引用；
+- 启用并明确需要时的受控网页搜索。
+
+顾问结果可保存到书籍的加密构思库，也可以经过世界书管理 Agent 分析后，以字段级变更计划提交审批。
+
+### 世界书 v2
+
+世界书不是单一文本摘要，而是与章节版本绑定的结构化知识库，包含：
+
+- 角色、关系、位置、目标、情绪、知识状态和未解冲突；
+- 地点、世界规则、故事时钟和时间线；
+- 活跃/休眠/已解决剧情线；
+- 关键设定、伏笔、关键对白和事实来源；
+- 每章每版本的提取快照；
+- 可重放的人工修订、锁定、隐藏、删除和实体合并记录；
+- 一致性审计、重复候选、来源诊断和检索诊断。
+
+生成上下文支持 `resident`、`auto` 和 `manual` 三种加载策略，并记录每段上下文的来源、命中原因、预算和截断量。
+
+### 数据安全与恢复
+
+- 用户密码通过 PBKDF2 派生认证数据和加密密钥。
+- API 配置、设置、对话、书籍数据、世界书、笔记和 Agent 记录按用户隔离保存。
+- 密码修改会重新加密当前用户的数据；密码丢失后无法恢复加密内容。
+- 项目快照保存章节、摘要、世界书、元数据和内部配置，恢复前自动创建备份。
+- 支持导出/导入当前用户数据包。
+
+## 环境要求
+
+- Python 3.10 或更高版本
+- Windows 为主要运行环境
+- 可用的 OpenAI 兼容文字模型接口
+- 使用 LangGraph、LlamaIndex 或 Embedding 检索时，需要对应服务和配置
+
+## 安装与启动
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-
-# 运行
 python gui_main.py
 ```
 
-首次启动会提示输入 DeepSeek API Key，也可在项目根目录创建 `.env` 文件：
+首次启动时：
 
-```
-DEEPSEEK_API_KEY=your_api_key_here
+1. 注册本地账号，密码至少 6 位且同时包含字母和数字。
+2. 登录后填写文字 API 的调用地址、API Key 和模型名称。
+3. 使用“测试连接”确认配置有效。
+
+也可以在项目根目录通过 `.env` 预填默认配置：
+
+```dotenv
+DEEPSEEK_API_KEY=your_api_key
 DEEPSEEK_BASE_URL=https://api.deepseek.com
 ```
 
+GUI 中保存的用户级 API 配置优先用于实际运行。
+
+## 常用工作流
+
+### 从零开始写小说
+
+1. 在“小说写作”中新建书籍。
+2. 填写主角设定、世界背景、写作要求和作者规划。
+3. 在设置中心选择经典模式或 Agent 写作模式。
+4. 输入章节标题、本章情节和目标字数。
+5. 生成并检查章节；通过章节树管理版本和分支。
+6. 在世界书窗口处理冲突、锁定设定或检查伏笔。
+
+### 导入已有小说继续写
+
+1. 打开“续写小说”。
+2. 选择一个 TXT/Markdown 文件，或包含多个章节文件的目录。
+3. 预览和确认分段结果。
+4. 将正文导入书架，自动生成章节摘要和世界书快照。
+5. 检查自动生成的小说设定后继续创作。
+
+### 使用 Agent 顾问
+
+1. 在小说写作区选择一本书。
+2. 启用 Agent 顾问输入方式。
+3. 提问时说明目标章节、人物或冲突范围。
+4. 查看回答所引用的章节/世界书来源。
+5. 将有价值的回答保存为构思，或提交“加入世界书”审批。
+
 ## 技术栈
 
-| 层 | 技术 |
+| 领域 | 实现 |
 |---|---|
-| 语言 | Python 3.10+ |
-| GUI | PyQt6 + PyQt6-WebEngine |
-| API | OpenAI SDK（兼容 DeepSeek API） |
-| 存储 | JSON 文件（书架 / 对话 / 世界书） |
+| 桌面 UI | PyQt6、PyQt6-WebEngine |
+| 模型接口 | OpenAI Python SDK，兼容 DeepSeek/OpenAI 风格接口 |
+| 本地加密 | cryptography / Fernet / PBKDF2 |
+| Markdown | Python-Markdown |
+| DOCX 导出 | python-docx |
+| Agent | 内置受控运行时，可选 LangChain + LangGraph |
+| 检索 | 关键词检索，可选 LlamaIndex 混合检索与 Embedding |
+| 测试 | unittest |
 
 ## 项目结构
 
-```
-├── gui_main.py                  # 入口
-├── config.py                    # 配置（API Key / Base URL）
+```text
+DeepseekAss/
+├── gui_main.py                 # 程序入口
+├── config.py                   # 环境变量和默认模型配置
 ├── core/
-│   ├── chat_client.py           # API 客户端（消息管理 + 流式输出）
-│   ├── novel_manager.py         # 小说管理器（书架 / 章节 / 摘要）
-│   ├── conversation_manager.py  # 对话历史管理器
-│   └── world_bible.py           # 世界书系统（设定提取与合并）
-├── strategies/
-│   ├── base_strategy.py         # 策略抽象基类
-│   ├── role_play_strategy.py    # 角色扮演策略
-│   ├── novel_strategy.py        # 小说写作策略
-│   └── continuation_strategy.py # 续写小说策略
-├── ui/
-│   ├── main_window.py           # 主窗口（~3200 行）
-│   ├── world_bible_dialog.py    # 世界书编辑对话框
-│   └── continuation_dialogs.py  # 续写分析/方向选择对话框
-├── utils/
-│   ├── prompts.py               # 集中管理的 System Prompt
-│   ├── export.py                # 导出（TXT / MD / HTML / DOCX）
-│   ├── summarize.py             # 分段摘要
-│   └── supplement.py            # 字数不足自动补充
-└── bookshelf/                   # 书架数据（自动创建，已 gitignore）
-    └── <小说名>/
-        ├── meta.json            # 元信息（设定 / 章节版本）
-        ├── plot_summary.txt     # 剧情摘要
-        ├── world_bible.json     # 世界书数据
-        └── .generation_history/ # 生成历史记录
+│   ├── app_services.py         # 章节、续写、角色扮演、导入导出服务
+│   ├── auth_manager.py         # 用户认证、密钥派生和加解密
+│   ├── chat_client.py          # OpenAI 兼容客户端和流式调用
+│   ├── context_assembler.py    # 可审计的章节上下文组装
+│   ├── novel_manager.py        # 兼容门面、章节树、摘要和世界书协调
+│   ├── snapshots.py            # 加密项目快照
+│   ├── storage.py              # 明文/加密原子存储
+│   ├── world_bible.py          # 世界书 v2、提取、合并和审计
+│   └── agent/                  # 顾问、章节规划、监督、维护和工具边界
+├── strategies/                 # 角色扮演、小说写作、续写策略
+├── ui/                         # 主窗口及各功能对话框
+├── utils/                      # Prompt、摘要、连续性、导出和监督
+├── tests/                      # 单元测试和集成测试
+├── users/                      # 本地用户数据，运行时创建
+└── requirements.txt
 ```
 
-## 架构说明
+用户数据位于 `users/<随机目录 ID>/`，通常包含：
 
-采用**策略模式**设计，不同聊天模式作为独立策略类实现，运行时可通过 UI 下拉框切换。核心客户端 `DeepSeekChatClient` 与具体模式解耦，只依赖 `BaseStrategy` 抽象接口。
+```text
+bookshelf/          小说项目
+conversations/      保存的对话
+markdown_workspace/ Markdown 笔记
+config.enc          API 配置
+token_log.json.enc  Token 日志
+settings.json.enc   用户设置
+```
 
-新增模式只需：
-1. 在 `strategies/` 下创建新策略类（继承 `BaseStrategy`）
-2. 在 `Prompts` 中添加对应的 System Prompt
-3. 在 `STRATEGY_OPTIONS` 注册（`ui/main_window.py`）
+具体文件可能因版本和加密状态带有 `.enc` 后缀。不要手工编辑加密文件。
+
+## 测试
+
+运行完整测试：
+
+```powershell
+python -m unittest discover -s tests
+```
+
+运行核心世界书与 Agent 测试：
+
+```powershell
+python -m unittest tests.test_world_bible_v2 tests.test_agent_extensions
+```
+
+## 当前边界
+
+- 目标字数是生成约束，不保证模型严格达到指定中文字符数。
+- 世界书和摘要依赖模型输出，重要设定仍应人工审核和锁定。
+- LangGraph、LlamaIndex、Embedding 和网页搜索属于可选能力；未配置时会使用内置运行时或基础检索。
+- 加密保护本地文件内容，但无法替代操作系统账号、磁盘和备份安全。
+- 删除书籍、清空用户数据等操作具有破坏性，执行前应导出数据包或创建项目快照。
