@@ -1139,7 +1139,7 @@ class DeepSeekChatGUI(QMainWindow):
         """通过轻量 API 调用验证 Key 是否可用"""
         try:
             from openai import OpenAI
-            client = OpenAI(api_key=api_key, base_url=Config.BASE_URL, timeout=10)
+            client = OpenAI(api_key=api_key, base_url=Config.BASE_URL, timeout=10, max_retries=0)
             client.models.list()
             return True
         except Exception:
@@ -3569,9 +3569,14 @@ class DeepSeekChatGUI(QMainWindow):
         label, started_at = next(reversed(self._api_tasks.values()))
         elapsed = max(0, int(time.time() - started_at))
         suffix = f" · {len(self._api_tasks)} 项" if len(self._api_tasks) > 1 else ""
-        text = f"● {label} · {elapsed}s{suffix}"
+        timeout_hint = ""
+        color = "#4fc1ff"
+        if elapsed >= int(Config.API_TIMEOUT_SECONDS) + 30:
+            timeout_hint = " · 可能超时"
+            color = "#f0ad4e"
+        text = f"● {label} · {elapsed}s{timeout_hint}{suffix}"
         self._api_task_label.setText(text)
-        self._api_task_label.setStyleSheet("color: #4fc1ff; font-size: 12px;")
+        self._api_task_label.setStyleSheet(f"color: {color}; font-size: 12px;")
         self._api_task_label.setToolTip(text)
 
     def _open_token_log_dialog(self) -> None:
@@ -3808,6 +3813,7 @@ class DeepSeekChatGUI(QMainWindow):
                 api_key=api_config["api_key"],
                 base_url=api_config["base_url"],
                 timeout=12,
+                max_retries=0,
             )
             client.models.list()
             label = "文字 API" if kind == "text" else "图片 API"

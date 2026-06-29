@@ -24,6 +24,15 @@ class DeepSeekChatClient:
     - 不与任何具体模式耦合（依赖抽象 BaseStrategy）
     """
 
+    @staticmethod
+    def _create_openai_client(api_key: str, base_url: str) -> OpenAI:
+        return OpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            timeout=Config.API_TIMEOUT_SECONDS,
+            max_retries=Config.API_MAX_RETRIES,
+        )
+
     def __init__(self, strategy: BaseStrategy, model: str | None = None):
         """
         初始化客户端
@@ -34,10 +43,7 @@ class DeepSeekChatClient:
         """
         Config.validate()
 
-        self._client = OpenAI(
-            api_key=Config.API_KEY,
-            base_url=Config.BASE_URL,
-        )
+        self._client = self._create_openai_client(Config.API_KEY, Config.BASE_URL)
         self._strategy = strategy
         self._model = model or strategy.recommended_model
         self._temperature = strategy.recommended_temperature
@@ -163,7 +169,7 @@ class DeepSeekChatClient:
 
     def reconfigure_connection(self, api_key: str, base_url: str, model: str | None = None) -> None:
         """Rebuild the OpenAI-compatible connection without clearing the conversation."""
-        self._client = OpenAI(api_key=api_key, base_url=base_url)
+        self._client = self._create_openai_client(api_key, base_url)
         if model:
             self._model = model
 

@@ -34,6 +34,8 @@ class Config:
     DEFAULT_TOP_P: float = 0.9
     DEFAULT_MAX_TOKENS: int = 16384
     DEFAULT_FREQUENCY_PENALTY: float = 0.0
+    API_TIMEOUT_SECONDS: float = float(os.getenv("DEEPSEEK_API_TIMEOUT_SECONDS", "180"))
+    API_MAX_RETRIES: int = int(os.getenv("DEEPSEEK_API_MAX_RETRIES", "1"))
 
     @classmethod
     def validate(cls) -> None:
