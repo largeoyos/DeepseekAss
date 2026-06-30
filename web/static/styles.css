@@ -378,3 +378,58 @@ label span {
     border-radius: 8px;
   }
 }
+
+.tool-box {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid rgba(25, 23, 19, .12);
+  border-radius: 8px;
+  background: rgba(255, 250, 240, .82);
+  box-shadow: 0 8px 26px rgba(35, 31, 25, .08);
+}
+
+.tool-box h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.button-row {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.button-row button {
+  flex: 1 1 120px;
+}
+
+.code-area {
+  font-family: "Cascadia Mono", "Consolas", monospace;
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.bottom-nav {
+  grid-template-columns: repeat(5, 1fr);
+  gap: 4px;
+  overflow-x: auto;
+}
+
+.bottom-nav button {
+  min-width: 56px;
+  font-size: 12px;
+}
+
+@media (min-width: 760px) {
+  .content {
+    display: block;
+  }
+  .bottom-nav {
+    width: min(760px, calc(100% - 32px));
+    grid-template-columns: repeat(9, 1fr);
+  }
+  .panel {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}

@@ -1,4 +1,4 @@
-<!doctype html>
+﻿<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
@@ -11,16 +11,10 @@
     <section id="loginView" class="login-view">
       <div class="login-panel">
         <p class="eyebrow">DeepseekAss 局域网写作端</p>
-        <h1>继续写这一章</h1>
+        <h1>移动全功能工作台</h1>
         <form id="loginForm" class="stack">
-          <label>
-            <span>账号</span>
-            <input id="loginUsername" autocomplete="username" required>
-          </label>
-          <label>
-            <span>密码</span>
-            <input id="loginPassword" type="password" autocomplete="current-password" required>
-          </label>
+          <label><span>账号</span><input id="loginUsername" autocomplete="username" required></label>
+          <label><span>密码</span><input id="loginPassword" type="password" autocomplete="current-password" required></label>
           <button class="primary" type="submit">登录</button>
           <p id="loginError" class="inline-error" role="alert"></p>
         </form>
@@ -29,37 +23,16 @@
 
     <section id="mainView" class="main-view hidden">
       <header class="topbar">
-        <div>
-          <p class="eyebrow">移动写作台</p>
-          <h2 id="currentBookTitle">书架</h2>
-        </div>
+        <div><p class="eyebrow">移动写作台</p><h2 id="currentBookTitle">书架</h2></div>
         <button id="logoutBtn" class="icon-text" type="button">退出</button>
       </header>
 
       <main class="content">
-        <section id="booksPanel" class="panel">
-          <div class="panel-heading">
-            <div>
-              <p class="eyebrow">Library</p>
-              <h3>书架</h3>
-            </div>
-          </div>
-          <form id="createBookForm" class="inline-form">
-            <input id="newBookTitle" placeholder="新书名" maxlength="120">
-            <button type="submit">创建</button>
-          </form>
+        <section id="writePanel" class="panel">
+          <div class="panel-heading"><div><p class="eyebrow">Write</p><h3>写作</h3></div><button id="saveMetaBtn" class="secondary" type="button">保存设定</button></div>
+          <form id="createBookForm" class="inline-form"><input id="newBookTitle" placeholder="新书名" maxlength="120"><button type="submit">创建</button></form>
           <div id="bookList" class="book-list"></div>
-        </section>
-
-        <section id="writePanel" class="panel hidden">
-          <div class="panel-heading">
-            <div>
-              <p class="eyebrow">Setup</p>
-              <h3>小说设定</h3>
-            </div>
-            <button id="saveMetaBtn" class="secondary" type="button">保存</button>
-          </div>
-          <div id="apiNotice" class="notice hidden">请先在桌面端设置中心配置文字 API。</div>
+          <div id="apiNotice" class="notice hidden">文字 API 尚未配置，可到“设置”页配置。</div>
           <form id="metaForm" class="meta-grid">
             <label><span>主角</span><textarea id="metaProtagonist" rows="4"></textarea></label>
             <label><span>世界背景</span><textarea id="metaBackground" rows="5"></textarea></label>
@@ -68,63 +41,30 @@
             <label><span>题材 key</span><input id="metaGenre"></label>
             <label><span>风格 key</span><input id="metaTone"></label>
           </form>
-
-          <div class="generate-box">
-            <div class="panel-heading compact">
-              <div>
-                <p class="eyebrow">Next</p>
-                <h3>生成下一章</h3>
-              </div>
-            </div>
-            <label><span>章节标题</span><input id="genTitle" placeholder="留空自动使用章节号"></label>
-            <label><span>本章剧情</span><textarea id="genPlot" rows="6" placeholder="写下这一章必须发生的事"></textarea></label>
-            <label><span>目标字数</span><input id="genWords" type="number" min="500" max="30000" value="3000"></label>
-            <button id="generateBtn" class="primary" type="button">开始生成</button>
-          </div>
+          <div class="tool-box"><h3>生成下一章</h3><label><span>章节标题</span><input id="genTitle" placeholder="留空自动使用章节号"></label><label><span>本章剧情</span><textarea id="genPlot" rows="5"></textarea></label><label><span>目标字数</span><input id="genWords" type="number" min="500" max="30000" value="3000"></label><button id="generateBtn" class="primary" type="button">经典生成</button></div>
         </section>
 
-        <section id="chaptersPanel" class="panel hidden">
-          <div class="panel-heading">
-            <div>
-              <p class="eyebrow">Chapters</p>
-              <h3>章节</h3>
-            </div>
-            <button id="refreshChaptersBtn" class="secondary" type="button">刷新</button>
-          </div>
-          <div id="chapterList" class="chapter-list"></div>
-          <article id="reader" class="reader hidden">
-            <h3 id="readerTitle"></h3>
-            <pre id="readerContent"></pre>
-          </article>
-        </section>
+        <section id="chaptersPanel" class="panel hidden"><div class="panel-heading"><div><p class="eyebrow">Tree</p><h3>章节</h3></div><button id="refreshChaptersBtn" class="secondary" type="button">刷新</button></div><div id="chapterList" class="chapter-list"></div><div id="treeList" class="chapter-list"></div><article id="reader" class="reader hidden"><h3 id="readerTitle"></h3><pre id="readerContent"></pre></article></section>
 
-        <section id="tasksPanel" class="panel hidden">
-          <div class="panel-heading">
-            <div>
-              <p class="eyebrow">Tasks</p>
-              <h3>生成状态</h3>
-            </div>
-          </div>
-          <div class="task-card">
-            <div class="progress-row">
-              <span id="taskStage">暂无任务</span>
-              <strong id="taskPercent">0%</strong>
-            </div>
-            <div class="progress-track"><div id="taskBar"></div></div>
-            <p id="taskMessage" class="task-message"></p>
-          </div>
-          <div id="streamText" class="stream-text"></div>
-        </section>
+        <section id="worldPanel" class="panel hidden"><div class="panel-heading"><div><p class="eyebrow">World</p><h3>世界书</h3></div><button id="saveWorldBtn" class="secondary" type="button">保存 JSON</button></div><div id="worldSummary" class="notice"></div><textarea id="worldJson" class="code-area" rows="18"></textarea><div class="button-row"><button id="loadWorldBtn" type="button">读取</button><button id="auditWorldBtn" type="button">审计</button><button id="snapshotBtn" type="button">创建快照</button></div></section>
+
+        <section id="agentPanel" class="panel hidden"><div class="panel-heading"><div><p class="eyebrow">Agent</p><h3>Agent</h3></div></div><div class="tool-box"><label><span>顾问问题</span><textarea id="advisorMessage" rows="5"></textarea></label><button id="advisorBtn" class="primary" type="button">询问顾问</button></div><div class="tool-box"><label><span>章节标题</span><input id="agentChapterTitle"></label><label><span>章节剧情</span><textarea id="agentPlot" rows="5"></textarea></label><button id="agentPlanBtn" type="button">Agent 规划章节</button></div></section>
+
+        <section id="rolePanel" class="panel hidden"><div class="panel-heading"><div><p class="eyebrow">Roleplay</p><h3>角色</h3></div><button id="loadRolesBtn" class="secondary" type="button">刷新</button></div><div id="roleList" class="book-list"></div><div class="tool-box"><label><span>角色名</span><input id="roleName"></label><label><span>身份/设定</span><textarea id="roleIdentity" rows="4"></textarea></label><button id="createRoleBtn" type="button">新建角色</button></div><div id="conversationList" class="chapter-list"></div></section>
+
+        <section id="continuationPanel" class="panel hidden"><div class="panel-heading"><div><p class="eyebrow">Import</p><h3>续写</h3></div></div><label><span>粘贴 TXT/Markdown 原文</span><textarea id="contSource" rows="10"></textarea></label><div class="button-row"><button id="segmentBtn" type="button">分段</button><button id="importSectionsBtn" class="primary" type="button">导入为章节</button></div><div id="sectionList" class="chapter-list"></div></section>
+
+        <section id="notesPanel" class="panel hidden"><div class="panel-heading"><div><p class="eyebrow">Notes</p><h3>笔记</h3></div><button id="saveNoteBtn" class="secondary" type="button">保存</button></div><div class="inline-form"><input id="notePath" placeholder="notes/idea.md"><button id="loadNoteBtn" type="button">打开</button></div><textarea id="noteContent" class="code-area" rows="18"></textarea><div id="noteTree" class="chapter-list"></div></section>
+
+        <section id="settingsPanel" class="panel hidden"><div class="panel-heading"><div><p class="eyebrow">Settings</p><h3>设置</h3></div><button id="saveApiBtn" class="secondary" type="button">保存 API</button></div><div class="notice">敏感设置需要当前密码二次确认，确认有效期 10 分钟。</div><label><span>当前密码</span><input id="confirmPassword" type="password"></label><button id="confirmBtn" type="button">确认敏感操作</button><label><span>文字 API Key</span><input id="apiKey" type="password"></label><label><span>Base URL</span><input id="baseUrl"></label><label><span>模型</span><input id="apiModel"></label><button id="testApiBtn" type="button">测试连接</button></section>
+
+        <section id="tasksPanel" class="panel hidden"><div class="panel-heading"><div><p class="eyebrow">Tasks</p><h3>任务</h3></div><button id="refreshTasksBtn" class="secondary" type="button">刷新</button></div><div class="task-card"><div class="progress-row"><span id="taskStage">暂无任务</span><strong id="taskPercent">0%</strong></div><div class="progress-track"><div id="taskBar"></div></div><p id="taskMessage" class="task-message"></p></div><div id="streamText" class="stream-text"></div><div id="taskList" class="chapter-list"></div></section>
       </main>
 
       <nav class="bottom-nav" aria-label="主导航">
-        <button data-tab="books" class="active" type="button">书架</button>
-        <button data-tab="write" type="button">写作</button>
-        <button data-tab="chapters" type="button">章节</button>
-        <button data-tab="tasks" type="button">任务</button>
+        <button data-tab="write" class="active" type="button">写作</button><button data-tab="chapters" type="button">章节</button><button data-tab="world" type="button">世界书</button><button data-tab="agent" type="button">Agent</button><button data-tab="role" type="button">角色</button><button data-tab="continuation" type="button">续写</button><button data-tab="notes" type="button">笔记</button><button data-tab="settings" type="button">设置</button><button data-tab="tasks" type="button">任务</button>
       </nav>
     </section>
-
     <div id="toast" class="toast hidden"></div>
   </div>
   <script src="/app.js"></script>

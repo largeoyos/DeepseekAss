@@ -4,18 +4,24 @@ import json
 import os
 import queue
 import secrets
+import shutil
 import threading
 import time
-from dataclasses import asdict
+from dataclasses import asdict, is_dataclass
+from pathlib import Path
 from typing import Callable
 
 from config import Config
 from core.app_services import ChapterGenerationService
 from core.auth_manager import AuthManager
+from core.character_book import CharacterBookManager
 from core.chat_client import DeepSeekChatClient
+from core.chat_domain import ScenePresetManager, SenderProfileManager
+from core.conversation_manager import ConversationManager
 from core.novel_manager import NovelManager, NovelMeta
 from core.settings_manager import SettingsManager
 from core.task_manager import TaskEvent, TaskRunner
+from core.token_log_manager import TokenLogManager
 from strategies.novel_strategy import NovelStrategy
 
 
@@ -24,6 +30,10 @@ class WebAuthError(Exception):
 
 
 class WebApiConfigError(Exception):
+    pass
+
+
+class WebSensitiveError(Exception):
     pass
 
 
@@ -58,6 +68,28 @@ class TokenStore:
             return str(payload["username"]), payload["enc_key"]
 
 
+class SensitiveStore:
+    def __init__(self, ttl_seconds: int = 10 * 60) -> None:
+        self.ttl_seconds = ttl_seconds
+        self._tickets: dict[str, dict] = {}
+        self._lock = threading.Lock()
+
+    def issue(self, username: str) -> str:
+        ticket = secrets.token_urlsafe(24)
+        with self._lock:
+            self._tickets[ticket] = {"username": username, "expires_at": time.time() + self.ttl_seconds}
+        return ticket
+
+    def verify(self, username: str, ticket: str) -> None:
+        with self._lock:
+            payload = self._tickets.get(ticket or "")
+            if not payload or payload.get("username") != username:
+                raise WebSensitiveError("需要重新确认当前密码")
+            if float(payload.get("expires_at") or 0) < time.time():
+                self._tickets.pop(ticket, None)
+                raise WebSensitiveError("敏感操作确认已过期，请重新确认")
+
+
 class WebUserContext:
     def __init__(self, username: str, enc_key: bytes) -> None:
         self.username = username
@@ -67,15 +99,23 @@ class WebUserContext:
         self.settings_manager = SettingsManager(self.user_dir, AuthManager, enc_key)
         self.settings = self.settings_manager.load()
         self.bookshelf_root = os.path.join(self.user_dir, "bookshelf")
-        self.novel_manager = NovelManager(
-            self.bookshelf_root,
-            crypto=AuthManager,
-            enc_key=enc_key,
-        )
+        self.novel_manager = NovelManager(self.bookshelf_root, crypto=AuthManager, enc_key=enc_key)
         self.novel_manager.configure_retrieval(self.settings.get("retrieval") or {})
+        self.conversation_manager = ConversationManager(
+            os.path.join(self.user_dir, "conversations"), crypto=AuthManager, enc_key=enc_key
+        )
+        self.character_book_manager = CharacterBookManager(self.user_dir, crypto=AuthManager, enc_key=enc_key)
+        self.sender_profile_manager = SenderProfileManager(self.user_dir, crypto=AuthManager, enc_key=enc_key)
+        self.scene_preset_manager = ScenePresetManager(self.user_dir, crypto=AuthManager, enc_key=enc_key)
+        self.token_log_manager = TokenLogManager(self.user_dir, crypto=AuthManager, enc_key=enc_key)
+        self.markdown_root = os.path.join(self.user_dir, "markdown_workspace")
+        self.export_root = os.path.join(self.user_dir, ".deepseekass", "web_exports")
+        os.makedirs(self.markdown_root, exist_ok=True)
+        os.makedirs(self.export_root, exist_ok=True)
 
     def reload_settings(self) -> None:
         self.settings = self.settings_manager.load()
+        self.novel_manager.configure_retrieval(self.settings.get("retrieval") or {})
 
     def load_api_config(self) -> dict:
         self.reload_settings()
@@ -104,12 +144,57 @@ class WebUserContext:
         image.setdefault("model", Config.IMAGE_MODEL)
         return {"text": text, "image": image}
 
+    def save_api_config(self, config: dict) -> None:
+        path = os.path.join(self.user_dir, "config.enc")
+        AuthManager.encrypt_json(self.enc_key, path, config)
+        settings = self.settings_manager.load()
+        text = config.get("text") or {}
+        if text.get("model"):
+            settings["last_model"] = text.get("model")
+            self.settings_manager.save(settings)
+            self.settings = settings
+
     def require_text_api(self) -> dict:
         api_config = self.load_api_config()
         text = api_config.get("text") or {}
         if not str(text.get("api_key") or "").strip():
-            raise WebApiConfigError("请先在桌面端设置中心配置文字 API")
+            raise WebApiConfigError("请先在网页端设置或桌面端设置中心配置文字 API")
         return api_config
+
+    def markdown_path(self, relative: str) -> str:
+        relative = (relative or "").replace("\\", "/").strip("/")
+        if not relative or relative.startswith("../") or "/../" in relative or relative == "..":
+            raise ValueError("非法路径")
+        full = os.path.abspath(os.path.join(self.markdown_root, relative))
+        root = os.path.abspath(self.markdown_root)
+        if full != root and not full.startswith(root + os.sep):
+            raise ValueError("非法路径")
+        return full
+
+    def read_markdown(self, relative: str) -> str:
+        path = self.markdown_path(relative)
+        if not os.path.exists(path):
+            raise FileNotFoundError(relative)
+        if self.enc_key:
+            return AuthManager.decrypt_text(self.enc_key, path) or ""
+        return Path(path).read_text(encoding="utf-8")
+
+    def write_markdown(self, relative: str, text: str) -> None:
+        path = self.markdown_path(relative)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if self.enc_key:
+            AuthManager.encrypt_text(self.enc_key, path, text)
+        else:
+            Path(path).write_text(text, encoding="utf-8")
+
+
+def masked_api_config(config: dict) -> dict:
+    result = {"text": dict(config.get("text") or {}), "image": dict(config.get("image") or {})}
+    for section in ("text", "image"):
+        key = str(result[section].get("api_key") or "")
+        result[section]["api_key_configured"] = bool(key.strip())
+        result[section]["api_key"] = (key[:4] + "..." + key[-4:]) if len(key) > 8 else ("***" if key else "")
+    return result
 
 
 class WebRuntime:
@@ -120,6 +205,7 @@ class WebRuntime:
         client_factory: Callable[[dict], object] | None = None,
     ) -> None:
         self.tokens = TokenStore(ttl_seconds=token_ttl_seconds)
+        self.sensitive = SensitiveStore()
         self.client_factory = client_factory or self._default_client_factory
         self._task_queues: dict[str, queue.Queue[TaskEvent]] = {}
         self._task_events: dict[str, list[TaskEvent]] = {}
@@ -127,6 +213,8 @@ class WebRuntime:
         self._task_runner = TaskRunner(event_sink=self._on_task_event)
         self._task_lock = threading.Lock()
         self._generation_locks: dict[str, threading.Lock] = {}
+        self._downloads: dict[str, dict] = {}
+        self._download_lock = threading.Lock()
 
     def login(self, username: str, password: str) -> dict:
         ok, enc_key = AuthManager.authenticate(username, password)
@@ -142,12 +230,80 @@ class WebRuntime:
         username, enc_key = self.tokens.resolve(token)
         return WebUserContext(username, enc_key)
 
+    def confirm_sensitive(self, username: str, password: str) -> str:
+        ok, _ = AuthManager.authenticate(username, password)
+        if not ok:
+            raise WebSensitiveError("当前密码错误")
+        return self.sensitive.issue(username)
+
+    def require_sensitive(self, username: str, ticket: str) -> None:
+        self.sensitive.verify(username, ticket)
+
     def serialize_task(self, task_id: str) -> dict | None:
         record = self._task_runner.get_record(task_id)
         return asdict(record) if record else None
 
+    def list_tasks(self, username: str, limit: int = 50) -> list[dict]:
+        items = []
+        for record in self._task_runner.history(limit=limit):
+            data = asdict(record)
+            meta = data.get("metadata") or {}
+            if meta.get("username") == username or self._task_users.get(data["task_id"]) == username:
+                items.append(data)
+        return items
+
     def user_owns_task(self, username: str, task_id: str) -> bool:
-        return self._task_users.get(task_id) == username
+        if self._task_users.get(task_id) == username:
+            return True
+        record = self._task_runner.get_record(task_id)
+        return bool(record and (record.metadata or {}).get("username") == username)
+
+    def cancel_task(self, username: str, task_id: str) -> bool:
+        if not self.user_owns_task(username, task_id):
+            return False
+        return self._task_runner.cancel(task_id)
+
+    def start_task(self, username: str, name: str, target, *, metadata: dict | None = None, retryable: bool = False) -> str:
+        meta = {"username": username, **(metadata or {})}
+        handle = self._task_runner.start(name, target, retryable=retryable, metadata=meta)
+        self._task_users[handle.task_id] = username
+        return handle.task_id
+
+    def register_download(self, username: str, path: str, filename: str = "", media_type: str = "application/octet-stream") -> dict:
+        download_id = f"download_{secrets.token_urlsafe(18)}"
+        with self._download_lock:
+            self._downloads[download_id] = {
+                "username": username,
+                "path": os.path.abspath(path),
+                "filename": filename or os.path.basename(path),
+                "media_type": media_type,
+                "created_at": time.time(),
+            }
+        return {"download_id": download_id, "download_url": f"/api/downloads/{download_id}"}
+
+    def resolve_download(self, username: str, download_id: str) -> dict:
+        with self._download_lock:
+            item = self._downloads.get(download_id)
+        if not item or item.get("username") != username:
+            raise FileNotFoundError(download_id)
+        if time.time() - float(item.get("created_at") or 0) > 24 * 60 * 60:
+            raise FileNotFoundError(download_id)
+        return item
+
+    def cleanup_exports(self, ctx: WebUserContext) -> None:
+        if not os.path.isdir(ctx.export_root):
+            return
+        cutoff = time.time() - 24 * 60 * 60
+        for name in os.listdir(ctx.export_root):
+            path = os.path.join(ctx.export_root, name)
+            try:
+                if os.path.getmtime(path) < cutoff:
+                    if os.path.isdir(path):
+                        shutil.rmtree(path)
+                    else:
+                        os.remove(path)
+            except OSError:
+                pass
 
     def start_generation(
         self,
@@ -177,14 +333,12 @@ class WebRuntime:
             finally:
                 lock.release()
 
-        handle = self._task_runner.start(
+        return self.start_task(
+            ctx.username,
             f"生成《{title}》下一章",
             target,
-            retryable=False,
-            metadata={"kind": "chapter_generation", "book": title, "username": ctx.username},
+            metadata={"kind": "chapter_generation", "book": title},
         )
-        self._task_users[handle.task_id] = ctx.username
-        return handle.task_id
 
     def event_queue(self, task_id: str) -> queue.Queue[TaskEvent]:
         with self._task_lock:
@@ -199,8 +353,7 @@ class WebRuntime:
             self._task_events.setdefault(event.task_id, []).append(event)
             if len(self._task_events[event.task_id]) > 250:
                 self._task_events[event.task_id] = self._task_events[event.task_id][-250:]
-            q = self._task_queues.setdefault(event.task_id, queue.Queue())
-            q.put(event)
+            self._task_queues.setdefault(event.task_id, queue.Queue()).put(event)
 
     def _default_client_factory(self, api_config: dict):
         text = api_config.get("text") or {}
@@ -227,7 +380,9 @@ class WebRuntime:
 
         handle.progress("准备章节上下文", percent=5, stage="准备上下文")
         meta = manager.load_meta(title)
-        chapter_num = manager.get_next_chapter_num(title)
+        target = manager.get_active_generation_target(title)
+        chapter_num = int(target.get("chapter_num") or manager.get_next_chapter_num(title))
+        parent_id = target.get("parent_id")
         if not chapter_title.strip():
             chapter_title = f"第{chapter_num}章"
         context_report = service.build_context(
@@ -277,7 +432,7 @@ class WebRuntime:
             chapter_title=chapter_title,
             content=content,
             version=manager.get_next_version(title, chapter_num),
-            parent_id=None,
+            parent_id=parent_id,
             prompt=prompt,
             model=params["model"],
             temperature=params["temperature"],
@@ -439,3 +594,13 @@ def task_event_to_sse(event: TaskEvent) -> str:
         "data": event.data,
     }
     return f"event: {event.type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+def to_plain(value):
+    if is_dataclass(value):
+        return asdict(value)
+    if isinstance(value, list):
+        return [to_plain(item) for item in value]
+    if isinstance(value, dict):
+        return {key: to_plain(item) for key, item in value.items()}
+    return value
