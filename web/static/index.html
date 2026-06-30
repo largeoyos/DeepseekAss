@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>DeepseekAss Web</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <section id="loginView" class="login-view">
+      <div class="login-panel">
+        <p class="eyebrow">DeepseekAss 局域网写作端</p>
+        <h1>继续写这一章</h1>
+        <form id="loginForm" class="stack">
+          <label>
+            <span>账号</span>
+            <input id="loginUsername" autocomplete="username" required>
+          </label>
+          <label>
+            <span>密码</span>
+            <input id="loginPassword" type="password" autocomplete="current-password" required>
+          </label>
+          <button class="primary" type="submit">登录</button>
+          <p id="loginError" class="inline-error" role="alert"></p>
+        </form>
+      </div>
+    </section>
+
+    <section id="mainView" class="main-view hidden">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">移动写作台</p>
+          <h2 id="currentBookTitle">书架</h2>
+        </div>
+        <button id="logoutBtn" class="icon-text" type="button">退出</button>
+      </header>
+
+      <main class="content">
+        <section id="booksPanel" class="panel">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Library</p>
+              <h3>书架</h3>
+            </div>
+          </div>
+          <form id="createBookForm" class="inline-form">
+            <input id="newBookTitle" placeholder="新书名" maxlength="120">
+            <button type="submit">创建</button>
+          </form>
+          <div id="bookList" class="book-list"></div>
+        </section>
+
+        <section id="writePanel" class="panel hidden">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Setup</p>
+              <h3>小说设定</h3>
+            </div>
+            <button id="saveMetaBtn" class="secondary" type="button">保存</button>
+          </div>
+          <div id="apiNotice" class="notice hidden">请先在桌面端设置中心配置文字 API。</div>
+          <form id="metaForm" class="meta-grid">
+            <label><span>主角</span><textarea id="metaProtagonist" rows="4"></textarea></label>
+            <label><span>世界背景</span><textarea id="metaBackground" rows="5"></textarea></label>
+            <label><span>写作要求</span><textarea id="metaDemand" rows="4"></textarea></label>
+            <label><span>作者规划</span><textarea id="metaPlan" rows="5"></textarea></label>
+            <label><span>题材 key</span><input id="metaGenre"></label>
+            <label><span>风格 key</span><input id="metaTone"></label>
+          </form>
+
+          <div class="generate-box">
+            <div class="panel-heading compact">
+              <div>
+                <p class="eyebrow">Next</p>
+                <h3>生成下一章</h3>
+              </div>
+            </div>
+            <label><span>章节标题</span><input id="genTitle" placeholder="留空自动使用章节号"></label>
+            <label><span>本章剧情</span><textarea id="genPlot" rows="6" placeholder="写下这一章必须发生的事"></textarea></label>
+            <label><span>目标字数</span><input id="genWords" type="number" min="500" max="30000" value="3000"></label>
+            <button id="generateBtn" class="primary" type="button">开始生成</button>
+          </div>
+        </section>
+
+        <section id="chaptersPanel" class="panel hidden">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Chapters</p>
+              <h3>章节</h3>
+            </div>
+            <button id="refreshChaptersBtn" class="secondary" type="button">刷新</button>
+          </div>
+          <div id="chapterList" class="chapter-list"></div>
+          <article id="reader" class="reader hidden">
+            <h3 id="readerTitle"></h3>
+            <pre id="readerContent"></pre>
+          </article>
+        </section>
+
+        <section id="tasksPanel" class="panel hidden">
+          <div class="panel-heading">
+            <div>
+              <p class="eyebrow">Tasks</p>
+              <h3>生成状态</h3>
+            </div>
+          </div>
+          <div class="task-card">
+            <div class="progress-row">
+              <span id="taskStage">暂无任务</span>
+              <strong id="taskPercent">0%</strong>
+            </div>
+            <div class="progress-track"><div id="taskBar"></div></div>
+            <p id="taskMessage" class="task-message"></p>
+          </div>
+          <div id="streamText" class="stream-text"></div>
+        </section>
+      </main>
+
+      <nav class="bottom-nav" aria-label="主导航">
+        <button data-tab="books" class="active" type="button">书架</button>
+        <button data-tab="write" type="button">写作</button>
+        <button data-tab="chapters" type="button">章节</button>
+        <button data-tab="tasks" type="button">任务</button>
+      </nav>
+    </section>
+
+    <div id="toast" class="toast hidden"></div>
+  </div>
+  <script src="/app.js"></script>
+</body>
+</html>
