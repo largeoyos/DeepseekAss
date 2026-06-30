@@ -92,6 +92,7 @@ from core.app_services import (
     TaskRunner,
 )
 from core.agent.skills import HUMANIZER_ZH_STYLE_BRIEF
+from core.world_bible_diff import diff_world_bibles
 from core.settings_manager import SettingsManager
 from core.token_log_manager import TokenLogManager
 from ui.dialog_utils import apply_responsive_dialog_size
@@ -119,6 +120,9 @@ from ui.architecture_dialogs import (
 from ui.presets import PRESETS, CUSTOM_LABEL
 from ui.settings_dialog import SettingsDialog
 from ui.token_log_dialog import TokenLogDialog
+from ui.task_center_dialog import TaskCenterDialog
+from ui.diagnostics_dialog import DiagnosticsDialog
+from ui.world_bible_diff_dialog import WorldBibleDiffDialog
 from ui.markdown_workspace import MarkdownWorkspaceWidget
 from ui.chapter_tree_dialog import ChapterTreeDialog
 from ui.continuation_dialogs import (
@@ -1405,6 +1409,20 @@ class DeepSeekChatGUI(QMainWindow):
             layout.addWidget(btn)
 
         layout.addStretch()
+
+        task_btn = QPushButton("🧭\n任务")
+        task_btn.setObjectName("navButton")
+        task_btn.setToolTip("任务中心")
+        task_btn.setFixedSize(58, 54)
+        task_btn.clicked.connect(self._open_task_center_dialog)
+        layout.addWidget(task_btn)
+
+        diagnostics_btn = QPushButton("🩺\n诊断")
+        diagnostics_btn.setObjectName("navButton")
+        diagnostics_btn.setToolTip("诊断中心")
+        diagnostics_btn.setFixedSize(58, 54)
+        diagnostics_btn.clicked.connect(self._open_diagnostics_dialog)
+        layout.addWidget(diagnostics_btn)
 
         token_btn = QPushButton("📊\nToken")
         token_btn.setObjectName("navButton")
@@ -3501,6 +3519,10 @@ class DeepSeekChatGUI(QMainWindow):
             self._stream_signals.error.emit(event.message)
         elif event.type == "started":
             self._stream_signals.token.emit(f"\n[{event.message}] started...\n")
+        elif event.type == "progress" and event.message:
+            self._stream_signals.token.emit(f"[{event.message}]\n")
+        elif event.type == "completed":
+            self._stream_signals.token.emit(f"[{event.message}] completed.\n")
         elif event.type == "cancelled":
             self._stream_signals.token.emit("\nTask cancelled.\n")
 
@@ -3578,6 +3600,20 @@ class DeepSeekChatGUI(QMainWindow):
         self._api_task_label.setText(text)
         self._api_task_label.setStyleSheet(f"color: {color}; font-size: 12px;")
         self._api_task_label.setToolTip(text)
+
+    def _open_task_center_dialog(self) -> None:
+        dialog = TaskCenterDialog(self, self._task_runner)
+        dialog.exec()
+
+    def _open_diagnostics_dialog(self) -> None:
+        dialog = DiagnosticsDialog(
+            self,
+            novel_manager=self._novel_manager,
+            task_runner=self._task_runner,
+            settings=self._settings,
+            current_book=self._get_current_book_title(),
+        )
+        dialog.exec()
 
     def _open_token_log_dialog(self) -> None:
         dialog = TokenLogDialog(self, self._token_log_manager)
@@ -7632,10 +7668,16 @@ class DeepSeekChatGUI(QMainWindow):
             }
         except Exception:
             active_chapters = set()
-        dlg = WorldBibleDialog(self, bible, active_chapters=active_chapters)
+        dlg = WorldBibleDialog(self, copy.deepcopy(bible), active_chapters=active_chapters)
         if dlg.exec() == QDialog.DialogCode.Accepted:
+            updated_bible = dlg.get_bible()
+            diff_items = diff_world_bibles(bible, updated_bible)
+            if diff_items:
+                diff_dialog = WorldBibleDiffDialog(self, diff_items)
+                if diff_dialog.exec() != QDialog.DialogCode.Accepted:
+                    return
             try:
-                self._novel_manager.save_world_bible(title, dlg.get_bible())
+                self._novel_manager.save_world_bible(title, updated_bible)
                 QMessageBox.information(self, "提示", "世界书已保存。")
             except Exception as exc:
                 QMessageBox.critical(self, "世界书保存失败", str(exc))

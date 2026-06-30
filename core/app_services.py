@@ -218,3 +218,13 @@ class ImportExportService:
     def export_book(self, manager, title: str, fmt: str, output: str):
         from utils.export import export_book
         return export_book(manager, title, fmt, output)
+
+# Compatibility exports: new code should import from core.task_manager directly.
+from core.task_manager import (
+    TaskEvent as TaskEvent,
+    TaskHandle as TaskHandle,
+    TaskHistoryStore as TaskHistoryStore,
+    TaskRecord as TaskRecord,
+    TaskRunner as TaskRunner,
+    WorkspaceTaskHistoryStore as WorkspaceTaskHistoryStore,
+)
