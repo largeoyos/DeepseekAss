@@ -98,6 +98,7 @@ class WebUserContext:
         os.makedirs(self.user_dir, exist_ok=True)
         self.settings_manager = SettingsManager(self.user_dir, AuthManager, enc_key)
         self.settings = self.settings_manager.load()
+        self._sync_global_prompt_from_user_prefs()
         self.bookshelf_root = os.path.join(self.user_dir, "bookshelf")
         self.novel_manager = NovelManager(self.bookshelf_root, crypto=AuthManager, enc_key=enc_key)
         self.novel_manager.configure_retrieval(self.settings.get("retrieval") or {})
@@ -113,8 +114,34 @@ class WebUserContext:
         os.makedirs(self.markdown_root, exist_ok=True)
         os.makedirs(self.export_root, exist_ok=True)
 
+    def user_prefs_path(self) -> str:
+        return os.path.join(self.user_dir, "user_prefs.enc")
+
+    def load_user_prefs(self) -> dict:
+        data = AuthManager.decrypt_json(self.enc_key, self.user_prefs_path()) if self.enc_key else {}
+        return data if isinstance(data, dict) else {}
+
+    def save_user_prefs(self, prefs: dict) -> None:
+        if self.enc_key:
+            AuthManager.encrypt_json(self.enc_key, self.user_prefs_path(), prefs)
+
+    def _sync_global_prompt_from_user_prefs(self) -> None:
+        prompt = str((self.load_user_prefs() or {}).get("global_user_prompt") or "")
+        if prompt:
+            self.settings["global_user_prompt"] = prompt
+
+    def save_settings(self, settings: dict) -> None:
+        self.settings_manager.save(settings)
+        self.settings = self.settings_manager.load()
+        if "global_user_prompt" in settings:
+            prefs = self.load_user_prefs()
+            prefs["global_user_prompt"] = str(settings.get("global_user_prompt") or "")
+            self.save_user_prefs(prefs)
+            self.settings["global_user_prompt"] = prefs["global_user_prompt"]
+
     def reload_settings(self) -> None:
         self.settings = self.settings_manager.load()
+        self._sync_global_prompt_from_user_prefs()
         self.novel_manager.configure_retrieval(self.settings.get("retrieval") or {})
 
     def load_api_config(self) -> dict:
@@ -171,22 +198,35 @@ class WebUserContext:
             raise ValueError("非法路径")
         return full
 
+    def markdown_storage_path(self, relative: str, *, for_write: bool = False) -> str:
+        full = self.markdown_path(relative)
+        if not self.enc_key:
+            return full
+        if full.endswith(".enc"):
+            return full
+        encrypted = full + ".enc"
+        if os.path.exists(full):
+            return full
+        if os.path.exists(encrypted):
+            return encrypted
+        return encrypted if for_write and full.lower().endswith((".md", ".markdown")) else full
+
     def read_markdown(self, relative: str) -> str:
-        path = self.markdown_path(relative)
+        path = self.markdown_storage_path(relative)
         if not os.path.exists(path):
             raise FileNotFoundError(relative)
         if self.enc_key:
             return AuthManager.decrypt_text(self.enc_key, path) or ""
         return Path(path).read_text(encoding="utf-8")
 
-    def write_markdown(self, relative: str, text: str) -> None:
-        path = self.markdown_path(relative)
+    def write_markdown(self, relative: str, text: str) -> str:
+        path = self.markdown_storage_path(relative, for_write=True)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         if self.enc_key:
             AuthManager.encrypt_text(self.enc_key, path, text)
         else:
             Path(path).write_text(text, encoding="utf-8")
-
+        return path
 
 def masked_api_config(config: dict) -> dict:
     result = {"text": dict(config.get("text") or {}), "image": dict(config.get("image") or {})}
@@ -262,6 +302,16 @@ class WebRuntime:
         if not self.user_owns_task(username, task_id):
             return False
         return self._task_runner.cancel(task_id)
+
+    def retry_task(self, username: str, task_id: str) -> str:
+        if not self.user_owns_task(username, task_id):
+            raise WebAuthError("任务不存在")
+        record = self._task_runner.get_record(task_id)
+        if not record or record.status not in {"failed", "cancelled"}:
+            raise ValueError("只有失败或已取消的任务可以重试")
+        handle = self._task_runner.retry(task_id)
+        self._task_users[handle.task_id] = username
+        return handle.task_id
 
     def start_task(self, username: str, name: str, target, *, metadata: dict | None = None, retryable: bool = False) -> str:
         meta = {"username": username, **(metadata or {})}
@@ -604,3 +654,4 @@ def to_plain(value):
     if isinstance(value, dict):
         return {key: to_plain(item) for key, item in value.items()}
     return value
+

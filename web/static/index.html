@@ -1,4 +1,4 @@
-﻿<!doctype html>
+<!doctype html>
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8">
@@ -9,64 +9,380 @@
 <body>
   <div id="app" class="app-shell">
     <section id="loginView" class="login-view">
-      <div class="login-panel">
-        <p class="eyebrow">DeepseekAss 局域网写作端</p>
-        <h1>移动全功能工作台</h1>
-        <form id="loginForm" class="stack">
-          <label><span>账号</span><input id="loginUsername" autocomplete="username" required></label>
-          <label><span>密码</span><input id="loginPassword" type="password" autocomplete="current-password" required></label>
-          <button class="primary" type="submit">登录</button>
-          <p id="loginError" class="inline-error" role="alert"></p>
-        </form>
-      </div>
+      <form id="loginForm" class="login-panel">
+        <p class="eyebrow">DeepseekAss 局域网端</p>
+        <h1>全功能写作工作台</h1>
+        <label><span>账号</span><input id="loginUsername" autocomplete="username" required></label>
+        <label><span>密码</span><input id="loginPassword" type="password" autocomplete="current-password" required></label>
+        <button class="primary" type="submit">登录</button>
+        <p id="loginError" class="inline-error" role="alert"></p>
+      </form>
     </section>
 
-    <section id="mainView" class="main-view hidden">
-      <header class="topbar">
-        <div><p class="eyebrow">移动写作台</p><h2 id="currentBookTitle">书架</h2></div>
-        <button id="logoutBtn" class="icon-text" type="button">退出</button>
-      </header>
+    <section id="mainView" class="main-layout hidden">
+      <aside class="side-rail" aria-label="主导航">
+        <div class="rail-brand"><strong>DSA</strong><span id="railUser">Web</span></div>
+        <nav class="rail-nav">
+          <button class="active" data-section="write" type="button"><span>写作</span></button>
+          <button data-section="continuation" type="button"><span>续写</span></button>
+          <button data-section="chat" type="button"><span>聊天</span></button>
+          <button data-section="notes" type="button"><span>笔记</span></button>
+          <button data-section="settings" type="button"><span>设置</span></button>
+          <button data-section="tokens" type="button"><span>Token</span></button>
+          <button data-section="tasks" type="button"><span>任务</span></button>
+        </nav>
+        <button id="logoutBtn" class="rail-exit" type="button">退出</button>
+      </aside>
 
-      <main class="content">
-        <section id="writePanel" class="panel">
-          <div class="panel-heading"><div><p class="eyebrow">Write</p><h3>写作</h3></div><button id="saveMetaBtn" class="secondary" type="button">保存设定</button></div>
-          <form id="createBookForm" class="inline-form"><input id="newBookTitle" placeholder="新书名" maxlength="120"><button type="submit">创建</button></form>
-          <div id="bookList" class="book-list"></div>
-          <div id="apiNotice" class="notice hidden">文字 API 尚未配置，可到“设置”页配置。</div>
-          <form id="metaForm" class="meta-grid">
-            <label><span>主角</span><textarea id="metaProtagonist" rows="4"></textarea></label>
-            <label><span>世界背景</span><textarea id="metaBackground" rows="5"></textarea></label>
-            <label><span>写作要求</span><textarea id="metaDemand" rows="4"></textarea></label>
-            <label><span>作者规划</span><textarea id="metaPlan" rows="5"></textarea></label>
-            <label><span>题材 key</span><input id="metaGenre"></label>
-            <label><span>风格 key</span><input id="metaTone"></label>
-          </form>
-          <div class="tool-box"><h3>生成下一章</h3><label><span>章节标题</span><input id="genTitle" placeholder="留空自动使用章节号"></label><label><span>本章剧情</span><textarea id="genPlot" rows="5"></textarea></label><label><span>目标字数</span><input id="genWords" type="number" min="500" max="30000" value="3000"></label><button id="generateBtn" class="primary" type="button">经典生成</button></div>
-        </section>
+      <div class="workspace">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">当前项目</p>
+            <h2 id="currentBookTitle">书架</h2>
+          </div>
+          <div id="apiNotice" class="status-pill hidden">未配置文字 API</div>
+        </header>
 
-        <section id="chaptersPanel" class="panel hidden"><div class="panel-heading"><div><p class="eyebrow">Tree</p><h3>章节</h3></div><button id="refreshChaptersBtn" class="secondary" type="button">刷新</button></div><div id="chapterList" class="chapter-list"></div><div id="treeList" class="chapter-list"></div><article id="reader" class="reader hidden"><h3 id="readerTitle"></h3><pre id="readerContent"></pre></article></section>
+        <main class="content">
+          <section id="writePanel" class="section-panel">
+            <div class="workspace-tabs" aria-label="写作子功能">
+              <button class="active" data-workspace="books" type="button">书架/设定</button>
+              <button data-workspace="chapters" type="button">章节管理</button>
+              <button data-workspace="world" type="button">世界书</button>
+              <button data-workspace="agent" type="button">Agent创作</button>
+              <button data-workspace="snapshots" type="button">快照/导出</button>
+            </div>
 
-        <section id="worldPanel" class="panel hidden"><div class="panel-heading"><div><p class="eyebrow">World</p><h3>世界书</h3></div><button id="saveWorldBtn" class="secondary" type="button">保存 JSON</button></div><div id="worldSummary" class="notice"></div><textarea id="worldJson" class="code-area" rows="18"></textarea><div class="button-row"><button id="loadWorldBtn" type="button">读取</button><button id="auditWorldBtn" type="button">审计</button><button id="snapshotBtn" type="button">创建快照</button></div></section>
+            <section id="booksWorkspace" class="workspace-panel">
+              <div class="split-layout">
+                <aside class="list-pane">
+                  <div class="pane-title"><h3>书架</h3><div class="button-row tight"><button id="refreshBooksBtn" type="button">刷新</button><button id="renameBookBtn" type="button">重命名</button><button id="deleteBookBtn" type="button">删除</button></div></div>
+                  <form id="createBookForm" class="inline-form"><input id="newBookTitle" placeholder="新书名" maxlength="120"><button type="submit">创建</button></form>
+                  <div id="bookList" class="stack-list"></div>
+                </aside>
+                <section class="detail-pane">
+                  <div class="pane-title"><h3>小说设定</h3><button id="saveMetaBtn" class="primary" type="button">保存设定</button></div>
+                  <form id="metaForm" class="form-grid">
+                    <label><span>主角</span><textarea id="metaProtagonist" rows="4"></textarea></label>
+                    <label><span>世界背景</span><textarea id="metaBackground" rows="5"></textarea></label>
+                    <label><span>写作要求</span><textarea id="metaDemand" rows="4"></textarea></label>
+                    <label><span>作者规划</span><textarea id="metaPlan" rows="5"></textarea></label>
+                    <label><span>题材 key</span><input id="metaGenre"></label>
+                    <label><span>风格 key</span><input id="metaTone"></label>
+                  </form>
+                  <div class="tool-box"><h3>经典生成下一章</h3><label><span>章节标题</span><input id="genTitle" placeholder="留空自动使用章节号"></label><label><span>本章剧情</span><textarea id="genPlot" rows="5"></textarea></label><label><span>目标字数</span><input id="genWords" type="number" min="500" max="30000" value="3000"></label><div class="button-row"><button id="contextPreviewBtn" type="button">上下文预览</button><button id="generateBtn" class="primary" type="button">经典生成</button></div></div>
+                </section>
+              </div>
+            </section>
 
-        <section id="agentPanel" class="panel hidden"><div class="panel-heading"><div><p class="eyebrow">Agent</p><h3>Agent</h3></div></div><div class="tool-box"><label><span>顾问问题</span><textarea id="advisorMessage" rows="5"></textarea></label><button id="advisorBtn" class="primary" type="button">询问顾问</button></div><div class="tool-box"><label><span>章节标题</span><input id="agentChapterTitle"></label><label><span>章节剧情</span><textarea id="agentPlot" rows="5"></textarea></label><button id="agentPlanBtn" type="button">Agent 规划章节</button></div></section>
+            <section id="chaptersWorkspace" class="workspace-panel hidden">
+              <div class="three-layout chapters-layout">
+                <aside class="list-pane"><div class="pane-title"><h3>章节列表</h3><button id="refreshChaptersBtn" type="button">刷新</button></div><div id="chapterList" class="stack-list"></div></aside>
+                <aside class="list-pane"><div class="pane-title"><h3>章节树</h3><button id="activePathBtn" type="button">活跃路径</button></div><label><span>阅读树</span><select id="treeSelect"></select></label><div id="treeList" class="tree-list"></div></aside>
+                <section class="detail-pane">
+                  <div class="pane-title"><h3 id="readerTitle">章节正文</h3><div class="button-row tight"><button id="switchBranchBtn" type="button">切换分支</button><button id="deleteNodeBtn" type="button">删子树</button></div></div>
+                  <pre id="readerContent" class="reader"></pre>
+                  <div class="tool-box"><h3>编辑正文</h3><label><span>章节标题</span><input id="chapterEditTitle"></label><label><span>正文草稿</span><textarea id="chapterEditText" class="code-area chapter-editor" rows="14"></textarea></label><label><span>节点摘要</span><textarea id="chapterSummaryText" rows="4"></textarea></label><div class="button-row"><button id="saveChapterContentBtn" class="primary" type="button">保存为新版本</button><button id="saveNodeSummaryBtn" type="button">保存摘要</button><button id="contextNodePathBtn" type="button">查看路径</button><button id="nodeRecordBtn" type="button">生成记录</button></div></div>
+                  <div class="tool-box"><h3>版本与操作</h3><div id="versionList" class="stack-list compact"></div><div class="button-row"><button id="deleteVersionBtn" type="button">删除当前版本</button><button id="exportNodeBtn" type="button">导出当前节点</button><button id="extractNodeWorldBtn" type="button">重提当前世界书</button></div><div class="button-row"><button id="rebuildSummaryBtn" type="button">重建摘要</button><button id="rebuildWorldBtn" type="button">重建世界书</button><button id="exportBookBtn" type="button">导出全书</button></div></div>
+                </section>
+              </div>
+            </section>
 
-        <section id="rolePanel" class="panel hidden"><div class="panel-heading"><div><p class="eyebrow">Roleplay</p><h3>角色</h3></div><button id="loadRolesBtn" class="secondary" type="button">刷新</button></div><div id="roleList" class="book-list"></div><div class="tool-box"><label><span>角色名</span><input id="roleName"></label><label><span>身份/设定</span><textarea id="roleIdentity" rows="4"></textarea></label><button id="createRoleBtn" type="button">新建角色</button></div><div id="conversationList" class="chapter-list"></div></section>
+            <section id="worldWorkspace" class="workspace-panel hidden">
+              <div class="three-layout world-layout">
+                <aside class="list-pane"><div class="pane-title"><h3>分类</h3><button id="loadWorldBtn" type="button">读取</button></div><div id="worldCategoryList" class="stack-list compact"></div><div id="worldSummary" class="notice small"></div></aside>
+                <aside class="list-pane"><div class="pane-title"><h3>实体</h3><button id="newWorldEntityBtn" type="button">新增</button></div><div id="worldEntityList" class="stack-list"></div></aside>
+                <section class="detail-pane"><div class="pane-title"><h3 id="worldEntityTitle">世界书详情</h3><div class="button-row tight"><button id="saveWorldEntityBtn" class="primary" type="button">保存实体</button><button id="deleteWorldEntityBtn" type="button">删除</button></div></div><label><span>结构化 JSON</span><textarea id="worldEntityJson" class="code-area" rows="16"></textarea></label><details class="json-drawer"><summary>完整世界书 JSON</summary><textarea id="worldJson" class="code-area" rows="18"></textarea><div class="button-row"><button id="saveWorldBtn" type="button">保存完整 JSON</button><button id="auditWorldBtn" type="button">一致性审计</button><button id="worldAnalyzeBtn" type="button">AI 变更审批</button></div></details><label><span>补充细节 / 变更说明</span><textarea id="worldDetailText" rows="5"></textarea></label><div id="pendingChangeList" class="stack-list compact"></div>
+                  <div class="tool-box world-tools">
+                    <h3>桌面工具</h3>
+                    <div class="inline-form compact"><input id="worldQueryInput" placeholder="关键词 / 设定主题 / 伏笔内容"><input id="worldChapterInput" type="number" min="0" placeholder="来源章"></div>
+                    <div class="button-row"><button id="worldSourceBtn" type="button">来源章</button><button id="worldPreviewBtn" type="button">注入预览</button><button id="worldFactsBtn" type="button">事实历史</button></div>
+                    <div class="button-row"><button id="worldContextPoliciesBtn" type="button">加载策略</button><button id="saveWorldContextPoliciesBtn" type="button">保存策略</button></div>
+                    <div id="worldPolicyList" class="world-policy-list"></div>
+                    <div class="button-row"><button id="worldToggleHiddenBtn" type="button">隐藏/显示</button><button id="worldToggleLockedBtn" type="button">锁定/解锁</button><button id="worldMarkResolvedBtn" type="button">标记解决</button></div>
+                    <div class="button-row"><button id="worldHideLowBtn" type="button">隐藏低优先级</button><button id="worldLockSettingBtn" type="button">锁定设定</button><button id="worldAddForeshadowBtn" type="button">添加伏笔</button></div>
+                    <div class="inline-form compact"><input id="worldMergeTarget" placeholder="保留角色"><input id="worldMergeNames" placeholder="合并角色，逗号分隔"></div>
+                    <div class="button-row"><button id="worldMergeCharactersBtn" type="button">合并角色</button><button id="worldDuplicatesBtn" type="button">重复候选</button><button id="worldRejectDuplicateBtn" type="button">拒绝候选</button><button id="worldUndoMergeBtn" type="button">撤销合并</button></div>
+                    <pre id="worldToolOutput" class="reader compact-reader"></pre>
+                  </div>
+                </section>
+              </div>
+            </section>
 
-        <section id="continuationPanel" class="panel hidden"><div class="panel-heading"><div><p class="eyebrow">Import</p><h3>续写</h3></div></div><label><span>粘贴 TXT/Markdown 原文</span><textarea id="contSource" rows="10"></textarea></label><div class="button-row"><button id="segmentBtn" type="button">分段</button><button id="importSectionsBtn" class="primary" type="button">导入为章节</button></div><div id="sectionList" class="chapter-list"></div></section>
+            <section id="agentWorkspace" class="workspace-panel hidden">
+              <div class="split-layout">
+                <aside class="list-pane"><div class="pane-title"><h3>Agent 状态</h3><button id="refreshAgentStateBtn" type="button">刷新</button></div><div id="agentStateList" class="stack-list"></div></aside>
+                <section class="detail-pane agent-grid">
+                  <div class="tool-box"><h3>顾问问答</h3><label><span>问题</span><textarea id="advisorMessage" rows="5"></textarea></label><button id="advisorBtn" class="primary" type="button">询问顾问</button></div>
+                  <div class="tool-box"><h3>章节规划/生成</h3><label><span>章节标题</span><input id="agentChapterTitle"></label><label><span>章节剧情</span><textarea id="agentPlot" rows="5"></textarea></label><div class="button-row"><button id="agentPlanBtn" type="button">生成规划</button><button id="agentGenerateBtn" class="primary" type="button">按计划生成</button></div><textarea id="agentPlanView" class="code-area" rows="8" placeholder="规划结果"></textarea></div>
+                  <div class="tool-box"><h3>Agent 润色</h3><label><span>节点 ID</span><input id="polishNodeId" placeholder="从章节树选择后自动填入"></label><label><span>润色要求</span><textarea id="polishRequirement" rows="4"></textarea></label><div class="button-row"><button id="polishPlanBtn" type="button">规划润色</button><button id="polishGenerateBtn" type="button">执行润色</button></div></div>
+                  <div class="tool-box"><h3>番外/前传/后续/IF线</h3><label><span>类型</span><select id="extraType"><option value="enrichment">丰富内容</option><option value="if_line">IF线</option><option value="prequel">前传</option><option value="sequel">后传</option></select></label><label><span>起点节点</span><input id="extraStartNodeId"></label><label><span>终点节点</span><input id="extraEndNodeId"></label><label><span>参考节点</span><input id="extraRefNodeId"></label><label><span>标题</span><input id="extraTitle"></label><label><span>剧情/要求</span><textarea id="extraPlot" rows="4"></textarea></label><div class="button-row"><button id="extraPlanBtn" type="button">规划番外</button><button id="extraGenerateBtn" type="button">生成番外</button></div></div>
+                </section>
+              </div>
+            </section>
 
-        <section id="notesPanel" class="panel hidden"><div class="panel-heading"><div><p class="eyebrow">Notes</p><h3>笔记</h3></div><button id="saveNoteBtn" class="secondary" type="button">保存</button></div><div class="inline-form"><input id="notePath" placeholder="notes/idea.md"><button id="loadNoteBtn" type="button">打开</button></div><textarea id="noteContent" class="code-area" rows="18"></textarea><div id="noteTree" class="chapter-list"></div></section>
+            <section id="snapshotsWorkspace" class="workspace-panel hidden">
+              <div class="split-layout"><aside class="list-pane"><div class="pane-title"><h3>快照</h3><button id="loadSnapshotsBtn" type="button">刷新</button></div><div id="snapshotList" class="stack-list"></div></aside><section class="detail-pane"><div class="tool-box"><h3>导出</h3><label><span>格式</span><select id="exportFormat"><option value="txt">TXT</option><option value="md">Markdown</option><option value="html">HTML</option><option value="docx">DOCX</option></select></label><label><span>章节号（留空导出全书）</span><input id="exportChapterNum" type="number" min="1"></label><button id="exportBtn" class="primary" type="button">开始导出</button></div><div id="downloadList" class="stack-list"></div></section></div>
+            </section>
+          </section>
 
-        <section id="settingsPanel" class="panel hidden"><div class="panel-heading"><div><p class="eyebrow">Settings</p><h3>设置</h3></div><button id="saveApiBtn" class="secondary" type="button">保存 API</button></div><div class="notice">敏感设置需要当前密码二次确认，确认有效期 10 分钟。</div><label><span>当前密码</span><input id="confirmPassword" type="password"></label><button id="confirmBtn" type="button">确认敏感操作</button><label><span>文字 API Key</span><input id="apiKey" type="password"></label><label><span>Base URL</span><input id="baseUrl"></label><label><span>模型</span><input id="apiModel"></label><button id="testApiBtn" type="button">测试连接</button></section>
+          <section id="continuationPanel" class="section-panel hidden continuation-shell">
+            <div class="workspace-tabs continuation-tabs" aria-label="续写工作区">
+              <button class="active" data-cont="source" type="button">源文档</button>
+              <button data-cont="segments" type="button">分段确认</button>
+              <button data-cont="analyze" type="button">分析导入</button>
+              <button data-cont="generate" type="button">续写生成</button>
+              <button data-cont="directions" type="button">发展方向</button>
+              <button data-cont="export" type="button">导出</button>
+            </div>
 
-        <section id="tasksPanel" class="panel hidden"><div class="panel-heading"><div><p class="eyebrow">Tasks</p><h3>任务</h3></div><button id="refreshTasksBtn" class="secondary" type="button">刷新</button></div><div class="task-card"><div class="progress-row"><span id="taskStage">暂无任务</span><strong id="taskPercent">0%</strong></div><div class="progress-track"><div id="taskBar"></div></div><p id="taskMessage" class="task-message"></p></div><div id="streamText" class="stream-text"></div><div id="taskList" class="chapter-list"></div></section>
-      </main>
+            <section id="contSourcePanel" class="continuation-step">
+              <div class="split-layout continuation-layout">
+                <aside class="list-pane">
+                  <div class="pane-title"><h3>源文档</h3><button id="loadContinuationRunsBtn" type="button">历史</button></div>
+                  <label><span>上传 TXT / Markdown / HTML，可多选模拟文件夹导入</span><input id="contFiles" class="file-input" type="file" multiple accept=".txt,.md,.markdown,.html,.htm,text/plain,text/markdown,text/html"></label>
+                  <div class="button-row"><button id="uploadContFilesBtn" type="button">读取上传文件</button><button id="segmentBtn" type="button">本地分段</button><button id="agentSegmentBtn" type="button">Agent/AI 分段</button></div>
+                  <div id="contFileList" class="stack-list compact"></div>
+                </aside>
+                <section class="detail-pane">
+                  <div class="pane-title"><h3>粘贴原文</h3><span class="status-pill">不写入书籍</span></div>
+                  <textarea id="contSource" class="long-editor" rows="18" placeholder="粘贴旧文、章节、Markdown 或 HTML 纯文本。上传文件后也会自动汇总到这里。"></textarea>
+                </section>
+              </div>
+            </section>
 
-      <nav class="bottom-nav" aria-label="主导航">
-        <button data-tab="write" class="active" type="button">写作</button><button data-tab="chapters" type="button">章节</button><button data-tab="world" type="button">世界书</button><button data-tab="agent" type="button">Agent</button><button data-tab="role" type="button">角色</button><button data-tab="continuation" type="button">续写</button><button data-tab="notes" type="button">笔记</button><button data-tab="settings" type="button">设置</button><button data-tab="tasks" type="button">任务</button>
-      </nav>
+            <section id="contSegmentsPanel" class="continuation-step hidden">
+              <div class="split-layout continuation-layout">
+                <aside class="list-pane">
+                  <div class="pane-title"><h3>分段列表</h3><button id="importSectionsBtn" class="primary" type="button">仅导入章节</button></div>
+                  <div id="sectionList" class="stack-list"></div>
+                </aside>
+                <section class="detail-pane section-editor">
+                  <div class="pane-title"><h3 id="sectionPreviewTitle">分段预览</h3><div class="button-row tight"><button id="saveSectionBtn" type="button">保存修改</button><button id="deleteSectionBtn" type="button">删除</button></div></div>
+                  <label><span>段落标题</span><input id="sectionTitleEdit"></label>
+                  <label><span>段落正文</span><textarea id="sectionContentEdit" class="long-editor" rows="18"></textarea></label>
+                  <div class="button-row"><button id="mergeSectionBtn" type="button">合并下一段</button><button id="splitSectionBtn" type="button">按光标拆分</button><button id="goAnalyzeBtn" class="primary" type="button">进入分析导入</button></div>
+                </section>
+              </div>
+            </section>
+
+            <section id="contAnalyzePanel" class="continuation-step hidden">
+              <div class="split-layout continuation-layout">
+                <aside class="list-pane">
+                  <div class="pane-title"><h3>分析导入</h3></div>
+                  <label><span>创建或写入书名</span><input id="contAnalysisTitle" placeholder="留空使用当前书籍"></label>
+                  <label class="check-line"><input id="contAnalyzeXpMode" type="checkbox">成人向 XP 模式</label>
+                  <button id="analyzeContinuationBtn" class="primary" type="button">分析旧文并建书</button>
+                </aside>
+                <section class="detail-pane">
+                  <div class="pane-title"><h3>分析结果</h3></div>
+                  <pre id="analysisResult" class="reader"></pre>
+                </section>
+              </div>
+            </section>
+
+            <section id="contGeneratePanel" class="continuation-step hidden">
+              <div class="split-layout continuation-layout">
+                <aside class="list-pane">
+                  <div class="pane-title"><h3>续写参数</h3></div>
+                  <label><span>章节标题</span><input id="contChapterTitle" placeholder="留空自动使用下一章"></label>
+                  <label><span>目标字数</span><input id="contWords" type="number" min="100" max="30000" value="3000"></label>
+                  <label class="check-line"><input id="contXpMode" type="checkbox">成人向 XP 模式</label>
+                  <button id="continuationGenerateBtn" class="primary" type="button">生成续写章节</button>
+                </aside>
+                <section class="detail-pane">
+                  <label><span>续写要求</span><textarea id="contRequirement" rows="6"></textarea></label>
+                  <label><span>指定剧情 / 方向</span><textarea id="contPlot" rows="8"></textarea></label>
+                  <label><span>补充设定</span><textarea id="contSetting" rows="5"></textarea></label>
+                </section>
+              </div>
+            </section>
+
+            <section id="contDirectionsPanel" class="continuation-step hidden">
+              <div class="split-layout continuation-layout">
+                <aside class="list-pane">
+                  <div class="pane-title"><h3>发展方向</h3></div>
+                  <button id="continuationSuggestBtn" class="primary" type="button">AI / Agent 建议发展方向</button>
+                  <div id="directionList" class="stack-list"></div>
+                </aside>
+                <section class="detail-pane">
+                  <div class="pane-title"><h3>我指定剧情</h3></div>
+                  <textarea id="manualDirectionText" class="long-editor" rows="18" placeholder="手写下一章剧情，保存后会合并到续写生成的指定剧情里。"></textarea>
+                  <button id="applyManualDirectionBtn" type="button">填入续写剧情</button>
+                </section>
+              </div>
+            </section>
+
+            <section id="contExportPanel" class="continuation-step hidden">
+              <div class="split-layout continuation-layout">
+                <aside class="list-pane">
+                  <div class="pane-title"><h3>续写运行历史</h3><button id="refreshContinuationRunsBtn" type="button">刷新</button></div>
+                  <div id="continuationRuns" class="stack-list"></div>
+                </aside>
+                <section class="detail-pane">
+                  <div class="tool-box"><h3>章节 / 全书导出</h3><label><span>格式</span><select id="contExportFormat"><option value="txt">TXT</option><option value="md">Markdown</option><option value="html">HTML</option><option value="docx">DOCX</option></select></label><label><span>章节号，留空导出全书</span><input id="contExportChapterNum" type="number" min="1"></label><button id="contExportBtn" class="primary" type="button">生成下载</button></div>
+                </section>
+              </div>
+            </section>
+          </section>
+
+          <section id="chatPanel" class="section-panel hidden">
+            <div class="split-layout chat-layout">
+              <aside class="list-pane">
+                <div class="pane-title"><h3>角色簿</h3><button id="loadRolesBtn" type="button">刷新</button></div>
+                <div id="roleList" class="stack-list"></div>
+                <div class="tool-box"><h3>角色档案</h3><label><span>角色名</span><input id="roleName"></label><label><span>身份</span><input id="roleIdentity"></label><label><span>性格 / 说话风格 / 背景</span><textarea id="roleIdentityDetail" rows="5"></textarea></label><div class="button-row"><button id="createRoleBtn" type="button">新建/更新角色</button><button id="deleteRoleBtn" type="button">删除选中角色</button></div></div>
+                <div class="tool-box"><h3>会话</h3><div id="conversationList" class="stack-list compact"></div><div class="button-row"><button id="deleteConversationBtn" type="button">删除会话</button><button id="exportConversationBtn" type="button">导出会话</button></div></div>
+              </aside>
+              <section class="detail-pane chat-pane">
+                <div class="pane-title"><h3 id="chatTitle">角色聊天</h3><div class="button-row tight"><button id="newChatBtn" type="button">新会话</button><button id="saveConversationBtn" type="button">保存</button></div></div>
+                <div class="chat-branch-row"><label><span>会话分支</span><select id="chatBranchSelect"></select></label><div class="button-row tight"><button id="forkChatBranchBtn" type="button">派生分支</button><button id="deleteChatBranchBtn" type="button">删除分支</button></div></div>
+                <div class="chat-settings-grid">
+                  <label><span>会话标题</span><input id="chatSessionTitle" value="角色对话"></label>
+                  <label><span>模式</span><select id="chatType"><option value="private">私聊</option><option value="group">群聊</option></select></label>
+                  <label><span>回复方式</span><select id="replyMode"><option value="character">角色回复</option><option value="narrator">旁白描述</option></select></label>
+                  <label class="check-line"><input id="narratorEnabled" type="checkbox">群聊启用旁白主持</label>
+                </div>
+                <div class="chat-settings-grid">
+                  <label><span>发送者称呼</span><input id="senderName" value="你"></label>
+                  <label><span>发送者档案</span><textarea id="senderProfile" rows="3"></textarea></label>
+                  <label><span>必回角色 ID，逗号分隔</span><input id="requiredResponderIds" placeholder="群聊可指定"></label>
+                </div>
+                <details class="chat-control-box">
+                  <summary>控制中心</summary>
+                  <div class="chat-settings-grid">
+                    <label><span>发送者档案</span><select id="senderProfileSelect"></select></label>
+                    <div class="button-row tight"><button id="applySenderProfileBtn" type="button">应用档案</button><button id="saveSenderProfileBtn" type="button">保存档案</button><button id="deleteSenderProfileBtn" type="button">删除档案</button></div>
+                    <label><span>场景预设</span><select id="scenePresetSelect"></select></label>
+                    <div class="button-row tight"><button id="applyScenePresetBtn" type="button">应用场景</button><button id="saveScenePresetBtn" type="button">保存场景</button><button id="deleteScenePresetBtn" type="button">删除场景</button></div>
+                  </div>
+                  <div class="chat-settings-grid">
+                    <label><span>时间</span><input id="sceneTime"></label>
+                    <label><span>地点</span><input id="sceneLocation"></label>
+                    <label><span>天气</span><input id="sceneWeather"></label>
+                    <label><span>场景目标</span><input id="sceneObjective"></label>
+                    <label><span>环境描述</span><textarea id="sceneDescription" rows="3"></textarea></label>
+                    <label><span>标签，逗号分隔</span><input id="sceneTags"></label>
+                    <label><span>在场角色 ID，逗号分隔</span><input id="scenePresentIds"></label>
+                  </div>
+                  <div class="chat-settings-grid">
+                    <label><span>允许发言角色 ID</span><input id="turnAllowedIds"></label>
+                    <label><span>阻止发言角色 ID</span><input id="turnBlockedIds"></label>
+                    <label><span>发言顺序 ID</span><input id="turnSpeakerOrder"></label>
+                    <label><span>最多发言角色数</span><input id="turnMaxSpeakers" type="number" min="0"></label>
+                  </div>
+                  <button id="saveChatControlsBtn" type="button">保存控制状态</button>
+                </details>
+                <div id="chatMessages" class="chat-messages"></div>
+                <label><span>输入消息</span><textarea id="chatInput" rows="4"></textarea></label>
+                <div class="button-row"><button id="sendChatBtn" class="primary" type="button">发送</button><button id="refreshConversationsBtn" type="button">刷新会话</button></div>
+              </section>
+            </div>
+          </section>
+
+          <section id="notesPanel" class="section-panel hidden notes-shell">
+            <div class="split-layout notes-layout">
+              <aside class="list-pane">
+                <div class="pane-title"><h3>笔记树</h3><button id="loadNoteTreeBtn" type="button">刷新</button></div>
+                <div class="inline-form compact"><input id="noteFolderPath" placeholder="ideas/world"><button id="createNoteFolderBtn" type="button">新建文件夹</button></div>
+                <div id="noteTree" class="stack-list"></div>
+              </aside>
+              <section class="detail-pane note-editor-pane">
+                <div class="pane-title"><h3 id="noteTitle">Markdown</h3><div class="button-row tight"><button id="saveNoteBtn" class="primary" type="button">保存</button><button id="previewNoteBtn" type="button">预览</button></div></div>
+                <div class="inline-form note-path-row"><input id="notePath" placeholder="notes/idea.md"><button id="loadNoteBtn" type="button">打开</button><button id="renameNoteBtn" type="button">重命名</button><button id="deleteNoteBtn" type="button">删除</button><button id="exportNoteBtn" type="button">导出</button></div>
+                <div class="note-split">
+                  <textarea id="noteContent" class="code-area tall" rows="22"></textarea>
+                  <article id="notePreview" class="note-preview"></article>
+                </div>
+              </section>
+            </div>
+          </section>
+
+          <section id="settingsPanel" class="section-panel hidden">
+            <div class="settings-grid">
+              <section class="tool-box">
+                <h3>敏感操作确认</h3>
+                <p class="muted">API Key、Embedding Key、数据包导入导出、清空数据等操作需要当前密码确认。</p>
+                <label><span>当前密码</span><input id="confirmPassword" type="password"></label>
+                <button id="confirmBtn" type="button">确认 10 分钟</button>
+              </section>
+              <section class="tool-box">
+                <h3>基础 API</h3>
+                <label><span>文字 API Key</span><input id="apiKey" type="password"></label>
+                <label><span>Base URL</span><input id="baseUrl"></label>
+                <label><span>模型</span><input id="apiModel"></label>
+                <div class="button-row"><button id="saveApiBtn" class="primary" type="button">保存 API</button><button id="testApiBtn" type="button">测试连接</button></div>
+              </section>
+              <section class="tool-box global-prompt-box">
+                <h3>全局偏好提示词</h3>
+                <label><span>会注入写作、续写、Agent、摘要和世界书相关模型调用</span><textarea id="globalUserPrompt" rows="8" placeholder="例如：文风、禁用表达、叙事节奏、角色描写偏好"></textarea></label>
+                <button id="saveGlobalPromptBtn" class="primary" type="button">保存全局偏好</button>
+              </section>
+              <section class="tool-box">
+                <h3>模型预设</h3>
+                <label><span>预设列表</span><select id="presetSelect"></select></label>
+                <label><span>名称</span><input id="presetName"></label>
+                <div class="settings-mini-grid">
+                  <label><span>temperature x100</span><input id="presetTemp" type="number" min="0" max="200"></label>
+                  <label><span>top_p x100</span><input id="presetTopP" type="number" min="0" max="100"></label>
+                  <label><span>freq_penalty x100</span><input id="presetFp" type="number" min="-200" max="200"></label>
+                  <label><span>max_tokens</span><input id="presetMaxTokens" type="number" min="1" max="300000" step="512"></label>
+                </div>
+                <div class="button-row"><button id="savePresetBtn" type="button">保存预设</button><button id="deletePresetBtn" type="button">删除预设</button><button id="resetPresetsBtn" type="button">恢复默认</button></div>
+              </section>
+              <section class="tool-box">
+                <h3>主题 / 界面</h3>
+                <label><span>主题</span><select id="themeSelect"><option value="dark">暗色主题</option><option value="light">亮色主题</option></select></label>
+                <button id="saveThemeBtn" type="button">保存主题</button>
+              </section>
+              <section class="tool-box">
+                <h3>Agent 设置</h3>
+                <label><span>生成模式</span><select id="agentGenerationMode"><option value="classic">经典模式</option><option value="agent">Agent 模式</option></select></label>
+                <label class="check-line"><input id="agentSkillsEnabled" type="checkbox">启用 Skills</label>
+                <label><span>Agent 运行时</span><select id="agentRuntimeBackend"><option value="legacy">自研运行时</option><option value="langgraph">LangGraph</option></select></label>
+                <label class="check-line"><input id="agentWebEnabled" type="checkbox">启用受控网页搜索</label>
+                <label><span>搜索 Endpoint</span><input id="agentWebEndpoint"></label>
+                <label><span>搜索 API Key</span><input id="agentWebApiKey" type="password"></label>
+                <label><span>最大结果数</span><input id="agentWebMaxResults" type="number" min="1" max="10"></label>
+              </section>
+              <section class="tool-box">
+                <h3>Embedding / 检索</h3>
+                <label><span>检索后端</span><select id="retrievalBackend"><option value="classic">关键词检索</option><option value="hybrid">LlamaIndex 混合检索</option></select></label>
+                <label><span>Embedding Base URL</span><input id="embeddingBaseUrl"></label>
+                <label><span>Embedding API Key</span><input id="embeddingApiKey" type="password"></label>
+                <label><span>Embedding 模型</span><input id="embeddingModel"></label>
+                <label class="check-line"><input id="frameworkAutoFallback" type="checkbox">框架失败时自动回退</label>
+                <div class="button-row"><button id="saveAgentEmbeddingBtn" class="primary" type="button">保存 Agent/Embedding</button><button id="rebuildRetrievalBtn" type="button">重建当前书索引</button><button id="clearRetrievalBtn" type="button">清空索引</button></div>
+              </section>
+              <section class="tool-box">
+                <h3>安全</h3>
+                <label><span>旧密码</span><input id="oldPassword" type="password"></label>
+                <label><span>新密码</span><input id="newPassword" type="password"></label>
+                <label><span>确认新密码</span><input id="newPasswordConfirm" type="password"></label>
+                <button id="changePasswordBtn" type="button">修改密码并刷新会话</button>
+              </section>
+              <section class="tool-box danger-zone">
+                <h3>数据</h3>
+                <p class="muted">导出/导入会操作当前用户目录下的全部数据。导入 zip 会覆盖同名文件。</p>
+                <label><span>导入用户数据包 ZIP</span><input id="dataImportFile" class="file-input" type="file" accept=".zip,application/zip"></label>
+                <div class="button-row"><button id="exportDataBtn" type="button">导出用户数据包</button><button id="importDataBtn" type="button">导入用户数据包</button><button id="clearDataBtn" type="button">清空当前用户数据</button></div>
+              </section>
+            </div>
+          </section>
+
+          <section id="tokensPanel" class="section-panel hidden"><div class="pane-title"><h3>Token 统计</h3><div class="button-row tight"><button id="refreshTokensBtn" type="button">刷新</button><button id="exportTokensBtn" type="button">导出</button><button id="clearTokensBtn" type="button">清空</button></div></div><div id="tokenSummary" class="metric-grid"></div><div id="tokenTable" class="data-table"></div></section>
+
+          <section id="tasksPanel" class="section-panel hidden">
+            <div class="pane-title"><h3>任务中心</h3><div class="button-row tight"><button id="refreshTasksBtn" type="button">刷新</button><button id="loadDiagnosticsBtn" type="button">诊断</button><button id="exportDiagnosticsBtn" type="button">导出诊断</button></div></div>
+            <div class="task-card"><div class="progress-row"><span id="taskStage">暂无任务</span><strong id="taskPercent">0%</strong></div><div class="progress-track"><div id="taskBar"></div></div><p id="taskMessage" class="task-message"></p></div>
+            <pre id="streamText" class="stream-text"></pre>
+            <div class="split-layout task-diagnostics-layout"><div><div class="pane-title"><h3>任务历史</h3></div><div id="taskList" class="stack-list"></div></div><div><div class="pane-title"><h3>详情 / 诊断</h3></div><pre id="taskDetail" class="stream-text compact-reader"></pre></div></div>
+          </section>
+        </main>
+      </div>
     </section>
     <div id="toast" class="toast hidden"></div>
   </div>
-  <script src="/app.js"></script>
+  <script type="module" src="/app.js"></script>
 </body>
 </html>
