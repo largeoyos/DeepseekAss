@@ -140,6 +140,13 @@ label span { display: block; margin-bottom: 6px; color: var(--muted); font-size:
 .form-grid, .settings-grid, .agent-grid { display: grid; gap: 12px; }
 .stack-list { display: grid; gap: 8px; }
 .stack-list.compact { gap: 6px; }
+.agent-side-block { margin-top: 14px; padding-top: 12px; border-top: 1px solid rgba(31, 37, 34, .12); }
+.agent-side-block h3 { margin: 0 0 8px; font-size: 14px; line-height: 1.25; }
+.agent-side-block > button { width: 100%; margin-top: 8px; }
+.change-scope-row { display: grid; gap: 8px; padding: 10px; border: 1px solid rgba(31, 37, 34, .12); border-radius: 8px; background: rgba(255, 250, 240, .72); }
+.change-scope-row strong { font-size: 13px; }
+.change-scope-row small { display: block; color: var(--muted); line-height: 1.35; }
+.change-scope-row .inline-form { margin: 0; grid-template-columns: minmax(120px, 180px) minmax(0, 1fr); }
 .item-card, .book-card, .chapter-item, .tree-node, .metric-card {
   width: 100%;
   display: flex;
@@ -232,6 +239,12 @@ label span { display: block; margin-bottom: 6px; color: var(--muted); font-size:
 .continuation-shell .status-pill { display: inline-flex; align-items: center; min-height: 28px; }
 .continuation-shell .item-card span:first-child { min-width: 0; }
 .continuation-shell .item-card span:last-child { flex: 0 0 auto; color: var(--accent); font-size: 12px; }
+.continuation-project-box { margin-bottom: 12px; display: grid; gap: 10px; }
+.continuation-project-box .pane-title { margin-bottom: 0; }
+.continuation-quick-box { margin: 10px 0 12px; }
+.continuation-quick-box > button { width: 100%; }
+.continuation-meta-row { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+@media (max-width: 560px) { .continuation-meta-row { grid-template-columns: 1fr; } }
 
 @media (min-width: 880px) {
   .continuation-layout { grid-template-columns: minmax(280px, 380px) minmax(0, 1fr); }
@@ -296,6 +309,8 @@ label span { display: block; margin-bottom: 6px; color: var(--muted); font-size:
 .chat-control-box { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; background: #fbfcfd; }
 .chat-control-box summary { cursor: pointer; font-weight: 700; color: var(--text); margin-bottom: 10px; }
 .chat-control-box[open] summary { margin-bottom: 12px; }
+.chat-memory-panel { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); display: grid; gap: 10px; }
+.chat-memory-panel textarea { min-height: 180px; }
 .chat-control-box .button-row.tight { align-self: end; }
 @media (max-width: 900px) {
   .chat-control-box { padding: 10px; }
@@ -328,6 +343,19 @@ label span { display: block; margin-bottom: 6px; color: var(--muted); font-size:
 
 .chapter-editor { min-height: 320px; resize: vertical; }
 #treeSelect { width: 100%; }
+.chapter-graph-toolbar { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 6px; margin: 8px 0; }
+.chapter-graph-toolbar button { min-height: 30px; padding: 4px 8px; }
+.chapter-graph { min-height: 240px; max-height: 420px; overflow: auto; border: 1px solid rgba(31,37,34,.12); border-radius: 8px; background: linear-gradient(180deg, rgba(255,253,247,.92), rgba(247,241,230,.78)); }
+.chapter-graph svg { display: block; }
+.chapter-edge { fill: none; stroke: rgba(31,37,34,.22); stroke-width: 2; }
+.chapter-edge.active { stroke: #08746f; stroke-width: 3; }
+.chapter-graph-node { cursor: pointer; }
+.chapter-graph-node rect { fill: rgba(255,250,240,.96); stroke: rgba(31,37,34,.22); stroke-width: 1.5; }
+.chapter-graph-node.active rect { fill: rgba(8,116,111,.10); stroke: rgba(8,116,111,.68); }
+.chapter-graph-node.selected rect { fill: rgba(183,90,43,.12); stroke: rgba(183,90,43,.78); stroke-width: 2.2; }
+.chapter-graph-node.virtual rect { stroke-dasharray: 4 4; fill: rgba(247,241,230,.92); }
+.chapter-graph-node text { font-size: 12px; fill: var(--ink); font-weight: 700; pointer-events: none; }
+.chapter-graph-node text.meta { font-size: 11px; fill: var(--muted); font-weight: 500; }
 
 .chat-branch-row { display: grid; grid-template-columns: minmax(180px, 1fr) auto; gap: 10px; align-items: end; margin: 8px 0 12px; }
 .chat-branch-row select { width: 100%; }
@@ -344,3 +372,13 @@ label span { display: block; margin-bottom: 6px; color: var(--muted); font-size:
   .task-actions { justify-content: stretch; }
   .task-actions button { flex: 1 1 80px; }
 }
+
+.token-shell { display: grid; gap: 12px; }
+.token-filter-box { display: grid; gap: 10px; }
+.token-filter-grid { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 10px; }
+.token-group-grid { display: grid; gap: 12px; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.compact-table table { font-size: 12px; }
+@media (max-width: 960px) { .token-filter-grid, .token-group-grid { grid-template-columns: 1fr; } }
+.chat-bubble.selected { outline: 2px solid rgba(80, 140, 255, 0.55); }
+.chat-message-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.chat-message-actions button { min-height: 30px; padding: 4px 8px; font-size: 12px; }

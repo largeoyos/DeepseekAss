@@ -9,6 +9,7 @@ import queue
 import re
 import shutil
 import time
+import uuid
 import zipfile
 from dataclasses import asdict
 from email.parser import BytesParser
@@ -21,8 +22,8 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from core.auth_manager import AuthManager
-from core.character_book import CharacterProfile, character_book_to_dict
-from core.chat_domain import ScenePreset, SceneState, SenderProfile, TurnPolicy, filter_fields
+from core.character_book import CharacterProfile, character_book_to_dict, dict_to_character_book
+from core.chat_domain import ScenePreset, SceneState, SenderProfile, TurnPolicy, filter_fields, change_set_from_dict, apply_memory_change_set, revert_memory_change_set
 from core.novel_manager import NovelMeta
 from core.settings_manager import DEFAULT_PRESETS
 from core.world_bible import audit_world_bible_consistency, dict_to_world_bible, world_bible_to_dict
@@ -42,12 +43,20 @@ class ApiConfigRequest(BaseModel):
     text: dict = Field(default_factory=dict)
     image: dict = Field(default_factory=dict)
 
+class ModelRequest(BaseModel):
+    model: str = Field(min_length=1, max_length=120)
+
 class SettingsUpdateRequest(BaseModel):
     settings: dict = Field(default_factory=dict)
 
+class AgentWebTestRequest(BaseModel):
+    query: str = "DeepseekAss 搜索测试"
 class PresetRequest(BaseModel):
     name: str = Field(min_length=1, max_length=80)
     preset: dict = Field(default_factory=dict)
+
+class PresetCurrentRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
 
 class ThemeRequest(BaseModel):
     theme: str = "dark"
@@ -72,6 +81,7 @@ class MetaUpdateRequest(BaseModel):
     author_plan: str = ""
     genre: str = ""
     style_tone: str = ""
+    xp_mode: bool = False
 
 class GenerateRequest(BaseModel):
     chapter_title: str = ""
@@ -98,6 +108,18 @@ class AgentAdvisorRequest(BaseModel):
     manual_references: list[str] = Field(default_factory=list)
     fiction_context: bool = True
 
+class AgentAdviceSaveRequest(BaseModel):
+    run_id: str = ""
+    text: str
+    title: str = "写作构思"
+
+class AgentSessionCreateRequest(BaseModel):
+    agent_kind: str = "writing_advisor"
+    title: str = ""
+
+class AgentWorkbenchRunRequest(BaseModel):
+    message: str
+    manual_references: list[str] = Field(default_factory=list)
 class ContinuationSegmentRequest(BaseModel):
     text: str
 
@@ -161,6 +183,9 @@ class ScenePresetRequest(BaseModel):
 class ChatControlRequest(BaseModel):
     state: dict = Field(default_factory=dict)
 
+class CharacterBookRequest(BaseModel):
+    book: dict = Field(default_factory=dict)
+
 class ConversationSaveRequest(BaseModel):
     record: dict = Field(default_factory=dict)
 
@@ -183,11 +208,24 @@ class ConversationBranchRequest(BaseModel):
     message_id: str = ""
     title: str = ""
 
+class ConversationMessageRequest(BaseModel):
+    content: str = ""
+    requirement: str = ""
+    title: str = ""
+
+class MemoryChangeEditRequest(BaseModel):
+    changes: list[dict] = Field(default_factory=list)
+    apply_now: bool = False
 class ChapterActionRequest(BaseModel):
     node_id: str = ""
     chapter_num: int | None = None
     version: int | None = None
     requirement: str = ""
+
+class ChapterVariantRequest(BaseModel):
+    mode: str = Field(default="polish", pattern="^(polish|rewrite)$")
+    requirement: str = ""
+    target_words: int = Field(default=3000, ge=0, le=30000)
 
 class ChapterTreeActivateRequest(BaseModel):
     tree_id: str
@@ -279,6 +317,10 @@ class WorldCharacterMergeRequest(BaseModel):
     target_name: str
     merge_names: list[str] = Field(default_factory=list)
 
+class WorldLocationMergeRequest(BaseModel):
+    target_name: str
+    merge_names: list[str] = Field(default_factory=list)
+
 def create_app(runtime: WebRuntime | None = None) -> FastAPI:
     runtime = runtime or WebRuntime()
     app = FastAPI(title="DeepseekAss Web", version="0.3.0")
@@ -342,11 +384,41 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
         ctx.save_settings(settings)
         return {"settings": ctx.settings}
 
+
+    @app.put("/api/settings/model", tags=["settings"])
+    def save_current_model(payload: ModelRequest, ctx: WebUserContext = Depends(current_context)):
+        model = payload.model.strip()
+        if not model:
+            raise HTTPException(status_code=400, detail="模型名称不能为空")
+        current = ctx.load_api_config()
+        text_api = current.setdefault("text", {})
+        text_api["model"] = model
+        ctx.save_api_config(current)
+        settings = ctx.settings_manager.load()
+        settings["last_model"] = model
+        custom_models = list(settings.get("custom_models") or [])
+        if model not in custom_models:
+            custom_models.append(model)
+        settings["custom_models"] = custom_models
+        ctx.settings_manager.save(settings)
+        ctx.reload_settings()
+        return {"model": model, "settings": ctx.settings, "api": masked_api_config(current)}
     @app.get("/api/settings/presets", tags=["settings"])
     def get_presets(ctx: WebUserContext = Depends(current_context)):
         settings = ctx.settings_manager.load()
         return {"presets": settings.get("presets") or {}, "current_preset": settings.get("current_preset") or "", "theme": settings.get("theme", "dark"), "default_names": list(DEFAULT_PRESETS.keys())}
 
+    @app.put("/api/settings/presets/current", tags=["settings"])
+    def set_current_preset(payload: PresetCurrentRequest, ctx: WebUserContext = Depends(current_context)):
+        preset_name = payload.name.strip()
+        settings = ctx.settings_manager.load()
+        presets = settings.get("presets") or {}
+        if preset_name not in presets:
+            raise HTTPException(status_code=404, detail="预设不存在")
+        settings["current_preset"] = preset_name
+        ctx.settings_manager.save(settings)
+        ctx.reload_settings()
+        return {"current_preset": preset_name, "preset": presets[preset_name]}
     @app.put("/api/settings/presets/{name}", tags=["settings"])
     def save_preset(name: str, payload: PresetRequest, ctx: WebUserContext = Depends(current_context)):
         preset_name = (payload.name or name).strip()
@@ -428,6 +500,43 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
         ctx.reload_settings()
         return {"settings": settings}
 
+    @app.post("/api/settings/agent-web/test", tags=["settings"])
+    def test_agent_web_search(payload: AgentWebTestRequest, ctx: WebUserContext = Depends(current_context)):
+        from core.agent.web_search import WebSearchClient, WebSearchConfig, WebSearchError
+
+        settings = ctx.settings_manager.load()
+        config = WebSearchConfig.from_settings(settings)
+        if not config.enabled:
+            raise HTTPException(status_code=400, detail="尚未启用受控网页搜索")
+        if not config.endpoint:
+            raise HTTPException(status_code=400, detail="尚未配置搜索 Endpoint")
+        query = (payload.query or "DeepseekAss 搜索测试").strip() or "DeepseekAss 搜索测试"
+        try:
+            result = WebSearchClient(config).search(query, max_results=config.max_results)
+        except WebSearchError as exc:
+            raise HTTPException(status_code=400, detail=f"搜索测试失败：{exc}") from exc
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"搜索测试失败：{exc}") from exc
+        results = result.get("results", []) if isinstance(result, dict) else []
+        return {"ok": True, "query": query, "count": len(results), "results": results[: config.max_results]}
+
+    @app.post("/api/settings/embedding/test", tags=["settings"])
+    def test_embedding(ctx: WebUserContext = Depends(current_context)):
+        ctx.reload_settings()
+        backend = ctx.novel_manager.retrieval_backend()
+        backend_name = str(getattr(backend, "backend_name", "") or "")
+        if backend_name != "hybrid":
+            raise HTTPException(status_code=400, detail="请先在设置中选择 LlamaIndex 混合检索")
+        embedder = getattr(backend, "_embedder", None)
+        get_query_embedding = getattr(embedder, "get_query_embedding", None)
+        if not callable(get_query_embedding):
+            raise HTTPException(status_code=400, detail="当前检索后端未暴露 Embedding 测试接口")
+        try:
+            vector = get_query_embedding("小说语义检索测试")
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=f"Embedding 测试失败：{exc}") from exc
+        dimension = len(vector) if hasattr(vector, "__len__") else 0
+        return {"ok": True, "backend": backend_name, "dimension": dimension}
     @app.post("/api/books/{title}/retrieval/rebuild", tags=["settings"])
     def rebuild_retrieval(title: str, ctx: WebUserContext = Depends(current_context)):
         def target(handle):
@@ -454,7 +563,22 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
             if update.get("api_key") in {"", "***"}:
                 update.pop("api_key", None)
             current[section].update(update)
+        image = current.get("image") or {}
+        image_values = [str(image.get(key) or "").strip() for key in ("api_key", "base_url", "model")]
+        if any(image_values) and not all(image_values):
+            raise HTTPException(status_code=400, detail="图片 API 如需启用，调用地址、API Key 和模型名称必须全部填写")
         ctx.save_api_config(current)
+        text_api = current.get("text") or {}
+        text_model = str(text_api.get("model") or "").strip()
+        if text_model:
+            settings = ctx.settings_manager.load()
+            settings["last_model"] = text_model
+            custom_models = list(settings.get("custom_models") or [])
+            if text_model not in custom_models:
+                custom_models.append(text_model)
+            settings["custom_models"] = custom_models
+            ctx.settings_manager.save(settings)
+            ctx.reload_settings()
         return {"api": masked_api_config(current)}
 
     @app.post("/api/settings/password", tags=["settings"])
@@ -688,6 +812,170 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
         saved_meta = ctx.novel_manager.ensure_chapter_tree(title)
         return {"ok": True, "node_id": saved_node_id, "version": saved_version, "node": saved_meta.chapter_nodes.get(saved_node_id)}
 
+    @app.post("/api/books/{title}/nodes/{node_id}/variant", tags=["chapters"])
+    def chapter_node_variant(title: str, node_id: str, payload: ChapterVariantRequest, ctx: WebUserContext = Depends(current_context)):
+        api_config, client, model = text_client_and_model(ctx)
+
+        def target(handle):
+            from core.app_services import ChapterGenerationService
+            from utils.prompts import Prompts
+            from utils.supervision import supervise_chapter
+
+            meta = ctx.novel_manager.load_meta(title)
+            tree_meta = ctx.novel_manager.ensure_chapter_tree(title)
+            node = tree_meta.chapter_nodes.get(node_id) or {}
+            if not node or node.get("virtual") or node.get("storage_kind") == "extra_uuid":
+                raise RuntimeError("请选择有效的正文章节节点")
+            content = ctx.novel_manager.read_chapter_node(title, node_id) or ""
+            if not content.strip():
+                raise RuntimeError("当前章节正文为空")
+            chapter_num = int(node.get("chapter_num") or 0)
+            if chapter_num <= 0:
+                raise RuntimeError("节点章节号无效")
+            chapter_title = str(node.get("title") or node.get("display_label") or f"第{chapter_num}章")
+            requirement = (payload.requirement or "").strip()
+            mode = payload.mode if payload.mode in {"polish", "rewrite"} else "polish"
+            handle.progress("准备章节变体", percent=8, stage="准备上下文")
+            if mode == "polish":
+                prompt = (
+                    "请基于以下章节全文进行润色，保留核心剧情，不要输出解释。\n\n"
+                    f"【润色要求】\n{requirement or '提升文笔、节奏和细节表现'}\n\n【原章节】\n{content}"
+                )
+                operation_label = "经典润色"
+                generation_mode = "classic-polish-web"
+                plot = "章节润色"
+            else:
+                summary = ctx.novel_manager.load_smart_summary(
+                    title,
+                    client=client,
+                    next_chapter_num=chapter_num,
+                    model=model,
+                    global_user_prompt=str(ctx.settings.get("global_user_prompt") or ""),
+                )
+                prompt = (
+                    f"请重写第 {chapter_num} 章「{chapter_title}」，不要输出解释。\n\n"
+                    f"【前情提要】\n{summary}\n\n【重写要求】\n{requirement or '按既有设定重新组织本章内容'}\n\n"
+                    f"【旧版本参考】\n{content[:4000]}"
+                )
+                operation_label = "经典重写"
+                generation_mode = "classic-rewrite-web"
+                plot = "章节重写"
+            params = generation_params(ctx.settings, api_config)
+            params["model"] = model
+            handle.progress(f"{operation_label}正文", percent=20, stage="生成正文")
+            candidate = runtime._stream_completion(
+                handle,
+                client,
+                [{"role": "system", "content": Prompts.NOVEL_CHAPTER_WRITING}, {"role": "user", "content": prompt}],
+                params,
+            )
+            if not candidate.strip():
+                raise RuntimeError("模型未返回章节正文")
+            handle.progress("监督修补", percent=62, stage="监督修补")
+            supervision_report = {"status": "not_available"}
+            final_content = candidate
+            try:
+                def supervision_client(_kind):
+                    return client
+                final_content, report = supervise_chapter(
+                    supervision_client,
+                    chapter_content=candidate,
+                    chapter_title=chapter_title,
+                    chapter_outline=plot,
+                    requirements=requirement,
+                    continuity_context=prompt,
+                    target_words=int(payload.target_words or 0),
+                    model=model,
+                    temperature=params["temperature"],
+                    global_user_prompt=str(ctx.settings.get("global_user_prompt") or ""),
+                    xp_mode=bool(meta.xp_mode),
+                    max_repair_rounds=2,
+                )
+                supervision_report = report.to_dict()
+            except Exception as exc:
+                supervision_report = {"status": "warning", "error": str(exc)}
+            handle.progress("保存章节版本", percent=72, stage="保存章节")
+            app_service = ChapterGenerationService(ctx.novel_manager)
+            _path, saved_version = app_service.persist_chapter(
+                title=title,
+                chapter_num=chapter_num,
+                chapter_title=chapter_title,
+                content=final_content,
+                version=ctx.novel_manager.get_next_version(title, chapter_num),
+                parent_id=node.get("parent_id"),
+                prompt=prompt,
+                model=model,
+                temperature=params["temperature"],
+                top_p=params["top_p"],
+                max_tokens=params["max_tokens"],
+                frequency_penalty=params["frequency_penalty"],
+                supervision_report=supervision_report,
+                requirement=requirement,
+                plot=plot,
+                generation_mode=generation_mode,
+            )
+            try:
+                ctx.novel_manager.update_generation_record(
+                    title,
+                    chapter_num,
+                    saved_version,
+                    operation="chapter_polish" if mode == "polish" else "chapter_rewrite",
+                    polish_requirement=requirement if mode == "polish" else "",
+                )
+            except Exception:
+                pass
+            warnings = []
+            handle.progress("生成章节摘要", percent=80, stage="生成摘要")
+            try:
+                ctx.novel_manager.generate_summary(
+                    client,
+                    final_content,
+                    chapter_num,
+                    chapter_title,
+                    model=model,
+                    global_user_prompt=str(ctx.settings.get("global_user_prompt") or ""),
+                    xp_mode=bool(meta.xp_mode),
+                    raise_on_error=True,
+                )
+            except Exception as exc:
+                warnings.append(f"摘要生成失败：{exc}")
+            handle.progress("更新世界书", percent=88, stage="更新世界书")
+            try:
+                app_service.world_bible.sync_chapter(
+                    client,
+                    title,
+                    chapter_num,
+                    saved_version,
+                    final_content,
+                    model=model,
+                    global_user_prompt=str(ctx.settings.get("global_user_prompt") or ""),
+                    xp_mode=bool(meta.xp_mode),
+                )
+            except Exception as exc:
+                warnings.append(f"世界书更新失败：{exc}")
+            handle.progress("创建项目快照", percent=95, stage="创建快照")
+            snapshot_id = ""
+            try:
+                snapshot_id = app_service.create_auto_snapshot(title, chapter_num, saved_version).snapshot_id
+            except Exception as exc:
+                warnings.append(f"快照创建失败：{exc}")
+            result = {
+                "title": title,
+                "node_id": ctx.novel_manager._node_id(chapter_num, saved_version),
+                "chapter_num": chapter_num,
+                "chapter_title": chapter_title,
+                "version": saved_version,
+                "mode": mode,
+                "snapshot_id": snapshot_id,
+                "warnings": warnings,
+                "supervision_report": supervision_report,
+                "preview": final_content[:240],
+            }
+            handle.progress(f"{operation_label}完成", percent=100, stage="完成", data={"result": result})
+            return result
+
+        label = "经典润色" if payload.mode == "polish" else "经典重写"
+        return {"task_id": runtime.start_task(ctx.username, f"{label}《{title}》章节", target, metadata={"kind": f"chapter_{payload.mode}", "book": title, "node_id": node_id}, retryable=True)}
     @app.post("/api/books/{title}/nodes/{node_id}/export", tags=["export"])
     def export_node_task(title: str, node_id: str, payload: NodeExportRequest, ctx: WebUserContext = Depends(current_context)):
         fmt = normalize_fmt(payload.fmt)
@@ -1158,6 +1446,73 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
         ctx.novel_manager.save_world_bible(title, bible, force=True)
         return {"ok": True, "merged": removed_names, "world": world_bible_to_dict(bible)}
 
+    @app.post("/api/books/{title}/world/locations/merge", tags=["world"])
+    def merge_world_locations(title: str, payload: WorldLocationMergeRequest, ctx: WebUserContext = Depends(current_context)):
+        data = world_bible_to_dict(ctx.novel_manager.load_world_bible(title))
+        locations = data.get("locations") or []
+        if not isinstance(locations, list):
+            raise HTTPException(status_code=400, detail="地点区不是列表")
+        def keys(item: dict) -> set[str]:
+            return {str(item.get("id") or "").lower(), str(item.get("name") or "").lower()}
+        target = payload.target_name.strip().lower()
+        base_index = next((idx for idx, item in enumerate(locations) if target and target in keys(item)), -1)
+        if base_index < 0:
+            raise HTTPException(status_code=404, detail="找不到主地点")
+        merge_keys = [name.strip().lower() for name in payload.merge_names if name.strip()]
+        if not merge_keys:
+            raise HTTPException(status_code=400, detail="请输入要合并的地点名或 ID")
+        merge_indices: list[int] = []
+        for key in merge_keys:
+            idx = next((i for i, item in enumerate(locations) if i != base_index and key in keys(item)), -1)
+            if idx >= 0 and idx not in merge_indices:
+                merge_indices.append(idx)
+        if not merge_indices:
+            raise HTTPException(status_code=404, detail="没有找到可合并的地点")
+        base = locations[base_index]
+        removed_names: list[str] = []
+        def append_unique_list(name: str, values: list) -> None:
+            bucket = base.setdefault(name, [])
+            for value in values or []:
+                if value and value not in bucket:
+                    bucket.append(value)
+        def append_text(name: str, value: str, limit: int = 1200) -> None:
+            value = str(value or "").strip()
+            if not value:
+                return
+            current = str(base.get(name) or "").strip()
+            if not current:
+                base[name] = value[:limit]
+            elif value not in current:
+                base[name] = (current + "\n" + value)[:limit]
+        for idx in merge_indices:
+            other = locations[idx]
+            removed_names.append(str(other.get("name") or ""))
+            for field_name, limit in (("description", 1600), ("significance", 900), ("atmosphere", 700)):
+                append_text(field_name, other.get(field_name, ""), limit)
+            append_unique_list("key_details", other.get("key_details") or [])
+            append_unique_list("source_refs", other.get("source_refs") or [])
+            for field_name in ("first_appearance", "source_chapter"):
+                other_value = int(other.get(field_name) or 0)
+                base_value = int(base.get(field_name) or 0)
+                if other_value and (not base_value or other_value < base_value):
+                    base[field_name] = other_value
+            for field_name in ("last_updated_chapter", "last_updated_version"):
+                other_value = int(other.get(field_name) or 0)
+                if other_value and other_value > int(base.get(field_name) or 0):
+                    base[field_name] = other_value
+            base["hidden"] = bool(base.get("hidden")) and bool(other.get("hidden"))
+            base["locked"] = bool(base.get("locked")) or bool(other.get("locked"))
+            try:
+                base["confidence"] = max(float(base.get("confidence") or 0), float(other.get("confidence") or 0))
+            except Exception:
+                pass
+            for fact in data.get("facts") or []:
+                if isinstance(fact, dict) and fact.get("subject_id") == other.get("id"):
+                    fact["subject_id"] = base.get("id")
+        data["locations"] = [item for idx, item in enumerate(locations) if idx not in set(merge_indices)]
+        bible = dict_to_world_bible(data)
+        ctx.novel_manager.save_world_bible(title, bible, force=True)
+        return {"ok": True, "merged": removed_names, "world": world_bible_to_dict(bible)}
     @app.post("/api/books/{title}/agent/advisor", tags=["agent"])
     def ask_advisor(title: str, payload: AgentAdvisorRequest, ctx: WebUserContext = Depends(current_context)):
         api_config = ctx.require_text_api()
@@ -1187,6 +1542,108 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
             return {"plan": plan.to_dict(), "rendered": plan.render()}
         return {"task_id": runtime.start_task(ctx.username, f"Agent 规划《{title}》", target, metadata={"kind": "agent_chapter_plan", "book": title})}
 
+    @app.post("/api/books/{title}/agent/sessions", tags=["agent"])
+    def create_agent_session(title: str, payload: AgentSessionCreateRequest, ctx: WebUserContext = Depends(current_context)):
+        from core.agent.profiles import AGENT_PROFILES
+        from core.agent.repository import AgentRepository
+        kind = payload.agent_kind if payload.agent_kind in AGENT_PROFILES else "writing_advisor"
+        manifest = ctx.novel_manager.ensure_workspace(title)
+        repo = AgentRepository(ctx.novel_manager.get_workspace(title))
+        session = repo.create_session(manifest.book_id, title, kind, payload.title or AGENT_PROFILES[kind].display_name)
+        return {"session": asdict(session)}
+
+    @app.get("/api/books/{title}/agent/sessions/{session_id}", tags=["agent"])
+    def get_agent_session(title: str, session_id: str, ctx: WebUserContext = Depends(current_context)):
+        from core.agent.repository import AgentRepository
+        repo = AgentRepository(ctx.novel_manager.get_workspace(title))
+        session = repo.load_session(session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="Agent 会话不存在")
+        return {"session": asdict(session)}
+
+    @app.post("/api/books/{title}/agent/sessions/{session_id}/run", tags=["agent"])
+    def run_agent_session(title: str, session_id: str, payload: AgentWorkbenchRunRequest, ctx: WebUserContext = Depends(current_context)):
+        api_config, client, model = text_client_and_model(ctx)
+        def target(handle):
+            from core.agent.backends import build_agent_backend
+            from core.agent.domain_tools import build_domain_tool_registry
+            from core.agent.repository import AgentRepository
+            from core.agent.types import AgentRunRequest
+            repo = AgentRepository(ctx.novel_manager.get_workspace(title))
+            session = repo.load_session(session_id)
+            if session is None:
+                raise RuntimeError("Agent 会话不存在")
+            manifest = ctx.novel_manager.ensure_workspace(title)
+            active_run_id = ""
+            backend_holder = {"backend": None}
+            def event_sink(event):
+                nonlocal active_run_id
+                if not active_run_id:
+                    active_run_id = event.run_id
+                    runtime.register_agent_backend(ctx.username, event.run_id, backend_holder["backend"])
+                percent = min(95, 10 + int(event.sequence) * 5)
+                handle.progress(f"Agent {event.event_type}", percent=percent, stage=event.event_type, data={"agent_event": asdict(event)})
+            backend, status = build_agent_backend(
+                settings=ctx.settings,
+                novel_manager=ctx.novel_manager,
+                client=client,
+                tool_registry=build_domain_tool_registry(ctx.novel_manager, ctx.conversation_manager),
+                event_sink=event_sink,
+                skills_enabled=bool(ctx.settings.get("agent_skills_enabled", True)),
+            )
+            backend_holder["backend"] = backend
+            request = AgentRunRequest(manifest.book_id, session_id, session.agent_kind, payload.message, payload.manual_references, model=model, book_title=title)
+            try:
+                run = backend.run(request)
+                if repo.load_run(run.run_id) is None:
+                    repo.save_run(run)
+                result = {"run": asdict(run), "backend": asdict(status)}
+                handle.progress("Agent 运行完成", percent=100, stage=run.status, data={"result": result})
+                return result
+            finally:
+                if active_run_id:
+                    runtime.unregister_agent_backend(active_run_id)
+        return {"task_id": runtime.start_task(ctx.username, f"Agent 工作台《{title}》", target, metadata={"kind": "agent_workbench_run", "book": title, "session_id": session_id}, retryable=True)}
+
+    @app.get("/api/books/{title}/agent/runs/{run_id}", tags=["agent"])
+    def get_agent_run(title: str, run_id: str, ctx: WebUserContext = Depends(current_context)):
+        from core.agent.repository import AgentRepository
+        repo = AgentRepository(ctx.novel_manager.get_workspace(title))
+        run = repo.load_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="Agent 运行不存在")
+        workspace = ctx.novel_manager.get_workspace(title)
+        ledger = workspace.storage.read_json(f"{workspace.agent_root}/ledger/{run_id}.json", default={}) or {}
+        return {"run": asdict(run), "events": ledger.get("events", []) if isinstance(ledger, dict) else []}
+
+    @app.post("/api/books/{title}/agent/runs/{run_id}/{action}", tags=["agent"])
+    def control_agent_run(title: str, run_id: str, action: str, ctx: WebUserContext = Depends(current_context)):
+        if action not in {"pause", "resume", "cancel"}:
+            raise HTTPException(status_code=400, detail="不支持的 Agent 控制动作")
+        if not runtime.control_agent_run(ctx.username, run_id, action):
+            raise HTTPException(status_code=404, detail="Agent 运行不在活动状态")
+        return {"ok": True, "action": action}
+    @app.post("/api/books/{title}/agent/advice", tags=["agent"])
+    def save_agent_advice(title: str, payload: AgentAdviceSaveRequest, ctx: WebUserContext = Depends(current_context)):
+        from core.agent.advisor import WritingAdvisorService
+        artifact_id = WritingAdvisorService(ctx.novel_manager, None, ctx.conversation_manager).save_advice(title, payload.run_id, payload.text, payload.title or "写作构思")
+        advice = WritingAdvisorService(ctx.novel_manager, None, ctx.conversation_manager).list_advice(title)
+        return {"artifact_id": artifact_id, "advice": advice}
+
+    @app.delete("/api/books/{title}/agent/advisor/history/{message_index}", tags=["agent"])
+    def delete_agent_advisor_history_message(title: str, message_index: int, ctx: WebUserContext = Depends(current_context)):
+        from core.agent.advisor import WritingAdvisorService
+        service = WritingAdvisorService(ctx.novel_manager, None, ctx.conversation_manager)
+        if not service.delete_history_message(title, message_index):
+            raise HTTPException(status_code=404, detail="顾问消息不存在")
+        return {"ok": True, "advisor_history": service.list_history(title)}
+
+    @app.delete("/api/books/{title}/agent/advisor/history", tags=["agent"])
+    def clear_agent_advisor_history(title: str, ctx: WebUserContext = Depends(current_context)):
+        from core.agent.advisor import WritingAdvisorService
+        service = WritingAdvisorService(ctx.novel_manager, None, ctx.conversation_manager)
+        removed = service.clear_history(title)
+        return {"ok": True, "removed": removed, "advisor_history": service.list_history(title)}
     @app.get("/api/books/{title}/agent/state", tags=["agent"])
     def agent_state(title: str, ctx: WebUserContext = Depends(current_context)):
         from core.agent.profiles import AGENT_PROFILES
@@ -1207,6 +1664,24 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
         maintenance = WorldBibleMaintenanceService(ctx.novel_manager).list_pending(title)
         return {"profiles": [asdict(item) for item in AGENT_PROFILES.values()], "sessions": sessions, "pending_changes": pending, "artifacts": artifacts[:50], "advice": advice, "advisor_history": history, "pending_world_maintenance": maintenance}
 
+    @app.post("/api/books/{title}/agent/world/maintenance/{maintenance_task_id}/retry", tags=["agent"])
+    def retry_world_maintenance(title: str, maintenance_task_id: str, ctx: WebUserContext = Depends(current_context)):
+        _api, client, _model = text_client_and_model(ctx)
+        def target(handle):
+            from core.agent.world_maintenance import WorldBibleMaintenanceService
+            handle.progress("重试世界书维护", percent=10, stage="准备")
+            result = WorldBibleMaintenanceService(ctx.novel_manager).retry(client, title, maintenance_task_id)
+            data = asdict(result)
+            handle.progress(
+                "世界书维护重试完成" if result.status == "completed" else "世界书维护仍待处理",
+                percent=100 if result.status == "completed" else 95,
+                stage=result.status,
+                data={"result": data},
+            )
+            if result.status != "completed":
+                raise RuntimeError(result.error or "世界书维护仍待处理")
+            return data
+        return {"task_id": runtime.start_task(ctx.username, f"重试世界书维护《{title}》", target, metadata={"kind": "agent_world_maintenance_retry", "book": title, "maintenance_task_id": maintenance_task_id}, retryable=True)}
     @app.post("/api/books/{title}/agent/chapter/generate", tags=["agent"])
     def agent_chapter_generate(title: str, payload: AgentChapterGenerateRequest, ctx: WebUserContext = Depends(current_context)):
         api_config, client, model = text_client_and_model(ctx)
@@ -1429,8 +1904,18 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
                 if section["content"].strip():
                     ctx.novel_manager.save_chapter_version(title, ctx.novel_manager.get_next_chapter_num(title), chapter_title, section["content"])
                 handle.progress(f"已导入 {idx}/{len(sections)}", percent=min(95, 10 + idx * 80 // max(1, len(sections))), stage="续写导入")
-            handle.progress("导入完成", percent=100, stage="完成", data={"result": {"title": title, "count": len(sections)}})
-            return {"title": title, "count": len(sections)}
+            result = {"title": title, "count": len(sections)}
+            save_continuation_run(
+                ctx,
+                title,
+                "continuation_import",
+                input_chars=sum(len(section.get("content") or "") for section in sections),
+                input_summary={"sections": len(sections)},
+                output_summary=result,
+                result=result,
+            )
+            handle.progress("导入完成", percent=100, stage="完成", data={"result": result})
+            return result
         return {"task_id": runtime.start_task(ctx.username, f"导入续写《{payload.title}》", target, metadata={"kind": "continuation_import", "book": payload.title}, retryable=True)}
 
     @app.post("/api/continuation/analyze", tags=["continuation"])
@@ -1493,6 +1978,15 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
             except Exception as exc:
                 warnings.append(f"快照创建失败：{exc}")
             result = {"title": title, "imported": imported, "settings": settings, "meta": serialize_meta(saved_meta), "world_counts": world_counts(world_data), "snapshot_id": snapshot_id, "warnings": warnings}
+            save_continuation_run(
+                ctx,
+                title,
+                "continuation_analyze",
+                input_chars=sum(len(section.get("content") or "") for section in sections),
+                input_summary={"sections": len(sections), "source_text_chars": len(payload.source_text or ""), "xp_mode": bool(payload.xp_mode or meta.xp_mode)},
+                output_summary={"imported": len(imported), "world_counts": result["world_counts"], "settings_fields": sorted(settings.keys()), "snapshot_id": snapshot_id, "warnings": len(warnings)},
+                result=result,
+            )
             handle.progress("分析导入完成", percent=100, stage="完成", data={"result": result})
             return result
         return {"task_id": runtime.start_task(ctx.username, f"分析旧文并建书《{payload.title}》", target, metadata={"kind": "continuation_analyze", "book": payload.title}, retryable=True)}
@@ -1524,7 +2018,17 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
                 directions = AgentContinuationService(ctx.novel_manager, client, skills_enabled=bool(ctx.settings.get("agent_skills_enabled", True))).suggest_directions(setting, plot, model, book_title=title, world_data=world_data, global_user_prompt=str(ctx.settings.get("global_user_prompt") or ""), xp_mode=payload.xp_mode)
             else:
                 directions = suggest_directions(client, setting, plot, model, world_data=world_data, global_user_prompt=str(ctx.settings.get("global_user_prompt") or ""), xp_mode=payload.xp_mode)
-            result = {"directions": directions}
+            result = {"title": title, "directions": directions, "setting": setting, "plot": plot}
+            if title:
+                save_continuation_run(
+                    ctx,
+                    title,
+                    "continuation_direction",
+                    input_chars=len(setting) + len(plot),
+                    input_summary={"setting_chars": len(setting), "plot_chars": len(plot), "xp_mode": bool(payload.xp_mode)},
+                    output_summary={"directions": len(directions)},
+                    result=result,
+                )
             handle.progress("方向建议完成", percent=100, stage="完成", data={"result": result})
             return result
         return {"task_id": runtime.start_task(ctx.username, "续写发展方向建议", target, metadata={"kind": "continuation_suggest", "book": payload.title}, retryable=True)}
@@ -1540,29 +2044,78 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
             from core.app_services import ContinuationService
             from strategies.continuation_strategy import ContinuationStrategy
             title = payload.title.strip() or "续写作品"
-            if title not in ctx.novel_manager.list_books():
-                ctx.novel_manager.create_book(title)
             manager = ctx.novel_manager
+            chapter_mode = bool(payload.chapter_mode)
+            book_exists = title in manager.list_books()
+            if chapter_mode and not book_exists:
+                manager.create_book(title)
+                book_exists = True
             service = ContinuationService(manager)
             params = generation_params(ctx.settings, api_config)
             params["model"] = model
-            meta = manager.load_meta(title)
-            target_info = manager.get_active_generation_target(title)
-            chapter_num = int(target_info.get("chapter_num") or manager.get_next_chapter_num(title))
-            parent_id = target_info.get("parent_id")
-            chapter_title = payload.chapter_title.strip() or f"第{chapter_num}章"
+            meta = manager.load_meta(title) if book_exists else NovelMeta(title=title)
+            if chapter_mode:
+                target_info = manager.get_active_generation_target(title)
+                chapter_num = int(target_info.get("chapter_num") or manager.get_next_chapter_num(title))
+                parent_id = target_info.get("parent_id")
+                chapter_title = payload.chapter_title.strip() or f"第{chapter_num}章"
+            else:
+                target_info = {}
+                chapter_num = int(manager.get_next_chapter_num(title) if book_exists else 1)
+                parent_id = None
+                chapter_title = payload.chapter_title.strip() or "续写草稿"
             xp_mode = bool(payload.xp_mode or meta.xp_mode)
             handle.progress("准备续写上下文", percent=8, stage="准备上下文")
-            context_report = service.build_context(title, chapter_num, chapter_title, payload.source_text, payload.requirement, payload.plot, global_prompt=str(ctx.settings.get("global_user_prompt") or ""), client=client, model=model)
-            prompt = build_continuation_prompt(title=title, chapter_num=chapter_num, chapter_title=chapter_title, source_text=payload.source_text, requirement=payload.requirement, plot=payload.plot, setting=payload.setting, target_words=payload.target_words, meta=meta, context_text=context_report.render(), xp_mode=xp_mode)
+            if book_exists:
+                context_report = service.build_context(title, chapter_num, chapter_title, payload.source_text, payload.requirement, payload.plot, global_prompt=str(ctx.settings.get("global_user_prompt") or ""), client=client, model=model)
+                context_text = context_report.render()
+            else:
+                context_text = "当前未写入书架，仅基于源文档和用户要求生成续写草稿。"
+            prompt = build_continuation_prompt(title=title, chapter_num=chapter_num, chapter_title=chapter_title, source_text=payload.source_text, requirement=payload.requirement, plot=payload.plot, setting=payload.setting, target_words=payload.target_words, meta=meta, context_text=context_text, xp_mode=xp_mode, chapter_mode=chapter_mode)
             messages = [{"role": "system", "content": ContinuationStrategy().get_system_prompt()}, {"role": "user", "content": prompt}]
             handle.progress("生成续写正文", percent=20, stage="生成正文")
             content = runtime._stream_completion(handle, client, messages, params)
             if not content.strip():
                 raise RuntimeError("模型未返回续写正文")
-            handle.progress("保存章节版本", percent=62, stage="保存章节")
-            _path, saved_version = service.persist_chapter(title=title, chapter_num=chapter_num, chapter_title=chapter_title, content=content, version=manager.get_next_version(title, chapter_num), parent_id=parent_id, prompt=prompt, model=model, temperature=params["temperature"], top_p=params["top_p"], max_tokens=params["max_tokens"], frequency_penalty=params["frequency_penalty"], requirement=payload.requirement, plot=payload.plot, generation_mode="continuation-web")
+            handle.progress("监督修补", percent=58, stage="监督修补")
+            supervision_report = {"status": "not_available"}
+            try:
+                from utils.supervision import supervise_chapter
+                def supervision_client(_kind):
+                    return client
+                content, report = supervise_chapter(
+                    supervision_client,
+                    chapter_content=content,
+                    chapter_title=chapter_title,
+                    chapter_outline=payload.plot,
+                    requirements=payload.requirement,
+                    continuity_context=prompt,
+                    target_words=payload.target_words,
+                    model=model,
+                    temperature=params["temperature"],
+                    global_user_prompt=str(ctx.settings.get("global_user_prompt") or ""),
+                    xp_mode=xp_mode,
+                    max_repair_rounds=2,
+                )
+                supervision_report = report.to_dict()
+            except Exception as exc:
+                supervision_report = {"status": "warning", "error": str(exc)}
             warnings = []
+            if not chapter_mode:
+                result = {"title": title, "chapter_num": chapter_num, "chapter_title": chapter_title, "chapter_mode": False, "draft_only": True, "supervision_report": supervision_report, "warnings": warnings, "content": content, "preview": content[:240]}
+                save_continuation_run(
+                    ctx,
+                    title if book_exists else "",
+                    "continuation_draft",
+                    input_chars=len(payload.source_text or "") + len(payload.requirement or "") + len(payload.plot or "") + len(payload.setting or ""),
+                    input_summary={"source_text_chars": len(payload.source_text or ""), "requirement": payload.requirement, "plot": payload.plot, "setting": payload.setting, "target_words": payload.target_words, "chapter_mode": False, "xp_mode": xp_mode},
+                    output_summary={"draft_only": True, "content_chars": len(content), "warnings": len(warnings)},
+                    result=result,
+                )
+                handle.progress("续写草稿完成", percent=100, stage="完成", data={"result": result})
+                return result
+            handle.progress("保存章节版本", percent=64, stage="保存章节")
+            _path, saved_version = service.persist_chapter(title=title, chapter_num=chapter_num, chapter_title=chapter_title, content=content, version=manager.get_next_version(title, chapter_num), parent_id=parent_id, prompt=prompt, model=model, temperature=params["temperature"], top_p=params["top_p"], max_tokens=params["max_tokens"], frequency_penalty=params["frequency_penalty"], supervision_report=supervision_report, requirement=payload.requirement, plot=payload.plot, generation_mode="continuation-web")
             handle.progress("生成章节摘要", percent=74, stage="生成摘要")
             try:
                 manager.generate_summary(client, content, chapter_num, chapter_title, model=model, global_user_prompt=str(ctx.settings.get("global_user_prompt") or ""), xp_mode=xp_mode, raise_on_error=True)
@@ -1579,7 +2132,16 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
                 snapshot_id = service.create_auto_snapshot(title, chapter_num, saved_version).snapshot_id
             except Exception as exc:
                 warnings.append(f"快照创建失败：{exc}")
-            result = {"title": title, "chapter_num": chapter_num, "chapter_title": chapter_title, "version": saved_version, "snapshot_id": snapshot_id, "warnings": warnings, "preview": content[:240]}
+            result = {"title": title, "chapter_num": chapter_num, "chapter_title": chapter_title, "chapter_mode": True, "draft_only": False, "version": saved_version, "snapshot_id": snapshot_id, "warnings": warnings, "preview": content[:240]}
+            save_continuation_run(
+                ctx,
+                title,
+                "continuation_generate",
+                input_chars=len(payload.source_text or "") + len(payload.requirement or "") + len(payload.plot or "") + len(payload.setting or ""),
+                input_summary={"source_text_chars": len(payload.source_text or ""), "requirement": payload.requirement, "plot": payload.plot, "setting": payload.setting, "target_words": payload.target_words, "chapter_mode": True, "xp_mode": xp_mode},
+                output_summary={"chapter_num": chapter_num, "version": saved_version, "snapshot_id": snapshot_id, "warnings": len(warnings)},
+                result=result,
+            )
             handle.progress("续写完成", percent=100, stage="完成", data={"result": result})
             return result
         return {"task_id": runtime.start_task(ctx.username, f"续写生成《{payload.title}》", target, metadata={"kind": "continuation_generate", "book": payload.title}, retryable=True)}
@@ -1587,6 +2149,13 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
     @app.get("/api/continuation/runs", tags=["continuation"])
     def continuation_runs(title: str = Query(default=""), ctx: WebUserContext = Depends(current_context)):
         return {"runs": list_continuation_runs(ctx, title)}
+
+    @app.get("/api/continuation/runs/{run_id}", tags=["continuation"])
+    def continuation_run_detail(run_id: str, title: str = Query(default=""), ctx: WebUserContext = Depends(current_context)):
+        run = load_continuation_run(ctx, run_id, title=title)
+        if not run:
+            raise HTTPException(status_code=404, detail="续写运行记录不存在")
+        return {"run": run}
 
     @app.get("/api/markdown/tree", tags=["markdown"])
     def markdown_tree(ctx: WebUserContext = Depends(current_context)):
@@ -1732,6 +2301,93 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
         ctx.character_book_manager.delete_profile(character_id)
         return {"ok": True}
 
+    @app.get("/api/roleplay/character-book", tags=["roleplay"])
+    def read_character_book(ctx: WebUserContext = Depends(current_context)):
+        return {"book": character_book_to_dict(ctx.character_book_manager.load())}
+
+    @app.put("/api/roleplay/character-book", tags=["roleplay"])
+    def save_character_book(payload: CharacterBookRequest, ctx: WebUserContext = Depends(current_context)):
+        book = dict_to_character_book(payload.book or {})
+        ctx.character_book_manager.save(book)
+        return {"book": character_book_to_dict(ctx.character_book_manager.load())}
+
+    @app.get("/api/roleplay/conversations/{conversation_id}/memory", tags=["roleplay"])
+    def read_conversation_memory(conversation_id: str, ctx: WebUserContext = Depends(current_context)):
+        record = ctx.conversation_manager.load_conversation(conversation_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        record = ensure_roleplay_branches(record)
+        return roleplay_memory_state(ctx, record)
+
+    @app.post("/api/roleplay/conversations/{conversation_id}/memory/{change_set_id}/apply", tags=["roleplay"])
+    def apply_conversation_memory_change(conversation_id: str, change_set_id: str, ctx: WebUserContext = Depends(current_context)):
+        record = ctx.conversation_manager.load_conversation(conversation_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        record = ensure_roleplay_branches(record)
+        idx, change_set = find_memory_change_set(record, change_set_id)
+        if change_set.status == "applied":
+            return roleplay_memory_state(ctx, record)
+        book = ctx.character_book_manager.load()
+        apply_memory_change_set(book, change_set)
+        ctx.character_book_manager.save(book)
+        update_memory_change_set(record, idx, change_set)
+        snapshot_roleplay_character_book(record, book)
+        save_roleplay_record(ctx, record)
+        return roleplay_memory_state(ctx, ctx.conversation_manager.load_conversation(conversation_id) or record)
+
+    @app.post("/api/roleplay/conversations/{conversation_id}/memory/{change_set_id}/reject", tags=["roleplay"])
+    def reject_conversation_memory_change(conversation_id: str, change_set_id: str, ctx: WebUserContext = Depends(current_context)):
+        record = ctx.conversation_manager.load_conversation(conversation_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        record = ensure_roleplay_branches(record)
+        idx, change_set = find_memory_change_set(record, change_set_id)
+        change_set.status = "rejected"
+        update_memory_change_set(record, idx, change_set)
+        save_roleplay_record(ctx, record)
+        return roleplay_memory_state(ctx, ctx.conversation_manager.load_conversation(conversation_id) or record)
+
+    @app.post("/api/roleplay/conversations/{conversation_id}/memory/{change_set_id}/revert", tags=["roleplay"])
+    def revert_conversation_memory_change(conversation_id: str, change_set_id: str, ctx: WebUserContext = Depends(current_context)):
+        record = ctx.conversation_manager.load_conversation(conversation_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        record = ensure_roleplay_branches(record)
+        idx, change_set = find_memory_change_set(record, change_set_id)
+        if change_set.status != "applied":
+            raise HTTPException(status_code=400, detail="只有已应用的记忆变更可以撤销")
+        book = ctx.character_book_manager.load()
+        revert_memory_change_set(book, change_set)
+        ctx.character_book_manager.save(book)
+        update_memory_change_set(record, idx, change_set)
+        snapshot_roleplay_character_book(record, book)
+        save_roleplay_record(ctx, record)
+        return roleplay_memory_state(ctx, ctx.conversation_manager.load_conversation(conversation_id) or record)
+
+    @app.put("/api/roleplay/conversations/{conversation_id}/memory/{change_set_id}", tags=["roleplay"])
+    def edit_conversation_memory_change(conversation_id: str, change_set_id: str, payload: MemoryChangeEditRequest, ctx: WebUserContext = Depends(current_context)):
+        record = ctx.conversation_manager.load_conversation(conversation_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        record = ensure_roleplay_branches(record)
+        idx, change_set = find_memory_change_set(record, change_set_id)
+        update_by_id = {str(item.get("change_id")): item for item in payload.changes if isinstance(item, dict) and item.get("change_id")}
+        for change in change_set.changes:
+            update = update_by_id.get(change.change_id)
+            if not update:
+                continue
+            if "new_value" in update:
+                change.new_value = update.get("new_value")
+            if "reason" in update:
+                change.reason = str(update.get("reason", ""))
+            if "risk" in update:
+                change.risk = str(update.get("risk", change.risk))
+        update_memory_change_set(record, idx, change_set)
+        save_roleplay_record(ctx, record)
+        if payload.apply_now:
+            return apply_conversation_memory_change(conversation_id, change_set_id, ctx)
+        return roleplay_memory_state(ctx, ctx.conversation_manager.load_conversation(conversation_id) or record)
     @app.get("/api/roleplay/senders", tags=["roleplay"])
     def list_sender_profiles(ctx: WebUserContext = Depends(current_context)):
         return {"profiles": [asdict(item) for item in ctx.sender_profile_manager.load()]}
@@ -1947,6 +2603,118 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
         save_roleplay_record(ctx, record)
         return {"ok": True, "branches": record.get("branches") or [], "active_branch_id": record.get("active_branch_id") or "main"}
 
+
+    @app.get("/api/roleplay/conversations/{conversation_id}/messages/{message_id}", tags=["roleplay"])
+    def read_conversation_message(conversation_id: str, message_id: str, ctx: WebUserContext = Depends(current_context)):
+        record = ctx.conversation_manager.load_conversation(conversation_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        record = ensure_roleplay_branches(record)
+        branch = active_roleplay_branch(record)
+        message = next((item for item in branch.get("messages", []) if item.get("message_id") == message_id), None)
+        if not message:
+            raise HTTPException(status_code=404, detail="消息不存在")
+        related = [item for item in record.get("memory_change_sets") or [] if message_id in (item.get("source_message_ids") or [])]
+        return {"message": message, "source": {"message_id": message.get("message_id"), "source_message_id": message.get("source_message_id", ""), "branch_id": message.get("branch_id", branch.get("branch_id", "main")), "turn_index": message.get("turn_index", 0)}, "memory_change_sets": related}
+
+    @app.put("/api/roleplay/conversations/{conversation_id}/messages/{message_id}", tags=["roleplay"])
+    def edit_conversation_message(conversation_id: str, message_id: str, payload: ConversationMessageRequest, ctx: WebUserContext = Depends(current_context)):
+        record = ctx.conversation_manager.load_conversation(conversation_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        record = ensure_roleplay_branches(record)
+        branch = active_roleplay_branch(record)
+        messages = list(branch.get("messages") or [])
+        index = next((idx for idx, item in enumerate(messages) if item.get("message_id") == message_id), -1)
+        if index < 0:
+            raise HTTPException(status_code=404, detail="消息不存在")
+        messages[index]["content"] = payload.content.strip()
+        branch["messages"] = messages
+        record["structured_messages"] = list(messages)
+        save_roleplay_record(ctx, record)
+        return {"conversation": ctx.conversation_manager.load_conversation(conversation_id) or record}
+
+    @app.delete("/api/roleplay/conversations/{conversation_id}/messages/{message_id}", tags=["roleplay"])
+    def delete_conversation_message(conversation_id: str, message_id: str, ctx: WebUserContext = Depends(current_context)):
+        record = ctx.conversation_manager.load_conversation(conversation_id)
+        if not record:
+            raise HTTPException(status_code=404, detail="会话不存在")
+        record = ensure_roleplay_branches(record)
+        branch = active_roleplay_branch(record)
+        messages = list(branch.get("messages") or [])
+        kept = [item for item in messages if item.get("message_id") != message_id]
+        if len(kept) == len(messages):
+            raise HTTPException(status_code=404, detail="消息不存在")
+        branch["messages"] = kept
+        record["structured_messages"] = list(kept)
+        save_roleplay_record(ctx, record)
+        return {"conversation": ctx.conversation_manager.load_conversation(conversation_id) or record}
+
+    @app.post("/api/roleplay/conversations/{conversation_id}/messages/{message_id}/fork", tags=["roleplay"])
+    def fork_conversation_message(conversation_id: str, message_id: str, payload: ConversationMessageRequest, ctx: WebUserContext = Depends(current_context)):
+        return fork_conversation_branch(conversation_id, ConversationBranchRequest(message_id=message_id, title=payload.title), ctx)
+
+    @app.post("/api/roleplay/conversations/{conversation_id}/messages/{message_id}/regenerate", tags=["roleplay"])
+    def regenerate_conversation_message(conversation_id: str, message_id: str, payload: ConversationMessageRequest, ctx: WebUserContext = Depends(current_context)):
+        try:
+            api_config, client, model = text_client_and_model(ctx)
+        except WebApiConfigError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+        def target(handle):
+            from core.chat_domain import ChatMessage, parse_structured_reply, structured_to_legacy_messages, now_text, new_id
+            from strategies.role_play_strategy import RolePlayStrategy
+            record = ctx.conversation_manager.load_conversation(conversation_id)
+            if not record:
+                raise RuntimeError("会话不存在")
+            record = ensure_roleplay_branches(record)
+            branch = active_roleplay_branch(record)
+            messages = list(branch.get("messages") or [])
+            index = next((idx for idx, item in enumerate(messages) if item.get("message_id") == message_id), -1)
+            if index < 0:
+                raise RuntimeError("消息不存在")
+            original = messages[index]
+            if original.get("role") != "assistant":
+                raise RuntimeError("只能重生成角色发言")
+            fork_at = messages[index - 1].get("message_id", "") if index > 0 else message_id
+            fork_payload = ConversationBranchRequest(message_id=fork_at, title=payload.title or f"重生成-{original.get('speaker_name') or '角色'}")
+            branch_data = fork_conversation_branch(conversation_id, fork_payload, ctx)["branch"]
+            branch_messages = [ChatMessage(**filter_chat_message(item)) for item in branch_data.get("messages") or []]
+            speaker_name = original.get("speaker_name") or "角色"
+            speaker_id = original.get("speaker_id") or "assistant"
+            strategy = RolePlayStrategy()
+            book = ctx.character_book_manager.load()
+            strategy.character_book = book
+            strategy.participant_character_ids = [speaker_id]
+            strategy.primary_character_id = speaker_id
+            strategy.sender_name = record.get("sender_name") or "你"
+            strategy.sender_profile = record.get("sender_profile") or ""
+            legacy = structured_to_legacy_messages(branch_messages, strategy.get_system_prompt())
+            legacy.append({"role": "user", "content": f"只让角色「{speaker_name}」重新回复上一轮。要求：{payload.requirement or '严格符合人物设定和当前视角'}。输出合法 JSON messages 数组。"})
+            params = generation_params(ctx.settings, api_config)
+            handle.progress("角色单条消息重生成中", percent=35, stage="生成回复")
+            response = client.chat.completions.create(model=model, messages=legacy, temperature=params["temperature"], top_p=params["top_p"], max_tokens=params["max_tokens"], frequency_penalty=params["frequency_penalty"])
+            raw = response.choices[0].message.content or ""
+            turn = max([int(getattr(item, "turn_index", 0) or 0) for item in branch_messages] or [0])
+            generated = parse_structured_reply(raw, branch_data.get("branch_id") or "main", turn, {speaker_name: speaker_id})
+            generated = [item for item in generated if item.speaker_id == speaker_id or item.speaker_name == speaker_name]
+            if not generated:
+                generated = [ChatMessage(message_id=new_id("msg"), branch_id=branch_data.get("branch_id") or "main", role="assistant", speaker_id=speaker_id, speaker_name=speaker_name, content=raw, turn_index=turn, created_at=now_text())]
+            branch_data["messages"] = [*branch_data.get("messages", []), *[asdict(item) for item in generated]]
+            updated = ctx.conversation_manager.load_conversation(conversation_id) or record
+            updated = ensure_roleplay_branches(updated)
+            for item in updated.get("branches") or []:
+                if item.get("branch_id") == branch_data.get("branch_id"):
+                    item.update(branch_data)
+                    break
+            updated["active_branch_id"] = branch_data.get("branch_id") or updated.get("active_branch_id") or "main"
+            updated["structured_messages"] = list(branch_data.get("messages") or [])
+            save_roleplay_record(ctx, updated)
+            result = {"conversation": ctx.conversation_manager.load_conversation(conversation_id) or updated, "messages": branch_data.get("messages") or [], "assistant_messages": [asdict(item) for item in generated]}
+            handle.progress("角色消息重生成完成", percent=100, stage="完成", data={"result": result})
+            return result
+        return {"task_id": runtime.start_task(ctx.username, f"重生成角色消息《{conversation_id}》", target, metadata={"kind": "roleplay_message_regenerate", "conversation_id": conversation_id, "message_id": message_id}, retryable=True)}
+
     @app.post("/api/roleplay/conversations/{conversation_id}/export", tags=["roleplay"])
     def export_roleplay_conversation(conversation_id: str, payload: ConversationExportRequest, ctx: WebUserContext = Depends(current_context)):
         fmt = normalize_fmt(payload.fmt)
@@ -2153,10 +2921,11 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
         return FileResponse(item["path"], media_type=item.get("media_type"), filename=item.get("filename"))
 
     @app.get("/api/token-log", tags=["diagnostics"])
-    def token_log(ctx: WebUserContext = Depends(current_context)):
-        entries = [asdict(item) for item in ctx.token_log_manager.list_entries()]
+    def token_log(q: str = "", model: str = "", operation: str = "", date_from: str = "", date_to: str = "", ctx: WebUserContext = Depends(current_context)):
+        all_entries = [asdict(item) for item in ctx.token_log_manager.list_entries()]
+        entries = filter_token_entries(all_entries, q=q, model=model, operation=operation, date_from=date_from, date_to=date_to)
         summary = token_summary(entries)
-        return {"entries": entries, "total": len(entries), "summary": summary}
+        return {"entries": entries, "total": len(entries), "overall_total": len(all_entries), "summary": summary, "facets": token_facets(all_entries), "filters": {"q": q, "model": model, "operation": operation, "date_from": date_from, "date_to": date_to}}
 
     @app.delete("/api/token-log", tags=["diagnostics"])
     def clear_token_log(ctx: WebUserContext = Depends(current_context)):
@@ -2164,12 +2933,13 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
         return {"ok": True}
 
     @app.post("/api/token-log/export", tags=["diagnostics"])
-    def export_token_log(ctx: WebUserContext = Depends(current_context)):
+    def export_token_log(q: str = "", model: str = "", operation: str = "", date_from: str = "", date_to: str = "", ctx: WebUserContext = Depends(current_context)):
         runtime.cleanup_exports(ctx)
-        entries = [asdict(item) for item in ctx.token_log_manager.list_entries()]
+        all_entries = [asdict(item) for item in ctx.token_log_manager.list_entries()]
+        entries = filter_token_entries(all_entries, q=q, model=model, operation=operation, date_from=date_from, date_to=date_to)
         path = os.path.join(ctx.export_root, "token_log.json")
         with open(path, "w", encoding="utf-8") as f:
-            json.dump({"entries": entries, "summary": token_summary(entries)}, f, ensure_ascii=False, indent=2)
+            json.dump({"entries": entries, "summary": token_summary(entries), "filters": {"q": q, "model": model, "operation": operation, "date_from": date_from, "date_to": date_to}}, f, ensure_ascii=False, indent=2)
         download = runtime.register_download(ctx.username, path, "token_log.json", "application/json")
         return {"download": download}
 
@@ -2246,6 +3016,14 @@ def model_data(model: BaseModel) -> dict:
     return model.dict()
 
 
+def active_roleplay_branch(record: dict) -> dict:
+    record = ensure_roleplay_branches(record)
+    active_id = record.get("active_branch_id") or "main"
+    branch = next((item for item in record.get("branches", []) if item.get("branch_id") == active_id), None)
+    if not branch:
+        raise HTTPException(status_code=404, detail="活跃分支不存在")
+    return branch
+
 def ensure_roleplay_branches(record: dict) -> dict:
     record = dict(record or {})
     branches = list(record.get("branches") or [])
@@ -2304,6 +3082,43 @@ def save_roleplay_record(ctx: WebUserContext, record: dict) -> None:
         narrator_enabled=bool(record.get("narrator_enabled", False)),
     )
 
+def find_memory_change_set(record: dict, change_set_id: str):
+    for index, item in enumerate(record.get("memory_change_sets") or []):
+        if item.get("change_set_id") == change_set_id:
+            return index, change_set_from_dict(item)
+    raise HTTPException(status_code=404, detail="记忆变更不存在")
+
+
+def update_memory_change_set(record: dict, index: int, change_set) -> None:
+    changes = list(record.get("memory_change_sets") or [])
+    while len(changes) <= index:
+        changes.append({})
+    changes[index] = asdict(change_set)
+    record["memory_change_sets"] = changes
+
+
+def snapshot_roleplay_character_book(record: dict, book) -> None:
+    snapshot = character_book_to_dict(book)
+    record["character_book_snapshot"] = snapshot
+    record = ensure_roleplay_branches(record)
+    active_id = record.get("active_branch_id") or "main"
+    for branch in record.get("branches") or []:
+        if branch.get("branch_id") == active_id:
+            branch["character_state_snapshot"] = snapshot
+            branch["timeline"] = list(record.get("timeline") or branch.get("timeline") or [])
+            break
+
+
+def roleplay_memory_state(ctx: WebUserContext, record: dict) -> dict:
+    record = ensure_roleplay_branches(record)
+    return {
+        "conversation_id": record.get("conversation_id", ""),
+        "active_branch_id": record.get("active_branch_id", "main"),
+        "timeline": record.get("timeline") or [],
+        "memory_change_sets": record.get("memory_change_sets") or [],
+        "character_book_snapshot": record.get("character_book_snapshot") or {},
+        "book": character_book_to_dict(ctx.character_book_manager.load()),
+    }
 def roleplay_control_state(record: dict) -> dict:
     return {
         "conversation_id": record.get("conversation_id", ""),
@@ -2395,16 +3210,59 @@ def build_diagnostics_payload(runtime: WebRuntime, ctx: WebUserContext) -> dict:
         ],
     }
 
+def filter_token_entries(entries: list[dict], *, q: str = "", model: str = "", operation: str = "", date_from: str = "", date_to: str = "") -> list[dict]:
+    keyword = (q or "").strip().lower()
+    model_filter = (model or "").strip()
+    operation_filter = (operation or "").strip()
+    start = (date_from or "").strip()
+    end = (date_to or "").strip()
+    result = []
+    for row in entries:
+        stamp = str(row.get("timestamp") or "")
+        day = stamp[:10]
+        if model_filter and str(row.get("model") or "") != model_filter:
+            continue
+        if operation_filter and str(row.get("operation") or "") != operation_filter:
+            continue
+        if start and day < start:
+            continue
+        if end and day > end:
+            continue
+        if keyword:
+            haystack = " ".join(str(row.get(key) or "") for key in ("timestamp", "operation", "direction", "strategy", "model", "content_preview", "usage_status")).lower()
+            if keyword not in haystack:
+                continue
+        result.append(row)
+    return result
+
+
+def token_facets(entries: list[dict]) -> dict:
+    models = sorted({str(row.get("model") or "未指定") for row in entries})
+    operations = sorted({str(row.get("operation") or "未指定") for row in entries})
+    return {"models": models, "operations": operations}
+def estimate_token_cost(prompt_tokens: int, completion_tokens: int, model: str = "") -> dict:
+    return {
+        "currency": "USD",
+        "input_cost": 0.0,
+        "output_cost": 0.0,
+        "total_cost": 0.0,
+        "pricing": "not_configured",
+        "model": model or "mixed",
+    }
+
+
 def token_summary(entries: list[dict]) -> dict:
     totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
     by_model: dict[str, dict] = {}
     by_operation: dict[str, dict] = {}
     by_date: dict[str, dict] = {}
+
     def add(bucket: dict, key: str, row: dict) -> None:
         item = bucket.setdefault(key or "未分类", {"count": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
         item["count"] += 1
         for name in totals:
             item[name] += int(row.get(name) or 0)
+
     for row in entries:
         if row.get("usage_status") == "ok":
             for name in totals:
@@ -2412,8 +3270,19 @@ def token_summary(entries: list[dict]) -> dict:
         add(by_model, str(row.get("model") or "未指定"), row)
         add(by_operation, str(row.get("operation") or "未指定"), row)
         add(by_date, str(row.get("timestamp") or "")[:10], row)
-    return {"totals": totals, "by_model": by_model, "by_operation": by_operation, "by_date": by_date}
 
+    for model_name, item in by_model.items():
+        item["estimated_cost"] = estimate_token_cost(item.get("prompt_tokens", 0), item.get("completion_tokens", 0), model_name)
+    for bucket in (by_operation, by_date):
+        for item in bucket.values():
+            item["estimated_cost"] = estimate_token_cost(item.get("prompt_tokens", 0), item.get("completion_tokens", 0))
+    return {
+        "totals": totals,
+        "estimated_cost": estimate_token_cost(totals["prompt_tokens"], totals["completion_tokens"]),
+        "by_model": by_model,
+        "by_operation": by_operation,
+        "by_date": by_date,
+    }
 
 def section_dicts(sections) -> list[dict]:
     return [{"title": str(title or f"分段 {idx}").strip(), "content": str(content or "").strip()} for idx, (title, content) in enumerate(sections or [], 1) if str(content or "").strip()]
@@ -2495,11 +3364,17 @@ def world_counts(world_data: dict) -> dict:
     return {key: len(world_data.get(key) or []) for key in keys if isinstance(world_data.get(key), list)}
 
 
-def build_continuation_prompt(*, title: str, chapter_num: int, chapter_title: str, source_text: str, requirement: str, plot: str, setting: str, target_words: int, meta: NovelMeta, context_text: str, xp_mode: bool = False) -> str:
-    parts = [
-        f"请基于旧文和当前书籍资料，为小说《{title}》续写第{chapter_num}章《{chapter_title}》。",
-        f"目标字数：约 {target_words} 字。正文必须自然承接前文，保留人物关系、语气、伏笔和世界规则。",
-    ]
+def build_continuation_prompt(*, title: str, chapter_num: int, chapter_title: str, source_text: str, requirement: str, plot: str, setting: str, target_words: int, meta: NovelMeta, context_text: str, xp_mode: bool = False, chapter_mode: bool = True) -> str:
+    if chapter_mode:
+        parts = [
+            f"请基于旧文和当前书籍资料，为小说《{title}》续写第{chapter_num}章《{chapter_title}》。",
+            f"目标字数：约 {target_words} 字。正文必须自然承接前文，保留人物关系、语气、伏笔和世界规则。",
+        ]
+    else:
+        parts = [
+            f"请基于旧文和当前书籍资料，为小说《{title}》生成一份续写草稿《{chapter_title}》。",
+            f"目标字数：约 {target_words} 字。正文必须自然承接前文，保留人物关系、语气、伏笔和世界规则。不要写入章节树，也不要假定这是正式章节版本。",
+        ]
     if setting.strip():
         parts.append(f"用户补充设定：\n{setting.strip()}")
     if requirement.strip():
@@ -2515,8 +3390,31 @@ def build_continuation_prompt(*, title: str, chapter_num: int, chapter_title: st
         parts.append(f"源文档末尾参考：\n{source_text[-6000:]}")
     if xp_mode:
         parts.append("成人向 XP 模式已开启：在合法合规前提下保留用户设定的题材尺度、氛围和人物欲望驱动。")
-    parts.append("只输出章节正文，不要输出解释、提纲、Markdown 标题或附加说明。")
+    parts.append("只输出续写正文，不要输出解释、提纲、Markdown 标题或附加说明。")
     return "\n\n".join(parts)
+
+def save_continuation_run(ctx: WebUserContext, book_title: str, task: str, *, input_chars: int = 0, input_summary: dict | None = None, output_summary: dict | None = None, result: dict | None = None, status: str = "completed", selected_skills: list | None = None) -> dict:
+    from core.agent.types import now_iso
+    title = (book_title or "").strip()
+    if not title:
+        return {}
+    workspace = ctx.novel_manager.get_workspace(title)
+    run_id = f"cont_web_{uuid.uuid4().hex}"
+    record = {
+        "schema_version": 1,
+        "run_id": run_id,
+        "task": task,
+        "book_title": title,
+        "selected_skills": selected_skills or [],
+        "input_chars": int(input_chars or 0),
+        "input_summary": input_summary or {},
+        "output_summary": output_summary or {},
+        "result": result or {},
+        "status": status,
+        "created_at": now_iso(),
+    }
+    workspace.storage.write_json(f"{workspace.agent_root}/continuation_runs/{run_id}.json", record)
+    return record
 
 
 def list_continuation_runs(ctx: WebUserContext, title: str = "") -> list[dict]:
@@ -2532,12 +3430,32 @@ def list_continuation_runs(ctx: WebUserContext, title: str = "") -> list[dict]:
                     continue
                 data = workspace.storage.read_json(rel, default={}) or {}
                 data.setdefault("book_title", book)
+                data.setdefault("schema_version", 1)
                 runs.append(data)
         except Exception:
             continue
     runs.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
     return runs[:100]
 
+
+def load_continuation_run(ctx: WebUserContext, run_id: str, *, title: str = "") -> dict | None:
+    run_name = safe_name(os.path.basename(str(run_id or "")))
+    if not run_name:
+        return None
+    books = [title] if title else ctx.novel_manager.list_books()
+    for book in books:
+        if not book:
+            continue
+        try:
+            workspace = ctx.novel_manager.get_workspace(book)
+            data = workspace.storage.read_json(f"{workspace.agent_root}/continuation_runs/{run_name}.json", default=None)
+            if data:
+                data.setdefault("book_title", book)
+                data.setdefault("schema_version", 1)
+                return data
+        except Exception:
+            continue
+    return None
 
 def filter_chat_message(data: dict) -> dict:
     from core.chat_domain import ChatMessage
@@ -2612,13 +3530,3 @@ def write_node_export(path: str, fmt: str, title: str, node: dict, content: str)
 
 
 app = create_app()
-
-
-
-
-
-
-
-
-
-

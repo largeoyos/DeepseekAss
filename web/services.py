@@ -101,7 +101,7 @@ class WebUserContext:
         self._sync_global_prompt_from_user_prefs()
         self.bookshelf_root = os.path.join(self.user_dir, "bookshelf")
         self.novel_manager = NovelManager(self.bookshelf_root, crypto=AuthManager, enc_key=enc_key)
-        self.novel_manager.configure_retrieval(self.settings.get("retrieval") or {})
+        self.novel_manager.configure_retrieval(self.settings)
         self.conversation_manager = ConversationManager(
             os.path.join(self.user_dir, "conversations"), crypto=AuthManager, enc_key=enc_key
         )
@@ -142,7 +142,7 @@ class WebUserContext:
     def reload_settings(self) -> None:
         self.settings = self.settings_manager.load()
         self._sync_global_prompt_from_user_prefs()
-        self.novel_manager.configure_retrieval(self.settings.get("retrieval") or {})
+        self.novel_manager.configure_retrieval(self.settings)
 
     def load_api_config(self) -> dict:
         self.reload_settings()
@@ -177,7 +177,12 @@ class WebUserContext:
         settings = self.settings_manager.load()
         text = config.get("text") or {}
         if text.get("model"):
-            settings["last_model"] = text.get("model")
+            model = text.get("model")
+            settings["last_model"] = model
+            custom_models = list(settings.get("custom_models") or [])
+            if model not in custom_models:
+                custom_models.append(model)
+            settings["custom_models"] = custom_models
             self.settings_manager.save(settings)
             self.settings = settings
 
@@ -255,6 +260,8 @@ class WebRuntime:
         self._generation_locks: dict[str, threading.Lock] = {}
         self._downloads: dict[str, dict] = {}
         self._download_lock = threading.Lock()
+        self._agent_backends: dict[str, dict] = {}
+        self._agent_lock = threading.Lock()
 
     def login(self, username: str, password: str) -> dict:
         ok, enc_key = AuthManager.authenticate(username, password)
@@ -319,6 +326,27 @@ class WebRuntime:
         self._task_users[handle.task_id] = username
         return handle.task_id
 
+    def register_agent_backend(self, username: str, run_id: str, backend) -> None:
+        with self._agent_lock:
+            self._agent_backends[run_id] = {"username": username, "backend": backend}
+
+    def unregister_agent_backend(self, run_id: str) -> None:
+        with self._agent_lock:
+            self._agent_backends.pop(run_id, None)
+
+    def control_agent_run(self, username: str, run_id: str, action: str) -> bool:
+        with self._agent_lock:
+            entry = self._agent_backends.get(run_id)
+        if not entry or entry.get("username") != username:
+            return False
+        backend = entry.get("backend")
+        if action == "pause":
+            return bool(backend.pause(run_id))
+        if action == "resume":
+            return bool(backend.resume(run_id, {"resume": True}))
+        if action == "cancel":
+            return bool(backend.cancel(run_id))
+        raise ValueError("不支持的 Agent 控制动作")
     def register_download(self, username: str, path: str, filename: str = "", media_type: str = "application/octet-stream") -> dict:
         download_id = f"download_{secrets.token_urlsafe(18)}"
         with self._download_lock:
@@ -592,10 +620,10 @@ def generation_params(settings: dict, api_config: dict) -> dict:
     max_tokens = int(preset.get("max_tokens") or NovelStrategy().recommended_max_tokens)
     return {
         "model": text.get("model") or settings.get("last_model") or Config.MODEL_V4_FLASH,
-        "temperature": _scale_preset_value(preset.get("temperature"), 0.85),
+        "temperature": _scale_preset_value(preset.get("temp", preset.get("temperature")), 0.85),
         "top_p": _scale_preset_value(preset.get("top_p"), 0.9),
-        "frequency_penalty": _scale_preset_value(preset.get("frequency_penalty"), 0.5),
-        "max_tokens": max(512, min(32768, max_tokens)),
+        "frequency_penalty": _scale_preset_value(preset.get("fp", preset.get("frequency_penalty")), 0.5),
+        "max_tokens": max(1, min(300000, max_tokens)),
     }
 
 
@@ -606,7 +634,7 @@ def _scale_preset_value(value, default: float) -> float:
         number = float(value)
     except (TypeError, ValueError):
         return default
-    return number / 100 if number > 2 else number
+    return number / 100 if abs(number) > 2 else number
 
 
 def build_generation_prompt(
