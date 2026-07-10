@@ -5,6 +5,7 @@ import re
 import tempfile
 import time
 import unittest
+import zipfile
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -174,6 +175,14 @@ class WebFullFeatureTests(unittest.TestCase):
         self.assertEqual(renamed.status_code, 200, renamed.text)
         moved_note = self.client.get("/api/markdown/file?path=ideas%2Farchive%2Ftwo.md", headers=self.headers)
         self.assertEqual(moved_note.json()["content"], "# Idea")
+        long_note = self.client.put(
+            "/api/markdown/file",
+            headers=self.headers,
+            json={"path": "ideas/archive/long.markdown", "content": "# Long Note\n\nBody"},
+        )
+        self.assertEqual(long_note.status_code, 200, long_note.text)
+        tree_after_markdown = self.client.get("/api/markdown/tree", headers=self.headers)
+        self.assertIn("ideas/archive/long.markdown", {item["path"] for item in tree_after_markdown.json()["items"]})
         preview = self.client.get("/api/markdown/preview?path=ideas%2Farchive%2Ftwo.md", headers=self.headers)
         self.assertEqual(preview.status_code, 200, preview.text)
         self.assertIn("Idea", preview.json()["html"])
@@ -183,14 +192,20 @@ class WebFullFeatureTests(unittest.TestCase):
             json={"path": "ideas/archive/two.md", "folder": False},
         )
         self.assertEqual(exported_note.status_code, 200, exported_note.text)
-        self.assertIn("download", exported_note.json())
+        exported_note_path = self.runtime.resolve_download("alice", exported_note.json()["download"]["download_id"])["path"]
+        with open(exported_note_path, "r", encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), "# Idea")
         exported_folder = self.client.post(
             "/api/markdown/export",
             headers=self.headers,
             json={"path": "ideas", "folder": True},
         )
         self.assertEqual(exported_folder.status_code, 200, exported_folder.text)
-        self.assertIn("download", exported_folder.json())
+        exported_folder_path = self.runtime.resolve_download("alice", exported_folder.json()["download"]["download_id"])["path"]
+        with zipfile.ZipFile(exported_folder_path) as archive:
+            self.assertEqual(archive.read("archive/two.md").decode("utf-8"), "# Idea")
+            self.assertEqual(archive.read("archive/long.markdown").decode("utf-8"), "# Long Note\n\nBody")
+            self.assertFalse(any(name.endswith(".enc") for name in archive.namelist()))
         deleted = self.client.delete("/api/markdown/path?path=ideas%2Farchive%2Ftwo.md", headers=self.headers)
         self.assertEqual(deleted.status_code, 200, deleted.text)
 
@@ -209,6 +224,12 @@ class WebFullFeatureTests(unittest.TestCase):
         diag_export = self.client.post("/api/diagnostics/export", headers=self.headers, json={})
         self.assertEqual(diag_export.status_code, 200, diag_export.text)
         self.assertIn("download", diag_export.json())
+        diag_after_download = self.client.get("/api/diagnostics", headers=self.headers)
+        downloads = diag_after_download.json()["downloads"]
+        self.assertTrue(downloads)
+        self.assertEqual(downloads[0]["download_id"], diag_export.json()["download"]["download_id"])
+        self.assertEqual(downloads[0]["download_url"], diag_export.json()["download"]["download_url"])
+        self.assertEqual(self.runtime.resolve_download("alice", downloads[0]["download_id"])["filename"], "diagnostics.json")
 
 
     def test_settings_data_package_and_password_flow(self):
@@ -600,6 +621,8 @@ class WebFullFeatureTests(unittest.TestCase):
             "contQuickGenerateBtn",
             "contQuickDirectionsBtn",
             "contChapterMode",
+            "worldEntityFields",
+            "syncWorldEntityFormBtn",
             "continuationRunDetail",
             "applyRunSettingsBtn",
             "applyRunDirectionsBtn",
@@ -610,7 +633,17 @@ class WebFullFeatureTests(unittest.TestCase):
             "chapterGraphZoomOutBtn",
             "chapterGraphResetBtn",
             "chapterGraphZoomInBtn",
+            "chapterInspector",
+            "chapterInspectorTitle",
+            "clearChapterInspectorBtn",
             "chapterGraphFitBtn",
+            "agentArtifactList",
+            "agentRequirement",
+            "agentWords",
+            "agentManualEntities",
+            "extraRequirement",
+            "extraWords",
+            "extraManualEntities",
             "createSnapshotBtn",
             "restoreSnapshotBtn",
             "deleteSnapshotBtn",
@@ -623,6 +656,13 @@ class WebFullFeatureTests(unittest.TestCase):
             "agentWebTitleField",
             "agentWebUrlField",
             "agentWebSnippetField",
+            "retrievalDefaultLimit",
+            "retrievalMinScore",
+            "retrievalKeywordWeight",
+            "retrievalSemanticWeight",
+            "embeddingBatchSize",
+            "embeddingTimeoutSeconds",
+            "embeddingMaxRetries",
             "saveAgentWebBtn",
             "testAgentWebBtn",
             "testEmbeddingBtn",
@@ -637,8 +677,22 @@ class WebFullFeatureTests(unittest.TestCase):
             "modelOptions",
             "tokenDownloadList",
             "taskDownloadList",
+            "roleAliases",
+            "roleStatus",
+            "roleAppearance",
+            "rolePersonality",
+            "roleSpeechStyle",
+            "roleBackground",
+            "roleGoals",
+            "roleBoundaries",
+            "roleNotes",
         ]:
             self.assertIn(token, html)
+        with open(os.path.join(root, "web", "static", "styles.css"), "r", encoding="utf-8") as handle:
+            styles = handle.read()
+        for token in ["agent-answer-grid", "agent-answer-card", "agent-json-mini", "agent-event-drawer", "chapter-inspector", "chapter-record-grid", "role-profile-grid", "role-profile-box", "role-book-detail", "role-memory-grid", "role-memory-box", "task-detail-shell", "task-detail-metrics", "task-event-card", "world-output-shell", "world-output-card", "world-output-text", "roleplay-memory-detail", "memory-detail-view", "memory-change-card", "snapshot-detail-shell", "snapshot-file-card", "continuation-result-shell", "continuation-result-card"]:
+            self.assertIn(token, styles)
+
         for token in [
             "updateContinuationChapterInfo",
             "quickAnalyzeContinuation",
@@ -646,6 +700,9 @@ class WebFullFeatureTests(unittest.TestCase):
             "quickSuggestContinuation",
             "contQuickAnalyzeBtn",
             "contChapterMode",
+            "syncWorldEntityFormToJson",
+            "const data=syncWorldEntityFormToJson(true)",
+            "renderWorldEntityFields",
             "showContinuationRun",
             "applyContinuationRunSettings",
             "applyContinuationRunDirections",
@@ -653,7 +710,16 @@ class WebFullFeatureTests(unittest.TestCase):
             "renderChapterGraph",
             "selectGraphNode",
             "changeChapterGraphZoom",
+            "setChapterInspector",
+            "chapterPathHtml",
+            "generationRecordHtml",
+            "chapter-record-grid",
+            "监督报告",
+            "Agent 数据",
             "fitChapterGraph",
+            "agentManualEntities",
+            "manual_entity_ids",
+            "extraManualEntities",
             "createSnapshot",
             "restoreSelectedSnapshot",
             "deleteSelectedSnapshot",
@@ -680,7 +746,60 @@ class WebFullFeatureTests(unittest.TestCase):
             "saveCurrentModel",
             "settings/model",
             "formatEstimatedCost",
+            "formatDurationMs",
+            "char_count",
+            "hanzi_count",
+            "duration_ms",
             "estimated_cost",
+            "agentExtractText",
+            "agentPayloadPreview",
+            "agentModeLabel",
+            'planning_only:"仅规划"',
+            "session.active_run_id",
+            "selectAgentSession(session).catch",
+            "refreshAgentRun(false)",
+            'selectSection("write"); selectWorkspace("agent")',
+            "agentStructuredJson",
+            "renderAgentAnswer",
+            "key_dialogues",
+            "自动累积记忆",
+            "当前状态",
+            "selectedRoleMemory",
+            "renderRoleBookDetail",
+            "roleBookDetail",
+            "诊断事件 ·",
+            "assistant_message",
+            "agentRunAnswer",
+            "Agent 结构化结果",
+            "诊断事件",
+            "chapter_snapshots",
+            "duplicate_candidates",
+            "merge_history",
+            "worldCategoryItems",
+            "worldEntityEditable",
+            "当前分类为只读视图",
+            "renderAgentToolCards",
+            "renderAgentChangeCards",
+            "renderAgentArtifacts",
+            "loadAgentArtifact",
+            "agent/artifacts",
+            "data-artifact-id",
+            "运行产物",
+            "renderAgentArtifactCards",
+            "agent-chip-section",
+            "buildRoleplayRecord",
+            "currentConversationRecord",
+            "active_branch_id:activeId",
+            "memory_change_sets:state.memoryChangeSets",
+            "renderRoleplayMemoryDetail",
+            "renderRoleplayDataDetail",
+            "selectedMemoryChange",
+            "roleplayStatusLabel",
+            "loadChatBranches(state.currentConversationId).catch",
+            "collectRoleProfile",
+            "splitRoleAliases",
+            "speech_style",
+            "boundaries",
         ]:
             self.assertIn(token, script)
     def test_web_interactive_controls_are_bound(self):
@@ -725,11 +844,14 @@ class WebFullFeatureTests(unittest.TestCase):
         analyzed = self.client.post(
             "/api/continuation/analyze",
             headers=self.headers,
-            json={"title": "ContBook", "sections": sections, "source_text": "第一章正文\n后续正文"},
+            json={"title": "ContBook", "sections": sections, "source_text": "第一章正文\n后续正文", "xp_mode": True},
         )
         self.assertEqual(analyzed.status_code, 200, analyzed.text)
         analyze_task = self.wait_task(analyzed.json()["task_id"])
         self.assertEqual(analyze_task["status"], "completed", analyze_task)
+        analyzed_meta = self.client.get("/api/books/ContBook/meta", headers=self.headers)
+        self.assertEqual(analyzed_meta.status_code, 200, analyzed_meta.text)
+        self.assertTrue(analyzed_meta.json()["meta"]["xp_mode"])
 
         suggested = self.client.post(
             "/api/continuation/suggest",
@@ -797,18 +919,39 @@ class WebFullFeatureTests(unittest.TestCase):
         created = self.client.post(
             "/api/roleplay/characters",
             headers=self.headers,
-            json={"profile": {"name": "Hero", "identity": "protagonist", "identity_detail": "Calm strategist"}},
+            json={"profile": {
+                "name": "Hero",
+                "aliases": ["H", "Captain"],
+                "identity": "protagonist",
+                "status": "active",
+                "appearance": "Silver coat",
+                "personality": "Calm strategist",
+                "speech_style": "Short tactical sentences",
+                "background": "Raised by the fleet",
+                "goals": "Protect the harbor",
+                "boundaries": "Never betrays civilians",
+                "notes": "Carries an old compass",
+            }},
         )
         self.assertEqual(created.status_code, 200, created.text)
         profile = created.json()["profile"]
         character_id = profile["character_id"]
+        self.assertEqual(profile["aliases"], ["H", "Captain"])
+        self.assertEqual(profile["appearance"], "Silver coat")
+        self.assertEqual(profile["speech_style"], "Short tactical sentences")
+        self.assertEqual(profile["boundaries"], "Never betrays civilians")
 
         updated = self.client.put(
             f"/api/roleplay/characters/{character_id}",
             headers=self.headers,
-            json={"profile": {**profile, "name": "Heroine", "identity_detail": "Leads the scene"}},
+            json={"profile": {**profile, "name": "Heroine", "personality": "Leads the scene", "notes": "Keeps the old compass"}},
         )
         self.assertEqual(updated.status_code, 200, updated.text)
+        reloaded_profiles = self.client.get("/api/roleplay/characters", headers=self.headers).json()["book"]["profiles"]
+        reloaded_profile = next(item for item in reloaded_profiles if item["character_id"] == character_id)
+        self.assertEqual(reloaded_profile["name"], "Heroine")
+        self.assertEqual(reloaded_profile["aliases"], ["H", "Captain"])
+        self.assertEqual(reloaded_profile["notes"], "Keeps the old compass")
 
         chat = self.client.post(
             "/api/roleplay/chat",
@@ -867,6 +1010,35 @@ class WebFullFeatureTests(unittest.TestCase):
         stored_controls = self.client.get(f"/api/roleplay/conversations/{conversation_id}", headers=self.headers).json()["conversation"]
         self.assertEqual(stored_controls["sender_profile_id"], sender_id)
         self.assertEqual(stored_controls["turn_policy"]["max_speakers"], 1)
+
+        controlled_chat = self.client.post(
+            "/api/roleplay/chat",
+            headers=self.headers,
+            json={
+                "title": "Role Scene",
+                "message": "Continue under current controls.",
+                "character_ids": [character_id],
+                "conversation_id": conversation_id,
+                "chat_type": "private",
+                "sender_name": "Writer",
+                "sender_profile_id": sender_id,
+                "scene_state": {"location": "Harbor", "present_character_ids": [character_id], "tags": ["tense"]},
+                "turn_policy": {"allowed_speaker_ids": [character_id], "blocked_speaker_ids": ["missing"], "max_speakers": 1},
+                "required_responder_ids": [character_id],
+                "reply_mode": "character",
+                "narrator_enabled": True,
+            },
+        )
+        self.assertEqual(controlled_chat.status_code, 200, controlled_chat.text)
+        controlled_task = self.wait_task(controlled_chat.json()["task_id"])
+        self.assertEqual(controlled_task["status"], "completed", controlled_task)
+        controlled_record = self.client.get(f"/api/roleplay/conversations/{conversation_id}", headers=self.headers).json()["conversation"]
+        self.assertEqual(controlled_record["sender_profile_id"], sender_id)
+        self.assertEqual(controlled_record["scene_state"]["location"], "Harbor")
+        self.assertEqual(controlled_record["scene_state"]["present_character_ids"], [character_id])
+        self.assertEqual(controlled_record["turn_policy"]["allowed_speaker_ids"], [character_id])
+        self.assertEqual(controlled_record["turn_policy"]["blocked_speaker_ids"], [])
+        self.assertEqual(controlled_record["turn_policy"]["max_speakers"], 1)
 
         book_response = self.client.get("/api/roleplay/character-book", headers=self.headers)
         self.assertEqual(book_response.status_code, 200, book_response.text)
@@ -1010,6 +1182,57 @@ class WebFullFeatureTests(unittest.TestCase):
         deleted_character = self.client.delete(f"/api/roleplay/characters/{character_id}", headers=self.headers)
         self.assertEqual(deleted_character.status_code, 200, deleted_character.text)
 
+    def test_roleplay_manual_save_preserves_branch_memory_and_state(self):
+        record = {
+            "conversation_id": "manual-roleplay-web",
+            "title": "Manual Roleplay",
+            "model": "fake-model",
+            "messages": [{"role": "user", "content": "legacy"}],
+            "strategy": "角色扮演",
+            "reply_mode": "narrator",
+            "chat_type": "group",
+            "participant_character_ids": ["char-a", "char-b"],
+            "primary_character_id": "char-a",
+            "timeline_id": "timeline-manual",
+            "timeline": [{"event_id": "evt-a", "summary": "entered harbor"}],
+            "character_book_snapshot": {"profiles": [{"character_id": "char-a", "name": "A"}], "memories": []},
+            "sender_name": "Writer",
+            "sender_profile": "close third person",
+            "required_responder_ids": ["char-a"],
+            "structured_messages": [{"message_id": "msg-alt", "branch_id": "alt", "role": "assistant", "speaker_id": "char-a", "speaker_name": "A", "content": "alt branch", "turn_index": 1}],
+            "branches": [
+                {"branch_id": "main", "title": "主线", "messages": [{"message_id": "msg-main", "branch_id": "main", "role": "user", "speaker_id": "sender", "speaker_name": "Writer", "content": "main", "turn_index": 1}], "timeline": []},
+                {"branch_id": "alt", "title": "分支", "parent_branch_id": "main", "messages": [{"message_id": "msg-alt", "branch_id": "alt", "role": "assistant", "speaker_id": "char-a", "speaker_name": "A", "content": "alt branch", "turn_index": 1}], "timeline": [{"event_id": "evt-a", "summary": "entered harbor"}], "character_state_snapshot": {"profiles": [{"character_id": "char-a"}]}, "knowledge": [{"character_id": "char-a", "fact": "knows tide"}], "relationships": []},
+            ],
+            "active_branch_id": "alt",
+            "sender_profile_id": "sender-a",
+            "scene_state": {"location": "Harbor", "present_character_ids": ["char-a"]},
+            "turn_policy": {"allowed_speaker_ids": ["char-a"], "max_speakers": 1},
+            "memory_change_sets": [{"change_set_id": "mem-a", "status": "pending", "changes": [{"change_id": "chg-a", "character_id": "char-a", "field_name": "notes", "new_value": "keeps a secret"}]}],
+            "narrator_enabled": True,
+        }
+        saved = self.client.post("/api/roleplay/conversations", headers=self.headers, json={"record": record})
+        self.assertEqual(saved.status_code, 200, saved.text)
+        self.assertEqual(saved.json()["conversation_id"], "manual-roleplay-web")
+        loaded = self.client.get("/api/roleplay/conversations/manual-roleplay-web", headers=self.headers)
+        self.assertEqual(loaded.status_code, 200, loaded.text)
+        data = loaded.json()["conversation"]
+        self.assertEqual(data["active_branch_id"], "alt")
+        self.assertEqual(data["structured_messages"][0]["message_id"], "msg-alt")
+        self.assertEqual(data["branches"][1]["knowledge"][0]["fact"], "knows tide")
+        self.assertEqual(data["memory_change_sets"][0]["change_set_id"], "mem-a")
+        self.assertEqual(data["timeline"][0]["event_id"], "evt-a")
+        self.assertEqual(data["character_book_snapshot"]["profiles"][0]["character_id"], "char-a")
+        self.assertEqual(data["scene_state"]["location"], "Harbor")
+        self.assertEqual(data["turn_policy"]["allowed_speaker_ids"], ["char-a"])
+        controls = self.client.get("/api/roleplay/conversations/manual-roleplay-web/controls", headers=self.headers)
+        self.assertEqual(controls.status_code, 200, controls.text)
+        self.assertEqual(controls.json()["state"]["active_branch_id"], "alt")
+        branches = self.client.get("/api/roleplay/conversations/manual-roleplay-web/branches", headers=self.headers)
+        self.assertEqual(branches.status_code, 200, branches.text)
+        self.assertEqual(branches.json()["active_branch_id"], "alt")
+        self.assertEqual(len(branches.json()["branches"]), 2)
+
     def test_continuation_model_tasks_require_api_key(self):
         denied = self.client.post(
             "/api/continuation/generate",
@@ -1054,9 +1277,17 @@ class WebFullFeatureTests(unittest.TestCase):
             json={"run_id": "run-web", "text": "answer", "title": "冲突构思"},
         )
         self.assertEqual(saved.status_code, 200, saved.text)
-        self.assertTrue(saved.json()["artifact_id"])
+        artifact_id = saved.json()["artifact_id"]
+        self.assertTrue(artifact_id)
+        artifact_detail = self.client.get(f"/api/books/AdvisorDesk/agent/artifacts/{artifact_id}", headers=self.headers)
+        self.assertEqual(artifact_detail.status_code, 200, artifact_detail.text)
+        self.assertEqual(artifact_detail.json()["artifact"]["content"], "answer")
+        self.assertEqual(artifact_detail.json()["artifact"]["metadata"]["title"], "冲突构思")
+        missing_artifact = self.client.get("/api/books/AdvisorDesk/agent/artifacts/missing-artifact", headers=self.headers)
+        self.assertEqual(missing_artifact.status_code, 404)
         state = self.client.get("/api/books/AdvisorDesk/agent/state", headers=self.headers)
         self.assertTrue(any(item.get("content") == "answer" for item in state.json()["advice"]))
+        self.assertTrue(any(item.get("artifact_id") == artifact_id for item in state.json()["artifacts"]))
 
         from core.agent.repository import AgentRepository
         token = self.headers["Authorization"].split(" ", 1)[1]
@@ -1166,11 +1397,141 @@ class WebFullFeatureTests(unittest.TestCase):
                 captured.setdefault("controls", []).append(("cancel", run_id))
                 return True
         self.runtime.register_agent_backend("alice", "run-active", ControlBackend())
-        for action in ("pause", "resume", "cancel"):
-            controlled = self.client.post(f"/api/books/WorkbenchDesk/agent/runs/run-active/{action}", headers=self.headers, json={})
-            self.assertEqual(controlled.status_code, 200, controlled.text)
+        controlled = self.client.post("/api/books/WorkbenchDesk/agent/runs/run-active/pause", headers=self.headers, json={})
+        self.assertEqual(controlled.status_code, 200, controlled.text)
+        resume_payload = {"approved": True, "change_set_id": "change-web"}
+        controlled = self.client.post("/api/books/WorkbenchDesk/agent/runs/run-active/resume", headers=self.headers, json={"payload": resume_payload})
+        self.assertEqual(controlled.status_code, 200, controlled.text)
+        controlled = self.client.post("/api/books/WorkbenchDesk/agent/runs/run-active/cancel", headers=self.headers, json={})
+        self.assertEqual(controlled.status_code, 200, controlled.text)
         self.runtime.unregister_agent_backend("run-active")
         self.assertEqual([item[0] for item in captured["controls"][-3:]], ["pause", "resume", "cancel"])
+        self.assertEqual(captured["controls"][-2], ("resume", "run-active", resume_payload))
+
+    def test_agent_workbench_waiting_approval_run_can_resume(self):
+        self.configure_text_api()
+        self.client.post("/api/books", headers=self.headers, json={"title": "ApprovalDesk"})
+        created = self.client.post(
+            "/api/books/ApprovalDesk/agent/sessions",
+            headers=self.headers,
+            json={"agent_kind": "world_bible_manager", "title": "Approval"},
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        session = created.json()["session"]
+
+        from dataclasses import asdict
+        from core.agent.backends import BackendStatus
+        from core.agent.repository import AgentRepository
+        from core.agent.types import AgentEvent, AgentRun
+        token = self.headers["Authorization"].split(" ", 1)[1]
+        ctx = self.runtime.context_from_token(token)
+        repo = AgentRepository(ctx.novel_manager.get_workspace("ApprovalDesk"))
+        captured = {}
+
+        def fake_build_agent_backend(**kwargs):
+            sink = kwargs["event_sink"]
+            class FakeBackend:
+                def run(self, request):
+                    event = AgentEvent("run-waiting-web", 1, "change_set_created", payload={"change_set_id": "change-waiting"})
+                    repo.append_event(event.run_id, asdict(event))
+                    sink(event)
+                    return AgentRun(
+                        event.run_id,
+                        request.session_id,
+                        request.book_id,
+                        request.book_title,
+                        request.agent_kind,
+                        request.model,
+                        status="waiting_approval",
+                        terminal_reason="approval_required",
+                        change_set_ids=["change-waiting"],
+                    )
+                def pause(self, run_id):
+                    return True
+                def resume(self, run_id, payload=None):
+                    captured["resume"] = (run_id, payload)
+                    return AgentRun(run_id, session["session_id"], "book", "ApprovalDesk", "world_bible_manager", "model", status="completed")
+                def cancel(self, run_id):
+                    return True
+            return FakeBackend(), BackendStatus("legacy", "legacy")
+
+        with patch("core.agent.backends.build_agent_backend", fake_build_agent_backend):
+            run_response = self.client.post(
+                f"/api/books/ApprovalDesk/agent/sessions/{session['session_id']}/run",
+                headers=self.headers,
+                json={"message": "维护世界书", "manual_references": []},
+            )
+            self.assertEqual(run_response.status_code, 200, run_response.text)
+            task = self.wait_task(run_response.json()["task_id"])
+
+        self.assertEqual(task["status"], "completed", task)
+        run_detail = self.client.get("/api/books/ApprovalDesk/agent/runs/run-waiting-web", headers=self.headers)
+        self.assertEqual(run_detail.status_code, 200, run_detail.text)
+        self.assertEqual(run_detail.json()["run"]["status"], "waiting_approval")
+        resume_payload = {"approved": False, "change_set_id": "change-waiting"}
+        controlled = self.client.post(
+            "/api/books/ApprovalDesk/agent/runs/run-waiting-web/resume",
+            headers=self.headers,
+            json={"payload": resume_payload},
+        )
+        self.assertEqual(controlled.status_code, 200, controlled.text)
+        self.assertEqual(captured["resume"], ("run-waiting-web", resume_payload))
+
+    def test_agent_chapter_plan_preserves_web_fields(self):
+        self.configure_text_api()
+        self.client.post("/api/books", headers=self.headers, json={"title": "AgentChapterDesk"})
+        saved_agent_settings = self.client.put(
+            "/api/settings/agent-embedding",
+            headers=self.headers,
+            json={"settings": {"agent_skills_enabled": False}},
+        )
+        self.assertEqual(saved_agent_settings.status_code, 200, saved_agent_settings.text)
+
+        from core.agent.chapter_generation import AgentChapterPlan
+        from core.agent.types import now_iso
+        captured = {}
+
+        def fake_prepare(_service, request):
+            captured["request"] = request
+            captured["skills_enabled"] = _service.skills_enabled
+            return AgentChapterPlan(
+                plan_id="chapter-plan-web",
+                chapter_goal="推进主线",
+                scenes=[{"title": "开局", "purpose": "承接", "conflict": "压力", "outcome": "行动"}],
+                character_arcs=[],
+                plot_threads=[],
+                foreshadowing_actions=[],
+                selected_world_entities=[],
+                selected_history=[],
+                constraints=["不偏离设定"],
+                context_report={"content": "上下文", "injected_chars": 2},
+                created_at=now_iso(),
+            )
+
+        with patch("core.agent.chapter_generation.AgentChapterGenerationService.prepare", fake_prepare):
+            planned = self.client.post(
+                "/api/books/AgentChapterDesk/agent/chapter/plan",
+                headers=self.headers,
+                json={
+                    "chapter_title": "第二幕",
+                    "plot": "主角进入新城市",
+                    "requirement": "克制、悬疑、少解释",
+                    "target_words": 2200,
+                    "manual_entity_ids": ["char-main", "loc-city"],
+                },
+            )
+            self.assertEqual(planned.status_code, 200, planned.text)
+            task = self.wait_task(planned.json()["task_id"])
+
+        self.assertEqual(task["status"], "completed", task)
+        self.assertEqual(task["metadata"]["kind"], "agent_chapter_plan")
+        self.assertTrue(task["retryable"])
+        self.assertFalse(captured["skills_enabled"])
+        self.assertEqual(captured["request"].chapter_title, "第二幕")
+        self.assertEqual(captured["request"].plot, "主角进入新城市")
+        self.assertEqual(captured["request"].requirement, "克制、悬疑、少解释")
+        self.assertEqual(captured["request"].target_words, 2200)
+        self.assertEqual(captured["request"].manual_entity_ids, ["char-main", "loc-city"])
     def test_agent_extra_generation_creates_chapter_tree_node(self):
         self.configure_text_api()
         self.client.post("/api/books", headers=self.headers, json={"title": "ExtraDesk"})
@@ -1223,7 +1584,7 @@ class WebFullFeatureTests(unittest.TestCase):
             planned = self.client.post(
                 "/api/books/ExtraDesk/agent/extra/plan",
                 headers=self.headers,
-                json={"extra_type": "prequel", "start_node_id": start_node_id, "reference_node_id": start_node_id, "title": "另一条路", "plot": "如果当时没有出发", "requirement": "保持人物动机", "target_words": 100},
+                json={"extra_type": "prequel", "start_node_id": start_node_id, "reference_node_id": start_node_id, "title": "另一条路", "plot": "如果当时没有出发", "requirement": "保持人物动机", "target_words": 1500, "manual_entity_ids": ["char-a", "loc-b"]},
             )
             self.assertEqual(planned.status_code, 200, planned.text)
             plan_task = self.wait_task(planned.json()["task_id"])
@@ -1239,6 +1600,9 @@ class WebFullFeatureTests(unittest.TestCase):
         self.assertEqual(generate_task["status"], "completed", generate_task)
         self.assertEqual(captured["request"].extra_type, "prequel")
         self.assertEqual(captured["request"].start_node_id, start_node_id)
+        self.assertEqual(captured["request"].requirement, "保持人物动机")
+        self.assertEqual(captured["request"].target_words, 1500)
+        self.assertEqual(captured["request"].manual_entity_ids, ["char-a", "loc-b"])
         tree_after = self.client.get("/api/books/ExtraDesk/chapter-tree", headers=self.headers).json()
         extra_nodes = [node for node in tree_after["nodes"] if node.get("storage_kind") == "extra_uuid"]
         self.assertEqual(len(extra_nodes), 1)
@@ -1247,6 +1611,18 @@ class WebFullFeatureTests(unittest.TestCase):
         extra_content = self.client.get(f"/api/books/ExtraDesk/nodes/{extra_node['id']}", headers=self.headers)
         self.assertEqual(extra_content.status_code, 200, extra_content.text)
         self.assertEqual(extra_content.json()["content"], "正文")
+
+        edited_extra = self.client.put(
+            f"/api/books/ExtraDesk/nodes/{extra_node['id']}/content",
+            headers=self.headers,
+            json={"title": "另一条路修订", "content": "修订后的番外正文", "activate": True},
+        )
+        self.assertEqual(edited_extra.status_code, 200, edited_extra.text)
+        self.assertEqual(edited_extra.json()["node_id"], extra_node["id"])
+        self.assertEqual(edited_extra.json()["node"]["title"], "另一条路修订")
+        extra_content_after = self.client.get(f"/api/books/ExtraDesk/nodes/{extra_node['id']}", headers=self.headers)
+        self.assertEqual(extra_content_after.status_code, 200, extra_content_after.text)
+        self.assertEqual(extra_content_after.json()["content"], "修订后的番外正文")
     def test_agent_world_maintenance_retry_task(self):
         self.configure_text_api()
         self.client.post("/api/books", headers=self.headers, json={"title": "MaintDesk"})
@@ -1394,7 +1770,14 @@ class WebFullFeatureTests(unittest.TestCase):
                 "agent_skills_enabled": True,
                 "agent_runtime_backend": "legacy",
                 "retrieval_backend": "classic",
+                "retrieval_default_limit": 12,
+                "retrieval_keyword_weight": 35,
+                "retrieval_semantic_weight": 65,
+                "retrieval_min_score": 0.25,
                 "embedding_model": "embed-test",
+                "embedding_batch_size": 16,
+                "embedding_timeout_seconds": 33,
+                "embedding_max_retries": 2,
                 "embedding_api_key": "secret",
                 "agent_web_enabled": True,
                 "agent_web_endpoint": "https://search.example/api",
@@ -1417,6 +1800,13 @@ class WebFullFeatureTests(unittest.TestCase):
         self.assertTrue(loaded["embedding_api_key_configured"])
         self.assertTrue(loaded["agent_web_api_key_configured"])
         self.assertEqual(loaded["agent_web_method"], "GET")
+        self.assertEqual(loaded["retrieval_default_limit"], 12)
+        self.assertEqual(loaded["retrieval_keyword_weight"], 35)
+        self.assertEqual(loaded["retrieval_semantic_weight"], 65)
+        self.assertEqual(loaded["retrieval_min_score"], 0.25)
+        self.assertEqual(loaded["embedding_batch_size"], 16)
+        self.assertEqual(loaded["embedding_timeout_seconds"], 33)
+        self.assertEqual(loaded["embedding_max_retries"], 2)
         self.assertEqual(loaded["agent_web_auth_header"], "X-Api-Key")
         self.assertEqual(loaded["agent_web_auth_prefix"], "Token")
         self.assertEqual(loaded["agent_web_query_field"], "q")
@@ -1499,6 +1889,9 @@ class WebFullFeatureTests(unittest.TestCase):
             model="model-a",
             content="alpha scene prompt",
             usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            duration_ms=1200,
+            char_count=18,
+            hanzi_count=4,
         )
         ctx.token_log_manager.add_entry(
             operation="roleplay_chat",
@@ -1507,6 +1900,9 @@ class WebFullFeatureTests(unittest.TestCase):
             model="model-b",
             content="beta role response",
             usage={"prompt_tokens": 20, "completion_tokens": 7, "total_tokens": 27},
+            duration_ms=2300,
+            char_count=20,
+            hanzi_count=0,
         )
         ctx.token_log_manager.add_entry(
             operation="classic_generate",
@@ -1515,6 +1911,9 @@ class WebFullFeatureTests(unittest.TestCase):
             model="model-a",
             content="gamma scene response",
             usage={"prompt_tokens": 3, "completion_tokens": 2, "total_tokens": 5},
+            duration_ms=500,
+            char_count=21,
+            hanzi_count=0,
         )
 
         all_tokens = self.client.get("/api/token-log", headers=self.headers)
@@ -1526,6 +1925,11 @@ class WebFullFeatureTests(unittest.TestCase):
         self.assertIn("classic_generate", all_data["facets"]["operations"])
         self.assertEqual(all_data["summary"]["by_model"]["model-a"]["total_tokens"], 20)
         self.assertEqual(all_data["summary"]["by_operation"]["classic_generate"]["count"], 2)
+        self.assertEqual(all_data["summary"]["activity"]["duration_ms"], 4000)
+        self.assertEqual(all_data["summary"]["activity"]["char_count"], 59)
+        self.assertEqual(all_data["summary"]["activity"]["hanzi_count"], 4)
+        self.assertEqual(all_data["summary"]["by_model"]["model-a"]["duration_ms"], 1700)
+        self.assertEqual(all_data["entries"][0]["duration_ms"], 500)
         self.assertEqual(all_data["summary"]["estimated_cost"]["currency"], "USD")
         self.assertEqual(all_data["summary"]["estimated_cost"]["total_cost"], 0.0)
         self.assertEqual(all_data["summary"]["by_model"]["model-a"]["estimated_cost"]["model"], "model-a")
@@ -1540,6 +1944,9 @@ class WebFullFeatureTests(unittest.TestCase):
         self.assertEqual(data["overall_total"], 3)
         self.assertEqual(data["entries"][0]["content_preview"], "alpha scene prompt")
         self.assertEqual(data["summary"]["totals"], {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15})
+        self.assertEqual(data["summary"]["activity"]["duration_ms"], 1200)
+        self.assertEqual(data["summary"]["activity"]["char_count"], 18)
+        self.assertEqual(data["summary"]["activity"]["hanzi_count"], 4)
         self.assertEqual(data["filters"]["model"], "model-a")
         self.assertEqual(data["filters"]["operation"], "classic_generate")
 
@@ -1560,6 +1967,7 @@ class WebFullFeatureTests(unittest.TestCase):
         self.assertEqual(len(exported_data["entries"]), 1)
         self.assertEqual(exported_data["summary"]["totals"]["total_tokens"], 15)
         self.assertIn("estimated_cost", exported_data["summary"])
+        self.assertEqual(exported_data["summary"]["activity"]["duration_ms"], 1200)
         self.assertEqual(exported_data["filters"]["q"], "alpha")
 if __name__ == "__main__":
     unittest.main()

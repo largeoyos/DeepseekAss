@@ -45,9 +45,16 @@ DEFAULT_SETTINGS = {
     "agent_web_timeout_seconds": 15,
     "agent_runtime_backend": "legacy",
     "retrieval_backend": "classic",
+    "retrieval_default_limit": 8,
+    "retrieval_keyword_weight": 55,
+    "retrieval_semantic_weight": 45,
+    "retrieval_min_score": 0,
     "embedding_base_url": "",
     "embedding_api_key": "",
     "embedding_model": "",
+    "embedding_batch_size": 8,
+    "embedding_timeout_seconds": 20,
+    "embedding_max_retries": 1,
     "framework_auto_fallback": True,
 }
 

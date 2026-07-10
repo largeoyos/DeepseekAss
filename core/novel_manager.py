@@ -701,6 +701,18 @@ class NovelManager:
             return self.get_workspace(title).storage.read_text(str(node.get("file", "")))
         return self.read_chapter_version(title, int(node["chapter_num"]), int(node["version"]))
 
+    def update_extra_node_content(self, title: str, node_id: str, content: str, chapter_title: str = "") -> dict:
+        meta = self.ensure_chapter_tree(title)
+        node = meta.chapter_nodes.get(node_id)
+        if not node or node.get("virtual") or node.get("storage_kind") != "extra_uuid":
+            raise ValueError("请选择番外/IF 节点")
+        if chapter_title.strip():
+            node["title"] = chapter_title.strip()
+        node["updated_at"] = datetime.now().strftime("%Y-%m-%d %H:%M")
+        self.get_workspace(title).storage.write_text(str(node.get("file", "")), content)
+        self._save_meta(title, meta)
+        return copy.deepcopy(node)
+
     def set_chapter_node_summary(self, title: str, chapter_num: int, version: int, summary: str) -> None:
         """将章节摘要绑定到指定章节树节点。"""
         meta = self.ensure_chapter_tree(title)

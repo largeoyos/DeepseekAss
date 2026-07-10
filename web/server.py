@@ -88,6 +88,10 @@ class GenerateRequest(BaseModel):
     plot: str = ""
     target_words: int = Field(default=3000, ge=500, le=30000)
 
+class AgentChapterPlanRequest(GenerateRequest):
+    requirement: str = ""
+    manual_entity_ids: list[str] = Field(default_factory=list)
+
 class ExportRequest(BaseModel):
     fmt: str = "txt"
     chapter_num: int | None = None
@@ -120,6 +124,9 @@ class AgentSessionCreateRequest(BaseModel):
 class AgentWorkbenchRunRequest(BaseModel):
     message: str
     manual_references: list[str] = Field(default_factory=list)
+
+class AgentRunControlRequest(BaseModel):
+    payload: dict = Field(default_factory=dict)
 class ContinuationSegmentRequest(BaseModel):
     text: str
 
@@ -197,6 +204,9 @@ class RoleChatRequest(BaseModel):
     chat_type: str = "private"
     sender_name: str = "You"
     sender_profile: str = ""
+    sender_profile_id: str = ""
+    scene_state: dict = Field(default_factory=dict)
+    turn_policy: dict = Field(default_factory=dict)
     required_responder_ids: list[str] = Field(default_factory=list)
     reply_mode: str = "character"
     narrator_enabled: bool = False
@@ -262,7 +272,8 @@ class AgentExtraPlanRequest(BaseModel):
     title: str = ""
     plot: str = ""
     requirement: str = ""
-    target_words: int = Field(default=3000, ge=100, le=30000)
+    target_words: int = Field(default=5000, ge=500, le=50000)
+    manual_entity_ids: list[str] = Field(default_factory=list)
 
 class AgentExtraGenerateRequest(BaseModel):
     plan_id: str
@@ -470,8 +481,10 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
         settings = ctx.settings_manager.load()
         keys = [
             "novel_generation_mode", "controlled_agent_enabled", "agent_skills_enabled",
-            "agent_runtime_backend", "retrieval_backend", "framework_auto_fallback",
-            "embedding_base_url", "embedding_api_key", "embedding_model",
+            "agent_runtime_backend", "retrieval_backend", "retrieval_default_limit",
+            "retrieval_keyword_weight", "retrieval_semantic_weight", "retrieval_min_score",
+            "framework_auto_fallback", "embedding_base_url", "embedding_api_key", "embedding_model",
+            "embedding_batch_size", "embedding_timeout_seconds", "embedding_max_retries",
             "agent_web_enabled", "agent_web_endpoint", "agent_web_method", "agent_web_api_key",
             "agent_web_auth_header", "agent_web_auth_prefix", "agent_web_query_field",
             "agent_web_results_path", "agent_web_title_field", "agent_web_url_field",
@@ -545,7 +558,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
             report = ctx.novel_manager.retrieval_backend().rebuild(title)
             handle.progress("检索索引重建完成", percent=100, stage="完成", data={"result": report})
             return report
-        return {"task_id": runtime.start_task(ctx.username, f"重建《{title}》检索索引", target, metadata={"kind": "retrieval_rebuild", "book": title})}
+        return {"task_id": runtime.start_task(ctx.username, f"重建《{title}》检索索引", target, metadata={"kind": "retrieval_rebuild", "book": title}, retryable=True)}
 
     @app.post("/api/books/{title}/retrieval/clear", tags=["settings"])
     def clear_retrieval(title: str, ctx: WebUserContext = Depends(current_context)):
@@ -795,7 +808,8 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
         if not node or node.get("virtual"):
             raise HTTPException(status_code=404, detail="节点不存在")
         if node.get("storage_kind") == "extra_uuid":
-            raise HTTPException(status_code=400, detail="番外/IF 节点暂不支持直接覆盖编辑，请用 Agent 番外流程生成新节点")
+            saved_node = ctx.novel_manager.update_extra_node_content(title, node_id, payload.content, payload.title)
+            return {"ok": True, "node_id": node_id, "version": saved_node.get("version"), "node": saved_node}
         chapter_num = int(node.get("chapter_num") or 0)
         if chapter_num <= 0:
             raise HTTPException(status_code=400, detail="节点章节号无效")
@@ -994,7 +1008,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
             download = runtime.register_download(ctx.username, path, os.path.basename(path), media_type_for(path))
             handle.progress("节点导出完成", percent=100, stage="完成", data={"download": download})
             return download
-        return {"task_id": runtime.start_task(ctx.username, f"导出《{title}》节点", target, metadata={"kind": "node_export", "book": title, "node_id": node_id})}
+        return {"task_id": runtime.start_task(ctx.username, f"导出《{title}》节点", target, metadata={"kind": "node_export", "book": title, "node_id": node_id}, retryable=True)}
 
     @app.post("/api/books/{title}/nodes/{node_id}/activate", tags=["chapters"])
     def activate_node(title: str, node_id: str, ctx: WebUserContext = Depends(current_context)):
@@ -1056,7 +1070,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
             ctx.novel_manager.rebuild_summary_from_active(client, title, model=model, global_user_prompt=str(ctx.settings.get("global_user_prompt") or ""), xp_mode=bool(ctx.novel_manager.load_meta(title).xp_mode))
             handle.progress("摘要重建完成", percent=100, stage="完成")
             return {"ok": True}
-        return {"task_id": runtime.start_task(ctx.username, f"重建《{title}》摘要", target, metadata={"kind": "summary_rebuild", "book": title})}
+        return {"task_id": runtime.start_task(ctx.username, f"重建《{title}》摘要", target, metadata={"kind": "summary_rebuild", "book": title}, retryable=True)}
 
     @app.post("/api/books/{title}/world/rebuild", tags=["world"])
     def rebuild_world(title: str, payload: ChapterActionRequest, ctx: WebUserContext = Depends(current_context)):
@@ -1069,7 +1083,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
             report = ctx.novel_manager.rebuild_world_bible_from_active(client, title, model=model, global_user_prompt=str(ctx.settings.get("global_user_prompt") or ""), xp_mode=bool(ctx.novel_manager.load_meta(title).xp_mode), force_extract=payload.requirement == "force_extract", extract_missing=payload.requirement == "extract_missing")
             handle.progress("世界书重建完成", percent=100, stage="完成", data={"result": report})
             return report
-        return {"task_id": runtime.start_task(ctx.username, f"重建《{title}》世界书", target, metadata={"kind": "world_rebuild", "book": title})}
+        return {"task_id": runtime.start_task(ctx.username, f"重建《{title}》世界书", target, metadata={"kind": "world_rebuild", "book": title}, retryable=True)}
 
     @app.post("/api/books/{title}/world/extract-node", tags=["world"])
     def extract_world_node(title: str, payload: ChapterActionRequest, ctx: WebUserContext = Depends(current_context)):
@@ -1087,7 +1101,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
                 report = ctx.novel_manager.extract_world_bible_for_node(client, title, node_id, model=model, global_user_prompt=str(ctx.settings.get("global_user_prompt") or ""), xp_mode=bool(ctx.novel_manager.load_meta(title).xp_mode))
             handle.progress("节点世界书已更新", percent=100, stage="完成", data={"result": report})
             return report
-        return {"task_id": runtime.start_task(ctx.username, f"重提《{title}》节点世界书", target, metadata={"kind": "world_extract_node", "book": title, "node_id": node_id})}
+        return {"task_id": runtime.start_task(ctx.username, f"重提《{title}》节点世界书", target, metadata={"kind": "world_extract_node", "book": title, "node_id": node_id}, retryable=True)}
     @app.get("/api/books/{title}/context-preview", tags=["chapters"])
     def context_preview(title: str, chapter_title: str = "", plot: str = "", ctx: WebUserContext = Depends(current_context)):
         target = ctx.novel_manager.get_active_generation_target(title)
@@ -1109,7 +1123,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
             download = runtime.register_download(ctx.username, path, os.path.basename(path), media_type_for(path))
             handle.progress("导出完成", percent=100, stage="完成", data={"download": download})
             return download
-        return {"task_id": runtime.start_task(ctx.username, f"导出《{title}》", target, metadata={"kind": "export", "book": title})}
+        return {"task_id": runtime.start_task(ctx.username, f"导出《{title}》", target, metadata={"kind": "export", "book": title}, retryable=True)}
 
     @app.get("/api/books/{title}/context-policies", tags=["chapters"])
     def get_context_policies(title: str, ctx: WebUserContext = Depends(current_context)):
@@ -1524,10 +1538,10 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
             result = WritingAdvisorService(ctx.novel_manager, client, ctx.conversation_manager).ask(AdvisorRequest(title, payload.message, model, ctx.settings, payload.manual_references, payload.fiction_context))
             handle.progress("Agent 顾问完成", percent=100, stage="完成", data={"result": asdict(result)})
             return asdict(result)
-        return {"task_id": runtime.start_task(ctx.username, f"Agent 顾问《{title}》", target, metadata={"kind": "agent_advisor", "book": title})}
+        return {"task_id": runtime.start_task(ctx.username, f"Agent 顾问《{title}》", target, metadata={"kind": "agent_advisor", "book": title}, retryable=True)}
 
     @app.post("/api/books/{title}/agent/chapter/plan", tags=["agent"])
-    def agent_chapter_plan(title: str, payload: GenerateRequest, ctx: WebUserContext = Depends(current_context)):
+    def agent_chapter_plan(title: str, payload: AgentChapterPlanRequest, ctx: WebUserContext = Depends(current_context)):
         api_config = ctx.require_text_api()
         def target(handle):
             from core.agent.chapter_generation import AgentChapterGenerationService, AgentChapterRequest
@@ -1537,10 +1551,10 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
             chapter_num = int(target_info.get("chapter_num") or 1)
             chapter_title = payload.chapter_title or f"第{chapter_num}章"
             handle.progress("Agent 规划章节", percent=15, stage="Agent 规划")
-            plan = AgentChapterGenerationService(ctx.novel_manager, client).prepare(AgentChapterRequest(title, chapter_num, chapter_title, payload.plot, "", payload.target_words, model, [], str(ctx.settings.get("global_user_prompt") or "")))
+            plan = AgentChapterGenerationService(ctx.novel_manager, client, skills_enabled=bool(ctx.settings.get("agent_skills_enabled", True))).prepare(AgentChapterRequest(title, chapter_num, chapter_title, payload.plot, payload.requirement, payload.target_words, model, payload.manual_entity_ids, str(ctx.settings.get("global_user_prompt") or "")))
             handle.progress("Agent 规划完成", percent=100, stage="完成", data={"plan": plan.to_dict(), "rendered": plan.render()})
             return {"plan": plan.to_dict(), "rendered": plan.render()}
-        return {"task_id": runtime.start_task(ctx.username, f"Agent 规划《{title}》", target, metadata={"kind": "agent_chapter_plan", "book": title})}
+        return {"task_id": runtime.start_task(ctx.username, f"Agent 规划《{title}》", target, metadata={"kind": "agent_chapter_plan", "book": title}, retryable=True)}
 
     @app.post("/api/books/{title}/agent/sessions", tags=["agent"])
     def create_agent_session(title: str, payload: AgentSessionCreateRequest, ctx: WebUserContext = Depends(current_context)):
@@ -1593,15 +1607,17 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
             )
             backend_holder["backend"] = backend
             request = AgentRunRequest(manifest.book_id, session_id, session.agent_kind, payload.message, payload.manual_references, model=model, book_title=title)
+            result_run = None
             try:
                 run = backend.run(request)
+                result_run = run
                 if repo.load_run(run.run_id) is None:
                     repo.save_run(run)
                 result = {"run": asdict(run), "backend": asdict(status)}
                 handle.progress("Agent 运行完成", percent=100, stage=run.status, data={"result": result})
                 return result
             finally:
-                if active_run_id:
+                if active_run_id and (result_run is None or result_run.status != "waiting_approval"):
                     runtime.unregister_agent_backend(active_run_id)
         return {"task_id": runtime.start_task(ctx.username, f"Agent 工作台《{title}》", target, metadata={"kind": "agent_workbench_run", "book": title, "session_id": session_id}, retryable=True)}
 
@@ -1617,10 +1633,11 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
         return {"run": asdict(run), "events": ledger.get("events", []) if isinstance(ledger, dict) else []}
 
     @app.post("/api/books/{title}/agent/runs/{run_id}/{action}", tags=["agent"])
-    def control_agent_run(title: str, run_id: str, action: str, ctx: WebUserContext = Depends(current_context)):
+    def control_agent_run(title: str, run_id: str, action: str, payload: AgentRunControlRequest | None = None, ctx: WebUserContext = Depends(current_context)):
         if action not in {"pause", "resume", "cancel"}:
             raise HTTPException(status_code=400, detail="不支持的 Agent 控制动作")
-        if not runtime.control_agent_run(ctx.username, run_id, action):
+        control_payload = payload.payload if payload else {}
+        if not runtime.control_agent_run(ctx.username, run_id, action, control_payload):
             raise HTTPException(status_code=404, detail="Agent 运行不在活动状态")
         return {"ok": True, "action": action}
     @app.post("/api/books/{title}/agent/advice", tags=["agent"])
@@ -1663,6 +1680,17 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
             pass
         maintenance = WorldBibleMaintenanceService(ctx.novel_manager).list_pending(title)
         return {"profiles": [asdict(item) for item in AGENT_PROFILES.values()], "sessions": sessions, "pending_changes": pending, "artifacts": artifacts[:50], "advice": advice, "advisor_history": history, "pending_world_maintenance": maintenance}
+
+    @app.get("/api/books/{title}/agent/artifacts/{artifact_id}", tags=["agent"])
+    def agent_artifact_detail(title: str, artifact_id: str, ctx: WebUserContext = Depends(current_context)):
+        from core.agent.repository import AgentRepository
+        artifact_name = safe_name(os.path.basename(str(artifact_id or "")))
+        if not artifact_name:
+            raise HTTPException(status_code=404, detail="Agent 产物不存在")
+        artifact = AgentRepository(ctx.novel_manager.get_workspace(title)).load_artifact(artifact_name)
+        if artifact is None:
+            raise HTTPException(status_code=404, detail="Agent 产物不存在")
+        return {"artifact": artifact}
 
     @app.post("/api/books/{title}/agent/world/maintenance/{maintenance_task_id}/retry", tags=["agent"])
     def retry_world_maintenance(title: str, maintenance_task_id: str, ctx: WebUserContext = Depends(current_context)):
@@ -1719,7 +1747,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
             snapshot = app_service.create_auto_snapshot(title, request.chapter_num, saved_version)
             handle.progress("Agent 章节生成完成", percent=100, stage="完成", data={"result": {"chapter_num": request.chapter_num, "version": saved_version, "snapshot_id": snapshot.snapshot_id}})
             return {"chapter_num": request.chapter_num, "version": saved_version, "snapshot_id": snapshot.snapshot_id}
-        return {"task_id": runtime.start_task(ctx.username, f"Agent 生成《{title}》章节", target, metadata={"kind": "agent_chapter_generate", "book": title, "plan_id": payload.plan_id})}
+        return {"task_id": runtime.start_task(ctx.username, f"Agent 生成《{title}》章节", target, metadata={"kind": "agent_chapter_generate", "book": title, "plan_id": payload.plan_id}, retryable=True)}
 
     @app.post("/api/books/{title}/agent/polish/plan", tags=["agent"])
     def agent_polish_plan(title: str, payload: AgentPolishPlanRequest, ctx: WebUserContext = Depends(current_context)):
@@ -1734,7 +1762,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
             plan = AgentChapterPolishService(ctx.novel_manager, client, skills_enabled=bool(ctx.settings.get("agent_skills_enabled", True))).prepare(request)
             handle.progress("Agent 润色方案完成", percent=100, stage="完成", data={"plan": plan.to_dict(), "rendered": plan.render()})
             return {"plan": plan.to_dict(), "rendered": plan.render()}
-        return {"task_id": runtime.start_task(ctx.username, f"Agent 润色规划《{title}》", target, metadata={"kind": "agent_polish_plan", "book": title})}
+        return {"task_id": runtime.start_task(ctx.username, f"Agent 润色规划《{title}》", target, metadata={"kind": "agent_polish_plan", "book": title}, retryable=True)}
 
     @app.post("/api/books/{title}/agent/polish/generate", tags=["agent"])
     def agent_polish_generate(title: str, payload: AgentPolishGenerateRequest, ctx: WebUserContext = Depends(current_context)):
@@ -1765,18 +1793,18 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
             service.mark_completed(request, plan, version, snapshot.snapshot_id)
             handle.progress("Agent 润色完成", percent=100, stage="完成", data={"result": {"chapter_num": request.chapter_num, "version": version, "snapshot_id": snapshot.snapshot_id}})
             return {"chapter_num": request.chapter_num, "version": version, "snapshot_id": snapshot.snapshot_id}
-        return {"task_id": runtime.start_task(ctx.username, f"Agent 润色《{title}》", target, metadata={"kind": "agent_polish_generate", "book": title, "plan_id": payload.plan_id})}
+        return {"task_id": runtime.start_task(ctx.username, f"Agent 润色《{title}》", target, metadata={"kind": "agent_polish_generate", "book": title, "plan_id": payload.plan_id}, retryable=True)}
 
     @app.post("/api/books/{title}/agent/extra/plan", tags=["agent"])
     def agent_extra_plan(title: str, payload: AgentExtraPlanRequest, ctx: WebUserContext = Depends(current_context)):
         _api, client, model = text_client_and_model(ctx)
         def target(handle):
             from core.agent.extra_generation import AgentExtraGenerationService, AgentExtraRequest
-            request = AgentExtraRequest(title, payload.extra_type, payload.start_node_id, payload.end_node_id, payload.reference_node_id, payload.title, payload.plot, payload.requirement, payload.target_words, model, [], str(ctx.settings.get("global_user_prompt") or ""))
+            request = AgentExtraRequest(title, payload.extra_type, payload.start_node_id, payload.end_node_id, payload.reference_node_id, payload.title, payload.plot, payload.requirement, payload.target_words, model, payload.manual_entity_ids, str(ctx.settings.get("global_user_prompt") or ""))
             plan = AgentExtraGenerationService(ctx.novel_manager, client, skills_enabled=bool(ctx.settings.get("agent_skills_enabled", True))).prepare(request)
             handle.progress("Agent 番外方案完成", percent=100, stage="完成", data={"plan": plan.to_dict(), "rendered": plan.render()})
             return {"plan": plan.to_dict(), "rendered": plan.render()}
-        return {"task_id": runtime.start_task(ctx.username, f"Agent 番外规划《{title}》", target, metadata={"kind": "agent_extra_plan", "book": title})}
+        return {"task_id": runtime.start_task(ctx.username, f"Agent 番外规划《{title}》", target, metadata={"kind": "agent_extra_plan", "book": title}, retryable=True)}
 
     @app.post("/api/books/{title}/agent/extra/generate", tags=["agent"])
     def agent_extra_generate(title: str, payload: AgentExtraGenerateRequest, ctx: WebUserContext = Depends(current_context)):
@@ -1802,7 +1830,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
             service.mark_completed(title, payload.plan_id, node.get("id", ""), snapshot.snapshot_id)
             handle.progress("Agent 番外完成", percent=100, stage="完成", data={"result": {"node": node, "snapshot_id": snapshot.snapshot_id}})
             return {"node": node, "snapshot_id": snapshot.snapshot_id}
-        return {"task_id": runtime.start_task(ctx.username, f"Agent 番外生成《{title}》", target, metadata={"kind": "agent_extra_generate", "book": title, "plan_id": payload.plan_id})}
+        return {"task_id": runtime.start_task(ctx.username, f"Agent 番外生成《{title}》", target, metadata={"kind": "agent_extra_generate", "book": title, "plan_id": payload.plan_id}, retryable=True)}
 
     @app.post("/api/books/{title}/agent/world/analyze", tags=["agent"])
     def agent_world_analyze(title: str, payload: WorldDetailAnalyzeRequest, ctx: WebUserContext = Depends(current_context)):
@@ -1814,7 +1842,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
             result = asdict(plan)
             handle.progress("世界书变更待审批", percent=100, stage="待审批", data={"result": result})
             return result
-        return {"task_id": runtime.start_task(ctx.username, f"Agent 世界书分析《{title}》", target, metadata={"kind": "agent_world_analyze", "book": title})}
+        return {"task_id": runtime.start_task(ctx.username, f"Agent 世界书分析《{title}》", target, metadata={"kind": "agent_world_analyze", "book": title}, retryable=True)}
 
     @app.post("/api/books/{title}/agent/world/confirm-scopes", tags=["agent"])
     def confirm_world_scopes(title: str, payload: WorldScopeConfirmRequest, ctx: WebUserContext = Depends(current_context)):
@@ -1970,7 +1998,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
                 settings = AgentContinuationService(ctx.novel_manager, client, skills_enabled=bool(ctx.settings.get("agent_skills_enabled", True))).generate_settings_from_world_data(world_data, model, book_title=title, global_user_prompt=str(ctx.settings.get("global_user_prompt") or ""), xp_mode=bool(payload.xp_mode or meta.xp_mode))
             else:
                 settings = generate_novel_settings_from_world_bible(client, world_data, model, global_user_prompt=str(ctx.settings.get("global_user_prompt") or ""), xp_mode=bool(payload.xp_mode or meta.xp_mode))
-            saved_meta = ctx.novel_manager.save_meta(title, protagonist_bio=settings.get("protagonist_bio", meta.protagonist_bio), background_story=settings.get("background_story", meta.background_story), writing_demand=settings.get("writing_demand", meta.writing_demand), author_plan=settings.get("author_plan", meta.author_plan), genre=getattr(meta, "genre", ""), style_tone=getattr(meta, "style_tone", ""))
+            saved_meta = ctx.novel_manager.save_meta(title, protagonist_bio=settings.get("protagonist_bio", meta.protagonist_bio), background_story=settings.get("background_story", meta.background_story), writing_demand=settings.get("writing_demand", meta.writing_demand), author_plan=settings.get("author_plan", meta.author_plan), genre=getattr(meta, "genre", ""), style_tone=getattr(meta, "style_tone", ""), xp_mode=bool(payload.xp_mode or meta.xp_mode))
             handle.progress("创建项目快照", percent=92, stage="快照")
             snapshot_id = ""
             try:
@@ -2729,30 +2757,11 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
 
     @app.post("/api/roleplay/conversations", tags=["roleplay"])
     def save_conversation(payload: ConversationSaveRequest, ctx: WebUserContext = Depends(current_context)):
-        record = payload.record or {}
+        record = dict(payload.record or {})
         conversation_id = record.get("conversation_id") or ctx.conversation_manager.generate_id(record.get("title") or "角色对话")
-        ctx.conversation_manager.save_conversation(
-            conversation_id=conversation_id,
-            title=record.get("title") or "角色对话",
-            model=record.get("model") or "",
-            messages=record.get("messages") or [],
-            strategy=record.get("strategy") or "角色扮演",
-            reply_mode=record.get("reply_mode") or "character",
-            chat_type=record.get("chat_type") or "private",
-            participant_character_ids=record.get("participant_character_ids") or [],
-            sender_name=record.get("sender_name") or "你",
-            sender_profile=record.get("sender_profile") or "",
-            required_responder_ids=record.get("required_responder_ids") or [],
-            structured_messages=record.get("structured_messages") or [],
-            branches=record.get("branches") or [],
-            active_branch_id=record.get("active_branch_id") or "main",
-            sender_profile_id=record.get("sender_profile_id") or "",
-            scene_state=record.get("scene_state") or {},
-            turn_policy=record.get("turn_policy") or {},
-            memory_change_sets=record.get("memory_change_sets") or [],
-            narrator_enabled=bool(record.get("narrator_enabled", False)),
-        )
-        return {"conversation_id": conversation_id}
+        record["conversation_id"] = conversation_id
+        save_roleplay_record(ctx, record)
+        return {"conversation_id": conversation_id, "conversation": ctx.conversation_manager.load_conversation(conversation_id) or record}
 
     @app.post("/api/roleplay/chat", tags=["roleplay"])
     def roleplay_chat(payload: RoleChatRequest, ctx: WebUserContext = Depends(current_context)):
@@ -2773,11 +2782,6 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
             if not participant_ids:
                 raise RuntimeError("请先创建并选择至少一个角色")
             chat_type = "group" if payload.chat_type == "group" and len(participant_ids) > 1 else "private"
-            required_ids = [cid for cid in payload.required_responder_ids if cid in participant_ids]
-            if chat_type == "private":
-                required_ids = participant_ids[:1]
-            elif not required_ids:
-                required_ids = list(participant_ids)
             conversation_id = payload.conversation_id.strip()
             record = ctx.conversation_manager.load_conversation(conversation_id) if conversation_id else None
             if not conversation_id:
@@ -2785,6 +2789,25 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
             name_to_id = {profile.name: profile.character_id for profile in book.profiles if profile.name}
             if record:
                 record = ensure_roleplay_branches(record)
+            scene_state = SceneState(**filter_fields(SceneState, payload.scene_state or (record or {}).get("scene_state") or {}))
+            turn_policy = TurnPolicy(**filter_fields(TurnPolicy, payload.turn_policy or (record or {}).get("turn_policy") or {}))
+            required_ids = [cid for cid in (payload.required_responder_ids or turn_policy.required_speaker_ids) if cid in participant_ids]
+            if chat_type == "private":
+                required_ids = participant_ids[:1]
+            elif not required_ids:
+                required_ids = list(participant_ids)
+            turn_policy.required_speaker_ids = list(required_ids)
+            turn_policy.allowed_speaker_ids = [cid for cid in turn_policy.allowed_speaker_ids if cid in participant_ids]
+            turn_policy.blocked_speaker_ids = [cid for cid in turn_policy.blocked_speaker_ids if cid in participant_ids]
+            turn_policy.speaker_order = [cid for cid in turn_policy.speaker_order if cid in participant_ids]
+            turn_policy.mention_only_ids = [cid for cid in turn_policy.mention_only_ids if cid in participant_ids]
+            scene_state.present_character_ids = [cid for cid in scene_state.present_character_ids if cid in participant_ids]
+            sender_profile_id = payload.sender_profile_id or (record or {}).get("sender_profile_id") or ""
+            sender_profile_record = next((item for item in ctx.sender_profile_manager.load() if item.sender_profile_id == sender_profile_id), None)
+            sender_name = payload.sender_name or (record or {}).get("sender_name") or (sender_profile_record.name if sender_profile_record else "你")
+            sender_profile_text = payload.sender_profile or (record or {}).get("sender_profile") or ""
+            if sender_profile_record and not sender_profile_text.strip():
+                sender_profile_text = "\n".join(str(value) for value in [sender_profile_record.identity, sender_profile_record.personality, sender_profile_record.appearance, sender_profile_record.background, sender_profile_record.relationships, sender_profile_record.knowledge_state, sender_profile_record.notes] if value)
             active_branch_id = (record or {}).get("active_branch_id") or "main"
             active_branch = next((item for item in (record or {}).get("branches", []) if item.get("branch_id") == active_branch_id), None)
             structured = []
@@ -2793,9 +2816,9 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
             elif record and record.get("structured_messages"):
                 structured = [ChatMessage(**filter_chat_message(item)) for item in record.get("structured_messages") or []]
             elif record:
-                structured = legacy_messages_to_structured(record.get("messages") or [], branch_id=active_branch_id, sender_name=record.get("sender_name") or payload.sender_name or "你", name_to_id=name_to_id)
+                structured = legacy_messages_to_structured(record.get("messages") or [], branch_id=active_branch_id, sender_name=record.get("sender_name") or sender_name or "你", name_to_id=name_to_id)
             turn = max([int(getattr(item, "turn_index", 0) or 0) for item in structured] or [0]) + 1
-            user_msg = ChatMessage(message_id=new_id("msg"), branch_id=active_branch_id, role="user", speaker_id="sender", speaker_name=payload.sender_name or "你", content=payload.message, turn_index=turn, created_at=now_text())
+            user_msg = ChatMessage(message_id=new_id("msg"), branch_id=active_branch_id, role="user", speaker_id="sender", speaker_name=sender_name or "你", content=payload.message, turn_index=turn, created_at=now_text())
             prompt_messages = [*structured, user_msg]
             strategy = RolePlayStrategy()
             strategy.character_book = book
@@ -2803,8 +2826,11 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
             strategy.primary_character_id = participant_ids[0]
             strategy.chat_type = chat_type
             strategy.required_responder_ids = required_ids
-            strategy.sender_name = payload.sender_name or "你"
-            strategy.sender_profile = payload.sender_profile or ""
+            strategy.sender_name = sender_name or "你"
+            strategy.sender_profile = sender_profile_text or ""
+            strategy.sender_profile_record = sender_profile_record
+            strategy.scene_state = scene_state
+            strategy.turn_policy = turn_policy
             strategy.reply_mode = payload.reply_mode if payload.reply_mode in {RolePlayStrategy.REPLY_MODE_CHARACTER, RolePlayStrategy.REPLY_MODE_NARRATOR} else RolePlayStrategy.REPLY_MODE_CHARACTER
             strategy.narrator_enabled = bool(payload.narrator_enabled)
             strategy.timeline = dict_to_timeline((record or {}).get("timeline") or [])
@@ -2848,9 +2874,9 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
                 structured_messages=[asdict(item) for item in all_structured],
                 branches=branches,
                 active_branch_id=active_branch_id,
-                sender_profile_id=(record or {}).get("sender_profile_id") or "",
-                scene_state=(record or {}).get("scene_state") or {},
-                turn_policy=(record or {}).get("turn_policy") or {},
+                sender_profile_id=sender_profile_id,
+                scene_state=asdict(scene_state),
+                turn_policy=asdict(turn_policy),
                 memory_change_sets=(record or {}).get("memory_change_sets") or [],
                 narrator_enabled=strategy.narrator_enabled,
             )
@@ -3185,7 +3211,11 @@ def build_diagnostics_payload(runtime: WebRuntime, ctx: WebUserContext) -> dict:
     settings_keys = sorted(ctx.settings.keys())
     api_config = ctx.load_api_config()
     text_api = api_config.get("text") or {}
-    downloads = sorted(runtime._downloads.get(ctx.username, {}).values(), key=lambda item: str(item.get("created_at") or ""), reverse=True)[:30]
+    downloads = sorted(
+        [item for item in runtime._downloads.values() if item.get("username") == ctx.username],
+        key=lambda item: str(item.get("created_at") or ""),
+        reverse=True,
+    )[:30]
     return {
         "schema_version": 1,
         "user": ctx.username,
@@ -3205,7 +3235,12 @@ def build_diagnostics_payload(runtime: WebRuntime, ctx: WebUserContext) -> dict:
         "token_summary": token_summary(token_entries),
         "token_log_count": len(token_entries),
         "downloads": [
-            {"download_id": item.get("download_id"), "filename": item.get("filename"), "created_at": item.get("created_at")}
+            {
+                "download_id": item.get("download_id"),
+                "download_url": item.get("download_url"),
+                "filename": item.get("filename"),
+                "created_at": item.get("created_at"),
+            }
             for item in downloads
         ],
     }
@@ -3253,20 +3288,35 @@ def estimate_token_cost(prompt_tokens: int, completion_tokens: int, model: str =
 
 def token_summary(entries: list[dict]) -> dict:
     totals = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    activity = {"duration_ms": 0, "duration_count": 0, "char_count": 0, "char_count_entries": 0, "hanzi_count": 0, "hanzi_count_entries": 0}
     by_model: dict[str, dict] = {}
     by_operation: dict[str, dict] = {}
     by_date: dict[str, dict] = {}
 
+    def add_activity(row: dict) -> None:
+        if row.get("duration_ms") is not None:
+            activity["duration_ms"] += int(row.get("duration_ms") or 0)
+            activity["duration_count"] += 1
+        if row.get("char_count") is not None:
+            activity["char_count"] += int(row.get("char_count") or 0)
+            activity["char_count_entries"] += 1
+        if row.get("hanzi_count") is not None:
+            activity["hanzi_count"] += int(row.get("hanzi_count") or 0)
+            activity["hanzi_count_entries"] += 1
+
     def add(bucket: dict, key: str, row: dict) -> None:
-        item = bucket.setdefault(key or "未分类", {"count": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+        item = bucket.setdefault(key or "未分类", {"count": 0, "prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "duration_ms": 0, "char_count": 0, "hanzi_count": 0})
         item["count"] += 1
         for name in totals:
+            item[name] += int(row.get(name) or 0)
+        for name in ("duration_ms", "char_count", "hanzi_count"):
             item[name] += int(row.get(name) or 0)
 
     for row in entries:
         if row.get("usage_status") == "ok":
             for name in totals:
                 totals[name] += int(row.get(name) or 0)
+        add_activity(row)
         add(by_model, str(row.get("model") or "未指定"), row)
         add(by_operation, str(row.get("operation") or "未指定"), row)
         add(by_date, str(row.get("timestamp") or "")[:10], row)
@@ -3278,6 +3328,7 @@ def token_summary(entries: list[dict]) -> dict:
             item["estimated_cost"] = estimate_token_cost(item.get("prompt_tokens", 0), item.get("completion_tokens", 0))
     return {
         "totals": totals,
+        "activity": activity,
         "estimated_cost": estimate_token_cost(totals["prompt_tokens"], totals["completion_tokens"]),
         "by_model": by_model,
         "by_operation": by_operation,
@@ -3466,14 +3517,14 @@ def markdown_display_path(ctx: WebUserContext, full_path: str) -> str:
     root = os.path.abspath(ctx.markdown_root)
     full = os.path.abspath(full_path)
     rel = os.path.relpath(full, root).replace("\\", "/")
-    if rel.endswith(".md.enc"):
+    if rel.endswith(".md.enc") or rel.endswith(".markdown.enc"):
         rel = rel[:-4]
     return rel
 
 
 def markdown_is_note_file(ctx: WebUserContext, full_path: str) -> bool:
     name = os.path.basename(full_path).lower()
-    if ctx.enc_key and name.endswith(".md.enc"):
+    if ctx.enc_key and name.endswith((".md.enc", ".markdown.enc")):
         return True
     return name.endswith((".md", ".markdown"))
 

@@ -89,6 +89,50 @@ class FrameworkIntegrationTests(unittest.TestCase):
             results = ClassicRetrievalBackend(manager).search("book", "黑塔事件", limit=10)
             self.assertFalse(any(item.source_id.startswith("extra_") for item in results))
 
+    def test_classic_retrieval_uses_configured_limit_and_min_score(self):
+        with tempfile.TemporaryDirectory() as root:
+            manager = NovelManager(bookshelf_root=root)
+            manager.create_book("book")
+            manager.save_chapter_version("book", 1, "Alpha", "alpha beta", version=1)
+            manager.save_chapter_version("book", 2, "Only Alpha", "alpha", version=1)
+            manager.switch_active_node("book", "ch0001_v001")
+            backend = ClassicRetrievalBackend(
+                manager,
+                {"retrieval_default_limit": 1, "retrieval_min_score": 1.0},
+            )
+            results = backend.search("book", "alpha")
+            self.assertEqual(1, len(results))
+            self.assertEqual("ch0001_v001", results[0].source_id)
+            self.assertGreaterEqual(results[0].score, 0.6)
+
+    def test_hybrid_retrieval_uses_configured_weights(self):
+        class WeightedEmbedder:
+            def get_query_embedding(self, _text):
+                return [1.0, 0.0]
+
+            def get_text_embedding(self, text):
+                return [1.0, 0.0] if "semantic-only" in str(text) else [0.0, 1.0]
+
+        with tempfile.TemporaryDirectory() as root:
+            manager = NovelManager(bookshelf_root=root)
+            manager.create_book("book")
+            manager.save_chapter_version("book", 1, "Keyword", "target keyword document", version=1)
+            manager.save_chapter_version("book", 2, "Semantic", "semantic-only document", version=1)
+            manager.switch_active_node("book", "ch0002_v001")
+            settings = {
+                "embedding_model": "fake",
+                "framework_auto_fallback": True,
+                "retrieval_default_limit": 1,
+                "retrieval_keyword_weight": 0,
+                "retrieval_semantic_weight": 100,
+                "retrieval_min_score": 0.5,
+            }
+            with patch.object(LlamaIndexHybridBackend, "_build_embedder", return_value=WeightedEmbedder()):
+                results = LlamaIndexHybridBackend(manager, settings).search("book", "target")
+            self.assertEqual(1, len(results))
+            self.assertEqual("ch0002_v001", results[0].source_id)
+            self.assertIn("×1.00", results[0].reason)
+
     def test_hybrid_index_is_encrypted_incremental_and_contains_no_plain_chapter(self):
         with tempfile.TemporaryDirectory() as root:
             manager = self._book_with_two_chapters(root, encrypted=True)

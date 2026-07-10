@@ -334,7 +334,7 @@ class WebRuntime:
         with self._agent_lock:
             self._agent_backends.pop(run_id, None)
 
-    def control_agent_run(self, username: str, run_id: str, action: str) -> bool:
+    def control_agent_run(self, username: str, run_id: str, action: str, payload: dict | None = None) -> bool:
         with self._agent_lock:
             entry = self._agent_backends.get(run_id)
         if not entry or entry.get("username") != username:
@@ -343,14 +343,24 @@ class WebRuntime:
         if action == "pause":
             return bool(backend.pause(run_id))
         if action == "resume":
-            return bool(backend.resume(run_id, {"resume": True}))
+            resume_payload = payload or {"resume": True}
+            result = backend.resume(run_id, resume_payload)
+            status = getattr(result, "status", None)
+            if status and status not in {"waiting_approval", "running", "paused", "queued"}:
+                self.unregister_agent_backend(run_id)
+            return bool(result)
         if action == "cancel":
-            return bool(backend.cancel(run_id))
+            ok = bool(backend.cancel(run_id))
+            if ok:
+                self.unregister_agent_backend(run_id)
+            return ok
         raise ValueError("不支持的 Agent 控制动作")
     def register_download(self, username: str, path: str, filename: str = "", media_type: str = "application/octet-stream") -> dict:
         download_id = f"download_{secrets.token_urlsafe(18)}"
         with self._download_lock:
             self._downloads[download_id] = {
+                "download_id": download_id,
+                "download_url": f"/api/downloads/{download_id}",
                 "username": username,
                 "path": os.path.abspath(path),
                 "filename": filename or os.path.basename(path),
@@ -416,6 +426,7 @@ class WebRuntime:
             f"生成《{title}》下一章",
             target,
             metadata={"kind": "chapter_generation", "book": title},
+            retryable=True,
         )
 
     def event_queue(self, task_id: str) -> queue.Queue[TaskEvent]:

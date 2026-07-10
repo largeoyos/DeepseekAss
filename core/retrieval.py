@@ -38,7 +38,7 @@ class RetrievalBackend(Protocol):
         book_title: str,
         query: str,
         filters: dict | None = None,
-        limit: int = 8,
+        limit: int | None = None,
     ) -> list[RetrievedContext]: ...
 
     def update_documents(self, book_title: str, changes: list[dict]) -> None: ...
@@ -48,19 +48,35 @@ class RetrievalBackend(Protocol):
 class ClassicRetrievalBackend:
     backend_name = "classic"
 
-    def __init__(self, novel_manager) -> None:
+    def __init__(self, novel_manager, settings: dict | None = None) -> None:
         self.manager = novel_manager
+        self.settings = settings or {}
 
-    def search(self, book_title: str, query: str, filters: dict | None = None, limit: int = 8) -> list[RetrievedContext]:
+    def search(self, book_title: str, query: str, filters: dict | None = None, limit: int | None = None) -> list[RetrievedContext]:
         documents = _collect_documents(self.manager, book_title)
         filtered = _filter_documents(self.manager, book_title, documents, filters or {})
         scored = []
+        min_score = self._min_score()
         for document in filtered:
             score = _keyword_score(query, document["content"], document["metadata"])
-            if score > 0 or document["metadata"].get("resident") or document["metadata"].get("manual"):
+            pinned = document["metadata"].get("resident") or document["metadata"].get("manual")
+            if pinned or (score > 0 and score >= min_score):
                 scored.append(_to_result(document, score, "关键词、实体ID或上下文策略命中"))
         scored.sort(key=lambda item: (item.metadata.get("manual", False), item.metadata.get("resident", False), item.score), reverse=True)
-        return scored[:max(1, int(limit))]
+        return scored[:self._result_limit(limit)]
+
+    def _result_limit(self, limit: int | None = None) -> int:
+        value = self.settings.get("retrieval_default_limit", 8) if limit is None else limit
+        try:
+            return max(1, min(50, int(value)))
+        except (TypeError, ValueError):
+            return 8
+
+    def _min_score(self) -> float:
+        try:
+            return max(0.0, min(1.0, float(self.settings.get("retrieval_min_score", 0) or 0)))
+        except (TypeError, ValueError):
+            return 0.0
 
     def update_documents(self, book_title: str, changes: list[dict]) -> None:
         return
@@ -74,8 +90,7 @@ class LlamaIndexHybridBackend(ClassicRetrievalBackend):
     backend_name = "hybrid"
 
     def __init__(self, novel_manager, settings: dict) -> None:
-        super().__init__(novel_manager)
-        self.settings = settings
+        super().__init__(novel_manager, settings)
         self._embedder = self._build_embedder(settings)
 
     @staticmethod
@@ -108,7 +123,7 @@ class LlamaIndexHybridBackend(ClassicRetrievalBackend):
             kwargs["api_key"] = api_key
         return OpenAIEmbedding(**kwargs)
 
-    def search(self, book_title: str, query: str, filters: dict | None = None, limit: int = 8) -> list[RetrievedContext]:
+    def search(self, book_title: str, query: str, filters: dict | None = None, limit: int | None = None) -> list[RetrievedContext]:
         try:
             documents = _collect_documents(self.manager, book_title)
             filtered = _filter_documents(self.manager, book_title, documents, filters or {})
@@ -121,20 +136,34 @@ class LlamaIndexHybridBackend(ClassicRetrievalBackend):
             return super().search(book_title, query, filters, limit)
         vector_by_checksum = index.get("vectors", {})
         candidates: dict[str, RetrievedContext] = {}
+        keyword_weight, semantic_weight = self._hybrid_weights()
+        min_score = self._min_score()
         for document in filtered:
             checksum = document["metadata"]["source_checksum"]
             vector = vector_by_checksum.get(checksum)
             semantic = _cosine(query_vector, vector) if isinstance(vector, list) else 0.0
             keyword = _keyword_score(query, document["content"], document["metadata"])
-            score = keyword * 0.55 + max(0.0, semantic) * 0.45
-            if score <= 0 and not document["metadata"].get("resident") and not document["metadata"].get("manual"):
+            score = keyword * keyword_weight + max(0.0, semantic) * semantic_weight
+            pinned = document["metadata"].get("resident") or document["metadata"].get("manual")
+            if not pinned and (score <= 0 or score < min_score):
                 continue
-            reason = f"混合检索：关键词={keyword:.3f}，语义={semantic:.3f}"
+            reason = f"混合检索：关键词={keyword:.3f}×{keyword_weight:.2f}，语义={semantic:.3f}×{semantic_weight:.2f}"
             result = _to_result(document, score, reason)
             candidates[f"{result.source_type}:{result.source_id}"] = result
         result = list(candidates.values())
         result.sort(key=lambda item: (item.metadata.get("manual", False), item.metadata.get("resident", False), item.score), reverse=True)
-        return result[:max(1, int(limit))]
+        return result[:self._result_limit(limit)]
+
+    def _hybrid_weights(self) -> tuple[float, float]:
+        try:
+            keyword = max(0.0, float(self.settings.get("retrieval_keyword_weight", 55) or 0))
+            semantic = max(0.0, float(self.settings.get("retrieval_semantic_weight", 45) or 0))
+        except (TypeError, ValueError):
+            keyword, semantic = 55.0, 45.0
+        total = keyword + semantic
+        if total <= 0:
+            return 0.55, 0.45
+        return keyword / total, semantic / total
 
     def update_documents(self, book_title: str, changes: list[dict]) -> None:
         workspace = self.manager.get_workspace(book_title)
@@ -237,13 +266,13 @@ class LlamaIndexHybridBackend(ClassicRetrievalBackend):
 def build_retrieval_backend(novel_manager, settings: dict) -> tuple[RetrievalBackend, str]:
     requested = str(settings.get("retrieval_backend", "classic") or "classic")
     if requested != "hybrid":
-        return ClassicRetrievalBackend(novel_manager), ""
+        return ClassicRetrievalBackend(novel_manager, settings), ""
     try:
         return LlamaIndexHybridBackend(novel_manager, settings), ""
     except Exception as exc:
         if not bool(settings.get("framework_auto_fallback", True)):
             raise
-        return ClassicRetrievalBackend(novel_manager), str(exc)
+        return ClassicRetrievalBackend(novel_manager, settings), str(exc)
 
 
 def _collect_documents(manager, book_title: str) -> list[dict]:
