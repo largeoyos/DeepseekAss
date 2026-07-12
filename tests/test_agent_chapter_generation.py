@@ -29,8 +29,26 @@ class FakeClient:
 def valid_plan():
     return {
         "chapter_goal": "主角进入钟楼并发现失踪案的新线索",
-        "scenes": [{"title": "进入钟楼", "purpose": "推进调查", "conflict": "守卫阻拦", "outcome": "发现暗门"}],
-        "character_arcs": [{"character": "阿离", "start_state": "犹豫", "end_state": "决定追查"}],
+        "must_happen": ["阿离亲自进入钟楼并发现暗门"],
+        "may_happen": ["守卫透露午夜曾听见第二次钟声"],
+        "must_not_happen": ["幕后真凶正式登场"],
+        "withheld_reveals": ["午夜钟声的真正来源"],
+        "end_state_requirements": ["阿离确认暗门存在并决定继续追查"],
+        "scenes": [{
+            "scene_id": "scene_1", "title": "进入钟楼", "purpose": "让调查从传闻进入实地取证",
+            "pov_character": "阿离", "time": "午夜前", "location": "钟楼入口与底层大厅",
+            "entry_state": "阿离谨慎试探，尚未获得进入许可",
+            "goal": "进入钟楼检查失踪者最后出现的位置", "conflict": "守卫拒绝放行并隐瞒异常",
+            "key_actions": ["观察守卫反应", "利用证物迫使守卫让步", "检查墙面磨损"],
+            "information_released": ["守卫害怕午夜钟声", "墙后通道近期被使用过"],
+            "turning_point": "钟响令守卫失神并暴露暗门方向",
+            "choice": "阿离暂不追问守卫，先进入暗门",
+            "cost": "失去当场逼问口供的机会并暴露调查意图",
+            "outcome": "阿离发现并打开暗门", "exit_state": "阿离进入未知通道，守卫态度不明",
+            "irreversible_change": "秘密通道从猜测变成阿离亲眼确认的事实",
+            "target_words": 1000, "forbidden": ["揭示暗门后的最终真相"],
+        }],
+        "character_arcs": [{"character": "阿离", "start_state": "犹豫", "end_state": "决定追查", "trigger": "守卫的异常反应", "choice": "独自进入暗门", "cost": "暴露调查意图"}],
         "plot_threads": ["钟楼谜案"],
         "foreshadowing_actions": [{"action": "推进", "target": "午夜钟声"}],
         "selected_world_entities": [{"id": "hero", "name": "阿离", "reason": "本章主角"}],
@@ -58,6 +76,9 @@ class AgentChapterGenerationTests(unittest.TestCase):
             self.assertEqual(1, plan.selected_history[0]["chapter_num"])
             self.assertTrue(plan.selected_skills)
             self.assertIn("chapter-planning", {item["id"] for item in plan.selected_skills})
+            self.assertEqual(3000, plan.scenes[0]["target_words"])
+            self.assertEqual("阿离", plan.scenes[0]["pov_character"])
+            self.assertIn("不可逆变化", plan.render())
             workspace = manager.get_workspace("book")
             ledger = workspace.storage.read_json(f"{workspace.agent_root}/chapter_runs/{plan.plan_id}.json")
             self.assertEqual("prepared", ledger["status"])
@@ -72,6 +93,21 @@ class AgentChapterGenerationTests(unittest.TestCase):
             )
             self.assertTrue(plan.scenes)
             self.assertEqual(2, len(client.chat.completions.calls))
+
+    def test_contract_requires_verifiable_scene_fields(self):
+        with tempfile.TemporaryDirectory() as root:
+            manager = NovelManager(bookshelf_root=root)
+            manager.create_book("book")
+            incomplete = valid_plan()
+            incomplete["scenes"] = [{"title": "只有标题"}]
+            client = FakeClient([incomplete, valid_plan()])
+            plan = AgentChapterGenerationService(manager, client).prepare(
+                AgentChapterRequest("book", 1, "开始", "调查钟楼", "", 1800, "fake")
+            )
+            self.assertEqual(2, len(client.chat.completions.calls))
+            self.assertEqual(1800, sum(scene["target_words"] for scene in plan.scenes))
+            self.assertTrue(plan.must_happen)
+            self.assertTrue(plan.end_state_requirements)
 
     def test_generate_includes_selected_history_and_book_settings(self):
         with tempfile.TemporaryDirectory() as root:
