@@ -20,6 +20,7 @@ DEFAULT_PRESETS = {
 
 DEFAULT_SETTINGS = {
     "last_model": Config.MODEL_V4_FLASH,
+    "model_routing_mode": "standard",
     "favorite_models": [Config.MODEL_V4_FLASH, Config.MODEL_V4_PRO],
     "custom_models": [],
     "current_preset": "狂野",

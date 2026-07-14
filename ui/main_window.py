@@ -221,6 +221,10 @@ MODEL_OPTIONS = [
     Config.MODEL_V4_PRO,
 ]
 
+MODEL_ROUTING_STANDARD = "standard"
+MODEL_ROUTING_PRO_BODY_FLASH_AUX = "pro_body_flash_aux"
+MODEL_ROUTING_PRO_BODY_FLASH_AUX_LABEL = "✦ 正文 Pro · 其余任务 Flash（省费）"
+
 
 # ========== HTML / CSS 模板（深色主题） ==========
 
@@ -616,6 +620,8 @@ class _UsageLoggingCompletionsProxy:
         self._operation = operation
 
     def create(self, *args, **kwargs):
+        kwargs = dict(kwargs)
+        kwargs["model"] = self._owner._resolve_auxiliary_model(kwargs.get("model"))
         task_id = self._owner._begin_api_task(
             self._owner._api_operation_label(self._operation)
         )
@@ -1181,6 +1187,8 @@ class DeepSeekChatGUI(QMainWindow):
         """创建初始聊天客户端（默认角色扮演模式）"""
         strategy = RolePlayStrategy()
         model = (getattr(self, "_api_config", {}).get("text", {}) or {}).get("model")
+        if self._is_pro_body_flash_aux_mode():
+            model = Config.MODEL_V4_FLASH
         self._client = DeepSeekChatClient(strategy=strategy, model=model or strategy.recommended_model)
 
     def _build_model_options(self) -> list[str]:
@@ -1201,6 +1209,27 @@ class DeepSeekChatGUI(QMainWindow):
             models.append(last_model)
         return models
 
+    def _is_pro_body_flash_aux_mode(self) -> bool:
+        return self._settings.get("model_routing_mode") == MODEL_ROUTING_PRO_BODY_FLASH_AUX
+
+    def _body_generation_model(self) -> str:
+        return Config.MODEL_V4_PRO if self._is_pro_body_flash_aux_mode() else self._client.model
+
+    def _resolve_auxiliary_model(self, requested_model: str | None) -> str:
+        return Config.MODEL_V4_FLASH if self._is_pro_body_flash_aux_mode() else str(requested_model or self._client.model)
+
+    def _populate_model_combo(self) -> None:
+        self._model_combo.clear()
+        self._model_combo.addItem(MODEL_ROUTING_PRO_BODY_FLASH_AUX_LABEL, MODEL_ROUTING_PRO_BODY_FLASH_AUX)
+        for model in self._model_options:
+            self._model_combo.addItem(model, model)
+
+    def _select_current_model_route(self) -> None:
+        route = MODEL_ROUTING_PRO_BODY_FLASH_AUX if self._is_pro_body_flash_aux_mode() else self._client.model
+        index = self._model_combo.findData(route)
+        if index >= 0:
+            self._model_combo.setCurrentIndex(index)
+
     def _reload_user_settings(self) -> None:
         self._settings = self._settings_manager.load()
         self._novel_manager.configure_retrieval(self._settings)
@@ -1214,12 +1243,14 @@ class DeepSeekChatGUI(QMainWindow):
             self._settings_applying = True
             current_model = self._client.model
             self._model_combo.blockSignals(True)
-            self._model_combo.clear()
-            self._model_combo.addItems(self._model_options)
-            target_model = self._settings.get("last_model") or current_model
-            if target_model in self._model_options:
-                self._model_combo.setCurrentText(target_model)
-                self._client.switch_model(target_model)
+            self._populate_model_combo()
+            if self._is_pro_body_flash_aux_mode():
+                self._client.switch_model(Config.MODEL_V4_FLASH)
+            else:
+                target_model = self._settings.get("last_model") or current_model
+                if target_model in self._model_options:
+                    self._client.switch_model(target_model)
+            self._select_current_model_route()
             self._model_combo.blockSignals(False)
             self._settings_applying = False
         if hasattr(self, "_preset_combo"):
@@ -1309,6 +1340,7 @@ class DeepSeekChatGUI(QMainWindow):
             return
         settings = self._settings_manager.load()
         settings["last_model"] = self._client.model
+        settings["model_routing_mode"] = self._settings.get("model_routing_mode", MODEL_ROUTING_STANDARD)
         settings["current_preset"] = self._preset_combo.currentText() if hasattr(self, "_preset_combo") else settings.get("current_preset", "")
         settings["presets"] = self._presets
         self._settings_manager.save(settings)
@@ -1584,8 +1616,10 @@ class DeepSeekChatGUI(QMainWindow):
         model_layout = QVBoxLayout(model_group)
         model_layout.setContentsMargins(8, 4, 8, 4)
         self._model_combo = QComboBox()
-        self._model_combo.addItems(self._model_options)
+        self._populate_model_combo()
+        self._select_current_model_route()
         self._model_combo.currentTextChanged.connect(self._on_model_changed)
+        self._model_combo.setToolTip("选择“正文 Pro”时，章节正文使用 Pro，摘要、世界书、监督等辅助任务使用 Flash。")
         model_layout.addWidget(self._model_combo)
         layout.addWidget(model_group)
 
@@ -3389,7 +3423,9 @@ class DeepSeekChatGUI(QMainWindow):
             self._current_conversation_id = None
             self._current_conversation_title = ""
             self._conversation_dirty = False
-        self._model_combo.setCurrentText(self._client.model)
+        if self._is_pro_body_flash_aux_mode():
+            self._client.switch_model(Config.MODEL_V4_FLASH)
+        self._select_current_model_route()
         # 同步滑块时阻止滑块事件把预设改成"自定义"
         current_preset = self._preset_combo.currentText()
         self._preset_applying = True
@@ -3441,8 +3477,17 @@ class DeepSeekChatGUI(QMainWindow):
         self._sync_mode_sidebar()
         self._update_status()
 
-    def _on_model_changed(self, model: str) -> None:
-        self._client.switch_model(model)
+    def _on_model_changed(self, label: str) -> None:
+        selected = self._model_combo.currentData() if hasattr(self, "_model_combo") else None
+        settings = self._settings_manager.load()
+        if selected == MODEL_ROUTING_PRO_BODY_FLASH_AUX:
+            settings["model_routing_mode"] = MODEL_ROUTING_PRO_BODY_FLASH_AUX
+            self._client.switch_model(Config.MODEL_V4_FLASH)
+        else:
+            settings["model_routing_mode"] = MODEL_ROUTING_STANDARD
+            self._client.switch_model(str(selected or label))
+        self._settings_manager.save(settings)
+        self._settings = settings
         self._save_runtime_settings()
         self._update_status()
 
@@ -3523,6 +3568,9 @@ class DeepSeekChatGUI(QMainWindow):
             pass
         return ""
 
+    def _model_route_display(self) -> str:
+        return "正文 Pro / 辅助 Flash" if self._is_pro_body_flash_aux_mode() else self._client.model
+
     def _refresh_top_status(self) -> None:
         if not hasattr(self, "_top_status_label") or not self._client:
             return
@@ -3530,7 +3578,7 @@ class DeepSeekChatGUI(QMainWindow):
         state = "生成中" if self._streaming else "就绪"
         self._top_status_label.setText(
             f"模式: {self._client.strategy.get_name()} | "
-            f"模型: {self._client.model} | "
+            f"模型: {self._model_route_display()} | "
             f"书籍: {book} | 状态: {state}"
         )
 
@@ -3807,8 +3855,9 @@ class DeepSeekChatGUI(QMainWindow):
         stream = None
         task_id = self._begin_api_task(self._api_operation_label(operation))
 
+        body_model = self._body_generation_model()
         kwargs = {
-            "model": self._client.model,
+            "model": body_model,
             "messages": messages,
             "temperature": self._client.temperature,
             "top_p": self._client.top_p,
@@ -3856,6 +3905,7 @@ class DeepSeekChatGUI(QMainWindow):
             "char_count": len(content),
             "hanzi_count": self._count_hanzi(content),
             "usage": usage_dict,
+            "model": body_model,
         }
         cancelled = bool(self._client._cancel_requested)
         if cancelled:
@@ -3869,6 +3919,7 @@ class DeepSeekChatGUI(QMainWindow):
                 duration_ms=duration_ms,
                 char_count=len(prompt_text or ""),
                 hanzi_count=self._count_hanzi(prompt_text),
+                model=body_model,
             )
             return content, stats, True
 
@@ -3882,6 +3933,7 @@ class DeepSeekChatGUI(QMainWindow):
             duration_ms=duration_ms,
             char_count=len(prompt_text or ""),
             hanzi_count=self._count_hanzi(prompt_text),
+            model=body_model,
         )
         self._log_token_usage(
             operation=operation,
@@ -3893,6 +3945,7 @@ class DeepSeekChatGUI(QMainWindow):
             duration_ms=duration_ms,
             char_count=len(content),
             hanzi_count=self._count_hanzi(content),
+            model=body_model,
         )
         if emit_tokens:
             self._stream_signals.token.emit(self._format_chapter_stats_block(stats))
@@ -3931,6 +3984,8 @@ class DeepSeekChatGUI(QMainWindow):
         Config.IMAGE_BASE_URL = image_api.get("base_url", "")
         Config.IMAGE_MODEL = image_api.get("model", "")
         self._client.reconfigure_connection(Config.API_KEY, Config.BASE_URL, text_api["model"])
+        if self._is_pro_body_flash_aux_mode():
+            self._client.switch_model(Config.MODEL_V4_FLASH)
 
         settings = self._settings_manager.load()
         settings["last_model"] = text_api["model"]
