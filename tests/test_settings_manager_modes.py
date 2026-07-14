@@ -13,6 +13,33 @@ class SettingsManagerNovelModeTests(unittest.TestCase):
         self.assertEqual("classic", settings["novel_generation_mode"])
         self.assertFalse(settings["controlled_agent_enabled"])
 
+    def test_writing_automation_defaults_are_opt_in(self):
+        with tempfile.TemporaryDirectory() as root:
+            settings = SettingsManager(root).load()
+        self.assertFalse(settings["snapshot_timed_enabled"])
+        self.assertFalse(settings["auto_fill_first_chapter_background"])
+        self.assertFalse(settings["auto_fill_first_chapter_writing_demand"])
+
+    def test_legacy_timed_snapshot_default_is_disabled(self):
+        with tempfile.TemporaryDirectory() as root:
+            with open(f"{root}/settings.json", "w", encoding="utf-8") as stream:
+                json.dump({"snapshot_timed_enabled": True}, stream)
+            settings = SettingsManager(root).load()
+        self.assertFalse(settings["snapshot_timed_enabled"])
+
+    def test_explicit_timed_snapshot_preference_is_preserved(self):
+        with tempfile.TemporaryDirectory() as root:
+            with open(f"{root}/settings.json", "w", encoding="utf-8") as stream:
+                json.dump(
+                    {
+                        "snapshot_timed_enabled": True,
+                        "snapshot_timed_user_configured": True,
+                    },
+                    stream,
+                )
+            settings = SettingsManager(root).load()
+        self.assertTrue(settings["snapshot_timed_enabled"])
+
     def test_legacy_enabled_flag_migrates_to_agent_mode(self):
         with tempfile.TemporaryDirectory() as root:
             with open(f"{root}/settings.json", "w", encoding="utf-8") as stream:
@@ -34,6 +61,7 @@ class SettingsManagerNovelModeTests(unittest.TestCase):
             settings = SettingsManager(root).load()
         self.assertEqual("classic", settings["novel_generation_mode"])
         self.assertFalse(settings["controlled_agent_enabled"])
+
 
     def test_save_keeps_legacy_flag_synchronized(self):
         with tempfile.TemporaryDirectory() as root:

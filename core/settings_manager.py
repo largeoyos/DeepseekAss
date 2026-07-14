@@ -25,8 +25,13 @@ DEFAULT_SETTINGS = {
     "current_preset": "狂野",
     "presets": DEFAULT_PRESETS,
     "theme": "dark",
-    "snapshot_timed_enabled": True,
+    # Timed snapshots are useful for long editing sessions, but are opt-in so
+    # they do not add background task messages for people who do not need them.
+    "snapshot_timed_enabled": False,
+    "snapshot_timed_user_configured": False,
     "snapshot_interval_minutes": 30,
+    "auto_fill_first_chapter_background": False,
+    "auto_fill_first_chapter_writing_demand": False,
     "novel_generation_mode": "classic",
     "controlled_agent_enabled": False,
     "agent_skills_enabled": True,
@@ -86,6 +91,11 @@ class SettingsManager:
                         data = json.load(f)
                 if isinstance(data, dict):
                     settings.update(data)
+                    # Before this release the timer had no UI switch and was
+                    # enabled by default. Treat legacy values as opt-out unless
+                    # the user has explicitly saved the new preference.
+                    if "snapshot_timed_user_configured" not in data:
+                        settings["snapshot_timed_enabled"] = False
                     if "novel_generation_mode" not in data:
                         settings["novel_generation_mode"] = (
                             "agent" if bool(data.get("controlled_agent_enabled", False)) else "classic"

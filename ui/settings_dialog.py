@@ -86,6 +86,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._build_data_tab(), "数据管理")
         tabs.addTab(self._build_appearance_tab(), "外观")
         tabs.addTab(self._build_agent_tab(), "Agent")
+        tabs.addTab(self._build_writing_automation_tab(), "写作自动化")
         layout.addWidget(tabs, stretch=1)
 
         row = QHBoxLayout()
@@ -307,6 +308,74 @@ class SettingsDialog(QDialog):
         layout.addWidget(self._dark_theme)
         layout.addStretch()
         return page
+
+    def _build_writing_automation_tab(self) -> QWidget:
+        """Options that affect writing workflow rather than one generation mode."""
+        page = QWidget()
+        layout = QVBoxLayout(page)
+
+        fill_group = QGroupBox("首章完成后补全空白设定")
+        fill_layout = QVBoxLayout(fill_group)
+        notice = QLabel(
+            "仅在一本小说的首章首次生成并成功更新世界书后运行；"
+            "只补全仍为空的字段，绝不会覆盖作者已经填写的内容。"
+        )
+        notice.setWordWrap(True)
+        fill_layout.addWidget(notice)
+        self._auto_fill_first_chapter_background = QCheckBox("自动概括世界观 / 背景故事")
+        self._auto_fill_first_chapter_background.setToolTip("会额外调用一次模型，从首章世界书归纳背景设定")
+        self._auto_fill_first_chapter_background.setChecked(
+            bool(self._settings.get("auto_fill_first_chapter_background", False))
+        )
+        self._auto_fill_first_chapter_writing_demand = QCheckBox("自动概括写作要求")
+        self._auto_fill_first_chapter_writing_demand.setToolTip("会额外调用一次模型，归纳首章已呈现的风格、节奏与约束")
+        self._auto_fill_first_chapter_writing_demand.setChecked(
+            bool(self._settings.get("auto_fill_first_chapter_writing_demand", False))
+        )
+        fill_layout.addWidget(self._auto_fill_first_chapter_background)
+        fill_layout.addWidget(self._auto_fill_first_chapter_writing_demand)
+        layout.addWidget(fill_group)
+
+        snapshot_group = QGroupBox("项目快照")
+        snapshot_form = QFormLayout(snapshot_group)
+        self._snapshot_timed_enabled = QCheckBox("定时创建项目快照")
+        self._snapshot_timed_enabled.setToolTip("后台快照仅保存有改动的项目；关闭后不再显示 Timed project snapshot 日志")
+        self._snapshot_timed_enabled.setChecked(
+            bool(self._settings.get("snapshot_timed_enabled", False))
+        )
+        self._snapshot_interval_minutes = QSpinBox()
+        self._snapshot_interval_minutes.setRange(5, 240)
+        self._snapshot_interval_minutes.setSuffix(" 分钟")
+        self._snapshot_interval_minutes.setValue(
+            max(5, int(self._settings.get("snapshot_interval_minutes", 30)))
+        )
+        snapshot_form.addRow(self._snapshot_timed_enabled)
+        snapshot_form.addRow("快照间隔", self._snapshot_interval_minutes)
+        snapshot_note = QLabel("章节保存后的版本快照不受此开关影响，仍可用于恢复章节历史。")
+        snapshot_note.setWordWrap(True)
+        snapshot_form.addRow(snapshot_note)
+        layout.addWidget(snapshot_group)
+
+        save_btn = QPushButton("保存写作自动化设置")
+        save_btn.clicked.connect(self._save_writing_automation_settings)
+        layout.addWidget(save_btn)
+        layout.addStretch()
+        return page
+
+    def _save_writing_automation_settings(self) -> None:
+        settings = self._settings_manager.load()
+        settings["auto_fill_first_chapter_background"] = (
+            self._auto_fill_first_chapter_background.isChecked()
+        )
+        settings["auto_fill_first_chapter_writing_demand"] = (
+            self._auto_fill_first_chapter_writing_demand.isChecked()
+        )
+        settings["snapshot_timed_enabled"] = self._snapshot_timed_enabled.isChecked()
+        settings["snapshot_timed_user_configured"] = True
+        settings["snapshot_interval_minutes"] = self._snapshot_interval_minutes.value()
+        self._settings_manager.save(settings)
+        self._settings = settings
+        self._settings_changed_callback()
 
     def _build_agent_tab(self) -> QWidget:
         page = QScrollArea()

@@ -95,6 +95,10 @@ from core.app_services import (
 from core.agent.skills import HUMANIZER_ZH_STYLE_BRIEF
 from core.world_bible_diff import diff_world_bibles
 from core.settings_manager import SettingsManager
+from core.initial_novel_settings import (
+    select_missing_initial_setting_updates,
+    world_bible_to_setting_input,
+)
 from core.token_log_manager import TokenLogManager
 from ui.dialog_utils import apply_responsive_dialog_size
 from strategies import (
@@ -192,6 +196,7 @@ class StreamSignals(QObject):
     directions_ready = pyqtSignal(list, str, str, int)  # directions, setting, plot, word_count
     novel_imported = pyqtSignal(str)               # 从源文档导入小说完成，参数：标题
     refresh_chapter_info = pyqtSignal(str)          # 安全刷新章节信息，参数：书名
+    novel_settings_auto_filled = pyqtSignal(str)    # 首章自动补全设定后刷新表单
     character_book_sync_status = pyqtSignal(str)   # 后台人物书同步状态
     character_book_sync_status = pyqtSignal(str)   # 后台人物书同步状态
     agent_chapter_plan_ready = pyqtSignal(object, object, object)
@@ -684,6 +689,9 @@ class DeepSeekChatGUI(QMainWindow):
         self._stream_signals.directions_ready.connect(self._show_direction_selector)
         self._stream_signals.novel_imported.connect(self._on_cont_novel_imported)
         self._stream_signals.refresh_chapter_info.connect(self._refresh_chapter_info_display)
+        self._stream_signals.novel_settings_auto_filled.connect(
+            self._on_initial_novel_settings_auto_filled
+        )
         self._stream_signals.character_book_sync_status.connect(
             self._on_character_book_sync_status
         )
@@ -799,10 +807,7 @@ class DeepSeekChatGUI(QMainWindow):
 
         self._snapshot_timer = QTimer(self)
         self._snapshot_timer.timeout.connect(self._on_timed_snapshot)
-        snapshot_minutes = max(5, int(self._settings.get("snapshot_interval_minutes", 30)))
-        self._snapshot_timer.setInterval(snapshot_minutes * 60 * 1000)
-        if self._settings.get("snapshot_timed_enabled", True):
-            self._snapshot_timer.start()
+        self._configure_timed_snapshot_timer()
 
         self._presets = self._settings.get("presets", PRESETS).copy()
         self._model_options = self._build_model_options()
@@ -1204,6 +1209,7 @@ class DeepSeekChatGUI(QMainWindow):
 
     def _apply_settings_to_controls(self) -> None:
         self._reload_user_settings()
+        self._configure_timed_snapshot_timer()
         if hasattr(self, "_model_combo"):
             self._settings_applying = True
             current_model = self._client.model
@@ -3528,8 +3534,20 @@ class DeepSeekChatGUI(QMainWindow):
             f"书籍: {book} | 状态: {state}"
         )
 
+    def _configure_timed_snapshot_timer(self) -> None:
+        """Apply the snapshot preference immediately, including while the app runs."""
+        if not hasattr(self, "_snapshot_timer"):
+            return
+        minutes = max(5, int(self._settings.get("snapshot_interval_minutes", 30)))
+        self._snapshot_timer.setInterval(minutes * 60 * 1000)
+        if self._settings.get("snapshot_timed_enabled", False):
+            if not self._snapshot_timer.isActive():
+                self._snapshot_timer.start()
+        else:
+            self._snapshot_timer.stop()
+
     def _on_timed_snapshot(self) -> None:
-        if self._streaming:
+        if not self._settings.get("snapshot_timed_enabled", False) or self._streaming:
             return
         title = self._get_current_book_title()
         if not title:
@@ -3538,6 +3556,63 @@ class DeepSeekChatGUI(QMainWindow):
             "Timed project snapshot",
             lambda _handle: self._novel_manager.snapshot_service(title).create_if_changed(source="timer"),
         )
+
+    def _auto_fill_initial_novel_settings(self, title: str, *, xp_mode: bool) -> None:
+        """Generate opted-in initial settings after a trustworthy first-chapter World Bible."""
+        meta = self._novel_manager.load_meta(title)
+        fill_background = bool(self._settings.get("auto_fill_first_chapter_background", False))
+        fill_writing_demand = bool(
+            self._settings.get("auto_fill_first_chapter_writing_demand", False)
+        )
+        if not fill_background and not fill_writing_demand:
+            return
+        if (
+            not fill_background or str(meta.background_story or "").strip()
+        ) and (
+            not fill_writing_demand or str(meta.writing_demand or "").strip()
+        ):
+            return
+
+        from utils.summarize import generate_novel_settings_from_world_bible
+
+        world_bible = self._novel_manager.load_world_bible(title)
+        world_data = world_bible_to_setting_input(world_bible)
+        if not any(world_data.get(key) for key in ("characters", "locations", "rules", "plot_threads", "timeline")):
+            self._stream_signals.token.emit("ℹ️ 首章世界书暂无足够信息，未自动补全作者设定。\n")
+            return
+
+        self._stream_signals.token.emit("🪄 正在根据首章内容补全空白作者设定…\n")
+        generated = generate_novel_settings_from_world_bible(
+            self._usage_logged_client("initial_novel_settings"),
+            world_data,
+            self._client.model,
+            global_user_prompt=self._client.global_user_prompt,
+            xp_mode=xp_mode,
+        )
+        updates = select_missing_initial_setting_updates(
+            meta,
+            generated,
+            fill_background=fill_background,
+            fill_writing_demand=fill_writing_demand,
+        )
+        if not updates:
+            self._stream_signals.token.emit("ℹ️ 未获得可用的自动设定，已保留原有内容。\n")
+            return
+        self._novel_manager.save_meta(title, **updates)
+        labels = []
+        if "background_story" in updates:
+            labels.append("世界观 / 背景故事")
+        if "writing_demand" in updates:
+            labels.append("写作要求")
+        self._stream_signals.token.emit(f"✅ 已自动补全：{'、'.join(labels)}。\n")
+        self._stream_signals.novel_settings_auto_filled.emit(title)
+
+    def _on_initial_novel_settings_auto_filled(self, title: str) -> None:
+        """Refresh visible editors so a later save cannot overwrite auto-filled values."""
+        if self._bookshelf_combo.currentText() == title:
+            self._on_book_selected(title)
+        if self._cont_bookshelf_combo.currentText() == title:
+            self._on_cont_book_selected(title)
 
     def _on_application_task_event(self, event) -> None:
         if event.type == "failed":
@@ -3566,6 +3641,7 @@ class DeepSeekChatGUI(QMainWindow):
             "continuation_summary": "提取章节概要",
             "chapter_tree_summary": "提取章节概要",
             "world_bible_update": "提取世界书",
+            "initial_novel_settings": "生成初始写作设定",
             "chapter_tree_world_bible": "提取世界书",
             "continuation_import_analysis": "分析导入文档",
             "batch_import_analysis": "分析批量章节",
@@ -6221,6 +6297,7 @@ class DeepSeekChatGUI(QMainWindow):
             # 更新世界书；Agent 章节使用可恢复、幂等的逐章维护服务。
             self._stream_signals.token.emit("\n📖 正在更新世界书...\n")
             maintenance = None
+            world_bible_ready = False
             if agent_plan is not None:
                 from core.agent.world_bible_agent import WorldBibleAgentService
                 maintenance = WorldBibleAgentService(self._novel_manager).analyze_chapter(
@@ -6236,6 +6313,7 @@ class DeepSeekChatGUI(QMainWindow):
                     world_maintenance=asdict(maintenance),
                 )
                 if maintenance.status == "completed":
+                    world_bible_ready = True
                     self._stream_signals.token.emit(
                         f"✅ 世界书已维护：新增 {len(maintenance.added)}，更新 {len(maintenance.updated)}，归档 {len(maintenance.archived)}。\n"
                     )
@@ -6255,6 +6333,7 @@ class DeepSeekChatGUI(QMainWindow):
                         xp_mode=xp_mode,
                     )
                     self._novel_manager.save_world_bible(title, updated_bible)
+                    world_bible_ready = True
                     self._stream_signals.token.emit("✅ 世界书已更新。\n")
                     if getattr(updated_bible, "consistency_warnings", None):
                         self._stream_signals.token.emit(
@@ -6262,6 +6341,14 @@ class DeepSeekChatGUI(QMainWindow):
                         )
                 except Exception as wb_e:
                     self._stream_signals.token.emit(f"⚠️ 世界书更新跳过: {wb_e}\n")
+
+            if new_chapter and chapter_num == 1 and world_bible_ready:
+                try:
+                    self._auto_fill_initial_novel_settings(title, xp_mode=xp_mode)
+                except Exception as settings_error:
+                    self._stream_signals.token.emit(
+                        f"⚠️ 首章自动设定未完成，已保留章节与世界书：{settings_error}\n"
+                    )
 
             try:
                 self._chapter_service.create_auto_snapshot(title, chapter_num, saved_version)
