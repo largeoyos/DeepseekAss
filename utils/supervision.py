@@ -80,6 +80,14 @@ def format_repair_diff(before: str, after: str, max_chars: int = 6000) -> str:
     return diff
 
 
+def format_repair_diff_for_markdown(diff: str) -> str:
+    """Fence a unified diff so Markdown cannot parse its markers as headings."""
+    text = str(diff or "")
+    longest_run = max((len(item) for item in re.findall(r"`+", text)), default=0)
+    fence = "`" * max(3, longest_run + 1)
+    return f"{fence}diff\n{text}\n{fence}"
+
+
 def _parse_json(text: str) -> dict[str, Any] | None:
     raw = (text or "").strip()
     if "```json" in raw:
@@ -335,7 +343,7 @@ def supervise_chapter(
             try:
                 repair_change_callback(
                     round_index + 1,
-                    format_repair_diff(content, repaired),
+                    format_repair_diff_for_markdown(format_repair_diff(content, repaired)),
                 )
             except Exception:
                 pass

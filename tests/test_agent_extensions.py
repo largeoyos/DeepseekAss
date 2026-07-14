@@ -1,9 +1,10 @@
+import json
 import tempfile
 import time
 import unittest
 
 from core.agent.advisor import FICTION_CONTEXT_PREFIX, WritingAdvisorService
-from core.agent.continuation import AgentContinuationService
+from core.agent.continuation import AgentContinuationService, SegmentationResult
 from core.agent.changes import ChangeSetService
 from core.agent.domain_tools import build_domain_tool_registry
 from core.agent.profiles import get_agent_profile
@@ -14,6 +15,7 @@ from core.agent.types import ToolCallRequest
 from core.agent.web_search import WebSearchClient, WebSearchConfig
 from core.novel_manager import NovelManager
 from core.world_bible import ManualOverride, WorldBible, apply_manual_overrides
+from ui.continuation_dialogs import SectionPreviewDialog, suggest_directions
 
 
 
@@ -29,13 +31,13 @@ class _FakeContinuationChoice:
 
 class _FakeContinuationCompletions:
     def __init__(self, content):
-        self.content = content
+        self.outputs = list(content) if isinstance(content, (list, tuple)) else [content]
         self.calls = []
 
     def create(self, **kwargs):
         self.calls.append(kwargs)
-        return type("Resp", (), {"choices": [_FakeContinuationChoice(self.content)]})()
-
+        value = self.outputs[min(len(self.calls) - 1, len(self.outputs) - 1)]
+        return type("Resp", (), {"choices": [_FakeContinuationChoice(value)]})()
 
 class _FakeContinuationClient:
     def __init__(self, content):
@@ -76,41 +78,207 @@ class ExtendedAgentTests(unittest.TestCase):
             })
             self.assertEqual("web.search", enabled.schemas_for(["web.search"])[0]["function"]["name"])
 
-    def test_agent_continuation_segments_and_records_run(self):
+    def test_agent_continuation_segments_losslessly_and_records_run(self):
         with tempfile.TemporaryDirectory() as root:
             manager = NovelManager(bookshelf_root=root)
             manager.create_book("book")
-            client = _FakeContinuationClient('[{"title":"开端","content":"第一段正文"},{"title":"转折","content":"第二段正文"}]')
+            first = "第一段正文：" + "甲" * 30
+            second = "第二段正文：" + "乙" * 30
+            source = first + "\n\n" + second
+            client = _FakeContinuationClient(json.dumps([
+                {"title": "开端", "start_quote": ""},
+                {"title": "转折", "start_quote": second[:20]},
+            ], ensure_ascii=False))
             service = AgentContinuationService(manager, client)
-            sections = service.segment_text("第一段正文\n第二段正文", "model-x", book_title="book")
-            self.assertEqual([("开端", "第一段正文"), ("转折", "第二段正文")], sections)
+            report = service.segment_text_with_report(source, "model-x", book_title="book")
+
+            self.assertEqual(source, "".join(content for _, content in report.sections))
+            self.assertEqual(1, report.agent_chunks)
+            self.assertEqual(0, report.fallback_chunks)
+            self.assertTrue(report.selected_skills)
             workspace = manager.get_workspace("book")
             runs = workspace.storage.list_files(f"{workspace.agent_root}/continuation_runs")
             self.assertTrue(any(path.endswith(".json") for path in runs))
+            record = workspace.storage.read_json(runs[0])
+            self.assertEqual(len(source), record["output_summary"]["covered_chars"])
+            self.assertEqual(1, record["output_summary"]["chunks_total"])
             self.assertIn("续写导入分段 Agent", client.chat.completions.calls[0]["messages"][0]["content"])
 
-    def test_agent_continuation_uses_boundary_anchors_without_copying_content(self):
-        source = "第一幕发生在车站。\n\n第二幕转到雨夜的小巷。\n\n第三幕回到清晨的旅馆。"
-        client = _FakeContinuationClient(
-            '[{"title":"车站","start_quote":""},'
-            '{"title":"雨夜","start_quote":"第二幕转到雨夜的小巷。"},'
-            '{"title":"清晨","start_quote":"第三幕回到清晨的旅馆。"}]'
-        )
+    def test_agent_continuation_preserves_all_whitespace_from_anchor_slices(self):
+        first = "\n  第一幕发生在车站。" + "甲" * 30
+        second = "第二幕转到雨夜的小巷。" + "乙" * 30
+        third = "第三幕回到清晨的旅馆。" + "丙" * 30 + "\n"
+        source = first + "\n\n" + second + "\n\n" + third
+        client = _FakeContinuationClient(json.dumps([
+            {"title": "车站", "start_quote": ""},
+            {"title": "雨夜", "start_quote": second[:20]},
+            {"title": "清晨", "start_quote": third[:20]},
+        ], ensure_ascii=False))
+
         sections = AgentContinuationService(client=client).segment_text(source, "model-x")
-        self.assertEqual(3, len(sections))
-        self.assertEqual(source.replace("\n\n", ""), "".join(content for _, content in sections))
+
+        self.assertEqual(source, "".join(content for _, content in sections))
+        self.assertTrue(sections[0][1].startswith("\n  "))
+        self.assertTrue(sections[-1][1].endswith("\n"))
         prompt = client.chat.completions.calls[0]["messages"][0]["content"]
         self.assertIn("start_quote", prompt)
-        self.assertIn("不要在响应中复制整段正文", prompt)
+        self.assertIn("绝不输出 content", prompt)
 
-    def test_agent_continuation_truncated_json_falls_back_locally(self):
+    def test_agent_continuation_rejects_invalid_anchor_payloads(self):
+        source = "第一段开场。" + "甲" * 30 + "\n\n" + "第二段转折。" + "乙" * 30
+        service = AgentContinuationService(client=None)
+        valid_anchor = "第二段转折。" + "乙" * 14
+        invalid_payloads = [
+            '{"title": "非数组"}',
+            json.dumps([{"title": "改写", "content": "模型正文"}], ensure_ascii=False),
+            json.dumps([{"title": "", "start_quote": ""}], ensure_ascii=False),
+            json.dumps([{"title": "开端", "start_quote": ""}, {"title": "太短", "start_quote": "短"}], ensure_ascii=False),
+            json.dumps([{"title": "开端", "start_quote": ""}, {"title": "不存在", "start_quote": "不在原文中的连续锚点" * 2}], ensure_ascii=False),
+            json.dumps([{"title": "开端", "start_quote": ""}, {"title": "转折", "start_quote": valid_anchor}, {"title": "重复", "start_quote": valid_anchor}], ensure_ascii=False),
+            json.dumps([{"title": "开端", "start_quote": ""}, {"title": "后段", "start_quote": valid_anchor}, {"title": "乱序", "start_quote": source[:20]}], ensure_ascii=False),
+        ]
+
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload), self.assertRaises(ValueError):
+                service._parse_sections(payload, source)
+
+    def test_agent_continuation_retries_invalid_json_once_then_succeeds(self):
+        first = "第一段正文：" + "甲" * 30
+        second = "第二段正文：" + "乙" * 30
+        source = first + "\n\n" + second
+        repaired = json.dumps([
+            {"title": "开端", "start_quote": ""},
+            {"title": "转折", "start_quote": second[:20]},
+        ], ensure_ascii=False)
+        client = _FakeContinuationClient(["not-json", repaired])
+
+        report = AgentContinuationService(client=client).segment_text_with_report(source, "model-x")
+
+        self.assertEqual(source, "".join(content for _, content in report.sections))
+        self.assertEqual(1, report.repair_attempts)
+        self.assertEqual(1, report.agent_chunks)
+        self.assertEqual(0, report.fallback_chunks)
+        self.assertIn("上次输出无效", client.chat.completions.calls[1]["messages"][0]["content"])
+
+    def test_agent_continuation_rejects_model_body_and_falls_back_losslessly(self):
         source = "第一段正文。\n\n第二段正文。\n\n第三段正文。"
-        client = _FakeContinuationClient(
-            '[{"title":"开端","start_quote":""},{"title":"转折","start_quote":"第二段'
+        client = _FakeContinuationClient(json.dumps([
+            {"title": "开端", "content": "模型改写正文"},
+        ], ensure_ascii=False))
+
+        report = AgentContinuationService(client=client).segment_text_with_report(source, "model-x")
+
+        self.assertTrue(report.used_fallback)
+        self.assertEqual(1, report.fallback_chunks)
+        self.assertEqual(1, report.repair_attempts)
+        self.assertEqual(source, "".join(content for _, content in report.sections))
+        self.assertTrue(report.errors)
+
+    def test_agent_continuation_chunks_long_text_without_losing_tail(self):
+        source = "甲" * 39000 + "\n\n" + "乙" * 39000 + "\n\n" + "丙" * 5000
+        client = _FakeContinuationClient(json.dumps([
+            {"title": "原文块", "start_quote": ""},
+        ], ensure_ascii=False))
+
+        report = AgentContinuationService(client=client).segment_text_with_report(source, "model-x")
+
+        self.assertGreaterEqual(report.chunks_total, 3)
+        self.assertEqual(report.chunks_total, report.agent_chunks)
+        self.assertEqual(0, report.fallback_chunks)
+        self.assertEqual(report.chunks_total, len(client.chat.completions.calls))
+        self.assertEqual(source, "".join(content for _, content in report.sections))
+        self.assertTrue(report.sections[-1][1].endswith("丙" * 5000))
+
+    def test_agent_continuation_falls_back_only_for_invalid_chunk(self):
+        source = "甲" * 39000 + "\n\n" + "乙" * 39000 + "\n\n" + "丙" * 5000
+        valid = json.dumps([{"title": "原文块", "start_quote": ""}], ensure_ascii=False)
+        invalid = json.dumps([{"title": "改写", "content": "模型正文"}], ensure_ascii=False)
+        client = _FakeContinuationClient([valid, invalid, invalid, valid])
+
+        report = AgentContinuationService(client=client).segment_text_with_report(source, "model-x")
+
+        self.assertGreaterEqual(report.chunks_total, 3)
+        self.assertEqual(report.chunks_total - 1, report.agent_chunks)
+        self.assertEqual(1, report.fallback_chunks)
+        self.assertEqual(1, report.repair_attempts)
+        self.assertEqual(source, "".join(content for _, content in report.sections))
+
+    def test_preview_status_supports_report_and_legacy_sections(self):
+        sections = [("全文", "保留原文")]
+        report = SegmentationResult(
+            sections=sections,
+            total_chars=4,
+            covered_chars=4,
+            chunks_total=2,
+            agent_chunks=1,
+            fallback_chunks=1,
+            repair_attempts=1,
+            errors=["第 2/2 块：格式无效"],
+            selected_skills=[{"id": "chapter-continuation"}],
         )
-        sections = AgentContinuationService(client=client).segment_text(source, "model-x")
-        self.assertEqual(3, len(sections))
-        self.assertEqual(["第一段正文。", "第二段正文。", "第三段正文。"], [item[1] for item in sections])
+        unpacked, unpacked_report = SectionPreviewDialog._unpack_segmenter_output(report)
+        legacy, legacy_report = SectionPreviewDialog._unpack_segmenter_output(sections)
+        status = SectionPreviewDialog._format_segmentation_status(SectionPreviewDialog, unpacked, unpacked_report)
+
+        self.assertEqual(sections, unpacked)
+        self.assertIs(report, unpacked_report)
+        self.assertEqual(sections, legacy)
+        self.assertIsNone(legacy_report)
+        self.assertIn("本地回退", status)
+        self.assertIn("覆盖率 100%", status)
+        self.assertIn("Skills：chapter-continuation", status)
+    def test_agent_direction_uses_expanded_context_limits(self):
+        world_tail = "世界尾标记"
+        background_tail = "背景尾标记"
+        plot_tail = "剧情尾标记"
+        world_data = {
+            "characters": [{
+                "name": "主角",
+                "relationships": [{"type": "牵绊", "target": "关系信息" * 800 + world_tail}],
+            }],
+        }
+        setting = "背景信息" * 1490 + background_tail
+        plot = "剧情信息" * 1590 + plot_tail
+        requirement = "必须保持第一人称，并以克制的节奏描写雨夜。"
+        requested_plot = "主角必须在旧书店找到信件，并与店主发生简短对话。"
+        client = _FakeContinuationClient("方向1：继续追查 | 紧张感 | 主角循线索推进真相")
+
+        directions = AgentContinuationService(client=client).suggest_directions(
+            setting,
+            plot,
+            "model-x",
+            world_data=world_data,
+            continuation_requirement=requirement,
+            requested_plot=requested_plot,
+        )
+
+        prompt = client.chat.completions.calls[0]["messages"][0]["content"]
+        self.assertEqual(["方向1：继续追查 | 紧张感 | 主角循线索推进真相"], directions)
+        self.assertIn(world_tail, prompt)
+        self.assertIn(background_tail, prompt)
+        self.assertIn(plot_tail, prompt)
+        self.assertIn(requirement, prompt)
+        self.assertIn(requested_plot, prompt)
+    def test_legacy_direction_uses_continuation_requirement_and_plot(self):
+        requirement = "必须使用第三人称，避免新增冲突。"
+        requested_plot = "两位角色在早餐桌上和解，并提及昨夜的误会。"
+        client = _FakeContinuationClient("方向1：早餐和解 | 温暖克制 | 用对话化解误会")
+
+        directions = suggest_directions(
+            client,
+            "小镇日常",
+            "两人昨夜发生误会。",
+            "model-x",
+            continuation_requirement=requirement,
+            requested_plot=requested_plot,
+        )
+
+        prompt = client.chat.completions.calls[0]["messages"][0]["content"]
+        self.assertEqual(["方向1：早餐和解 | 温暖克制 | 用对话化解误会"], directions)
+        self.assertIn("【本次续写要求（必须遵守）】", prompt)
+        self.assertIn(requirement, prompt)
+        self.assertIn("【用户指定续写剧情（必须作为方向约束）】", prompt)
+        self.assertIn(requested_plot, prompt)
     def test_saved_advice_artifacts_are_listed_for_library(self):
         with tempfile.TemporaryDirectory() as root:
             manager = NovelManager(bookshelf_root=root)

@@ -47,6 +47,7 @@ from PyQt6.QtWidgets import (
     QAbstractItemView,
     QDialogButtonBox,
     QTextBrowser,
+    QSizePolicy,
 )
 from PyQt6.QtGui import QColor, QIcon
 from PyQt6.QtWebEngineWidgets import QWebEngineView
@@ -156,6 +157,26 @@ class InputTextEdit(QTextEdit):
             return
         # 单独 Enter 保持默认行为（插入换行）
         super().keyPressEvent(event)
+
+
+class CurrentPageStackedWidget(QStackedWidget):
+    """A stacked widget whose layout height follows only its visible page."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.currentChanged.connect(self._refresh_size_hint)
+
+    def _refresh_size_hint(self, _index: int) -> None:
+        self.updateGeometry()
+        QTimer.singleShot(0, self.updateGeometry)
+
+    def sizeHint(self):
+        current = self.currentWidget()
+        return current.sizeHint() if current is not None else super().sizeHint()
+
+    def minimumSizeHint(self):
+        current = self.currentWidget()
+        return current.minimumSizeHint() if current is not None else super().minimumSizeHint()
 
 
 # ========== 信号中转 ==========
@@ -2083,7 +2104,11 @@ class DeepSeekChatGUI(QMainWindow):
         layout.addLayout(word_row)
 
         # ── 互斥生成操作区 ──
-        self._generation_mode_stack = QStackedWidget()
+        self._generation_mode_stack = CurrentPageStackedWidget()
+        self._generation_mode_stack.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Maximum,
+        )
         self._classic_generation_page = QWidget()
         classic_generation_layout = QVBoxLayout(self._classic_generation_page)
         classic_generation_layout.setContentsMargins(0, 0, 0, 0)
@@ -7727,7 +7752,7 @@ class DeepSeekChatGUI(QMainWindow):
                 self._usage_logged_client("agent_continuation_segment"),
                 skills_enabled=bool(self._settings.get("agent_skills_enabled", True)),
             )
-            return service.segment_text(
+            return service.segment_text_with_report(
                 text,
                 self._client.model,
                 book_title=book_title,
@@ -8250,6 +8275,8 @@ class DeepSeekChatGUI(QMainWindow):
                 xp_mode = self._cont_xp_mode_check.isChecked()
         else:
             xp_mode = self._cont_xp_mode_check.isChecked()
+        continuation_requirement = self._continue_requirement.toPlainText().strip()
+        requested_plot = self._continue_plot.toPlainText().strip()
 
         def _run():
             try:
@@ -8271,13 +8298,17 @@ class DeepSeekChatGUI(QMainWindow):
                         world_data=world_data,
                         global_user_prompt=self._client.global_user_prompt,
                         xp_mode=xp_mode,
+                        continuation_requirement=continuation_requirement,
+                        requested_plot=requested_plot,
                     )
                 else:
                     self._stream_signals.token.emit("\n\n🎲 AI 正在分析发展方向...\n\n")
                     directions = suggest_directions(client, setting, plot_outline,
                                                     self._client.model, world_data,
                                                     global_user_prompt=self._client.global_user_prompt,
-                                                    xp_mode=xp_mode)
+                                                    xp_mode=xp_mode,
+                                                    continuation_requirement=continuation_requirement,
+                                                    requested_plot=requested_plot)
                 self._stream_signals.finished.emit()
                 self._stream_signals.directions_ready.emit(directions, setting, plot_outline, word_count)
             except Exception as e:
@@ -8295,7 +8326,14 @@ class DeepSeekChatGUI(QMainWindow):
             self._client.reset_cancel()
         dlg = DirectionSelectionDialog(self, directions)
         if dlg.exec() == QDialog.DialogCode.Accepted and dlg.selected_direction:
-            self._do_continuation_with_context(setting, word_count, plot=dlg.selected_direction)
+            manual_plot = self._continue_plot.toPlainText().strip()
+            selected_plot = dlg.selected_direction
+            if manual_plot:
+                selected_plot = (
+                    f"【用户指定续写剧情】\n{manual_plot}\n\n"
+                    f"【在上述约束下选择的 AI 发展方向】\n{selected_plot}"
+                )
+            self._do_continuation_with_context(setting, word_count, plot=selected_plot)
 
     def _on_cont_specify(self, setting: str, plot_outline: str, word_count: int) -> None:
         """用户指定剧情 → 续写"""

@@ -2,7 +2,12 @@ import json
 import unittest
 from types import SimpleNamespace
 
-from utils.supervision import audit_chapter, format_repair_diff, supervise_chapter
+from utils.supervision import (
+    audit_chapter,
+    format_repair_diff,
+    format_repair_diff_for_markdown,
+    supervise_chapter,
+)
 
 
 def response(content):
@@ -122,6 +127,16 @@ class SupervisionTests(unittest.TestCase):
     def test_repair_diff_is_truncated(self):
         diff = format_repair_diff('a' * 300, 'b' * 300, max_chars=80)
         self.assertIn('已省略', diff)
+
+    def test_repair_diff_markdown_is_fenced_safely(self):
+        diff = '--- before\n+++ after\n-' + 'long body' * 80 + '\n+``` after'
+        rendered = format_repair_diff_for_markdown(diff)
+        opening_fence = rendered.splitlines()[0]
+        closing_fence = rendered.splitlines()[-1]
+
+        self.assertEqual('````diff', opening_fence)
+        self.assertEqual('````', closing_fence)
+        self.assertIn(diff, rendered)
 
     def test_invalid_audit_fails_open_without_repair(self):
         original = "a" * 300

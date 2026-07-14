@@ -19,6 +19,10 @@ from PyQt6.QtCore import Qt, pyqtSignal
 from ui.dialog_utils import apply_responsive_dialog_size
 from utils.prompts import Prompts
 
+DIRECTION_WORLD_MAX_CHARS = 12_000
+DIRECTION_BACKGROUND_MAX_CHARS = 6_000
+DIRECTION_PLOT_MAX_CHARS = 8_000
+DIRECTION_REQUIREMENT_MAX_CHARS = 4_000
 SUGGESTION_PROMPT = """你是一位资深小说编辑。请根据以下完整世界观设定、待回收伏笔和剧情进展，为下一章提供 3-5 个发展方向建议。
 
 每个建议包含：
@@ -36,6 +40,8 @@ SUGGESTION_PROMPT = """你是一位资深小说编辑。请根据以下完整世
 - 如果故事本身有冲突线，合理推进即可；如果故事是日常/氛围向，不要凭空制造戏剧冲突
 - 避免涉及现实政治、社会批判、历史影射等严肃议题
 - 充分利用世界观中的角色、地点、规则和关键设定来构思
+- 【本次续写要求】与【用户指定续写剧情】是本次建议的明确约束；每个方向都必须满足前者，并围绕后者推进，不得忽略、反向改写或用无关情节替代
+- 用户指定续写剧情与既有伏笔、世界书出现张力时，优先给出能兼顾两者的推进方案；无法兼顾时，在建议中明确以用户指定剧情为本次优先约束
 
 【完整世界观设定】
 {world}
@@ -45,6 +51,12 @@ SUGGESTION_PROMPT = """你是一位资深小说编辑。请根据以下完整世
 
 【剧情进展】
 {plot}
+
+【本次续写要求（必须遵守）】
+{requirement}
+
+【用户指定续写剧情（必须作为方向约束）】
+{requested_plot}
 
 请按以下格式输出（每行一个方向）：
 方向1：标题 | 核心看点 | 情节走向
@@ -286,7 +298,10 @@ def _build_world_summary(world_data: dict | None) -> str:
 def suggest_directions(client, setting: str, plot: str, model: str,
                        world_data: dict | None = None,
                        global_user_prompt: str = "",
-                       xp_mode: bool = False) -> list[str]:
+                       xp_mode: bool = False,
+                       *,
+                       continuation_requirement: str = "",
+                       requested_plot: str = "") -> list[str]:
     """
     AI 建议 3-5 个发展方向
 
@@ -300,9 +315,11 @@ def suggest_directions(client, setting: str, plot: str, model: str,
     world_summary = _build_world_summary(world_data)
     prompt = _safe_format(
         SUGGESTION_PROMPT,
-        world=world_summary[:2000],
-        setting=setting[:1500],
-        plot=plot[:1500],
+        world=world_summary[:DIRECTION_WORLD_MAX_CHARS],
+        setting=setting[:DIRECTION_BACKGROUND_MAX_CHARS],
+        plot=plot[:DIRECTION_PLOT_MAX_CHARS],
+        requirement=(continuation_requirement or "（无）")[:DIRECTION_REQUIREMENT_MAX_CHARS],
+        requested_plot=(requested_plot or "（无）")[:DIRECTION_PLOT_MAX_CHARS],
     )
     if global_user_prompt.strip():
         prompt += f"\n\n用户偏好参考: {global_user_prompt}"
@@ -463,21 +480,33 @@ class ContinuationAnalysisDialog(QDialog):
         layout.addLayout(btn_row)
 
     def _build_plot_context(self) -> str:
-        """从 world_data 构建当前剧情摘要，供发展方向建议使用"""
+        """构建较完整的剧情摘要，供发展方向建议使用。"""
         parts = []
         threads = self._world_data.get("plot_threads", [])
         if threads:
             active = [p for p in threads if p.get("status") == "active"]
             if active:
                 parts.append("当前活跃剧情线：")
-                for p in active[:3]:
-                    parts.append(f"- {p['name']}: {p.get('description', '')[:60]}")
+                for p in active[:8]:
+                    description = p.get("description", "")[:500]
+                    characters = p.get("involved_characters", [])
+                    character_text = f" [角色：{', '.join(characters[:8])}]" if characters else ""
+                    parts.append(f"- {p.get('name', '未命名')}：{description}{character_text}")
+            other_threads = [p for p in threads if p.get("status") != "active"]
+            if other_threads:
+                parts.append("待回收或暂缓剧情线：")
+                for p in other_threads[:4]:
+                    parts.append(
+                        f"- {p.get('name', '未命名')} [{p.get('status', 'unknown')}]："
+                        f"{p.get('description', '')[:350]}"
+                    )
         timeline = self._world_data.get("timeline", [])
         if timeline:
-            recent = timeline[-3:]
             parts.append("最近事件：")
-            for t in recent:
-                parts.append(f"- {t.get('event', '')[:60]}")
+            for t in timeline[-10:]:
+                event = t.get("event", "")[:300]
+                significance = t.get("significance", "")[:120]
+                parts.append(f"- {event}" + (f"（意义：{significance}）" if significance else ""))
         return "\n".join(parts)
 
     def _on_suggest(self):
@@ -742,32 +771,91 @@ class SectionPreviewDialog(QDialog):
 
         threading.Thread(target=_run, daemon=True).start()
 
-    def _on_resegment_done(self, sections, error):
-        """主线程：处理重新分段结果"""
+    @staticmethod
+    def _unpack_segmenter_output(output):
+        sections = getattr(output, "sections", output)
+        if not isinstance(sections, list):
+            raise ValueError("分段器返回的 sections 无效")
+        return sections, output if hasattr(output, "sections") else None
+
+    @staticmethod
+    def _skill_names(report) -> str:
+        skills = getattr(report, "selected_skills", []) or []
+        names = [str(item.get("name") or item.get("id") or "") for item in skills if isinstance(item, dict)]
+        return "、".join(name for name in names if name)
+
+    def _format_segmentation_status(self, sections, report, filename: str = "") -> str:
+        subject = f"「{filename}」" if filename else ""
+        if report is None:
+            return f"⚠️ {subject}{'Agent' if self._segmenter else 'AI'} 分段完成，共 {len(sections)} 个段落"
+        chunks = max(1, int(getattr(report, "chunks_total", 1) or 1))
+        agent_chunks = int(getattr(report, "agent_chunks", 0) or 0)
+        fallback_chunks = int(getattr(report, "fallback_chunks", 0) or 0)
+        coverage = float(getattr(report, "coverage_ratio", 1.0) or 0.0)
+        repairs = int(getattr(report, "repair_attempts", 0) or 0)
+        skills = self._skill_names(report)
+        prefix = "⚠️ Agent 分段完成（含本地回退）" if fallback_chunks else "✅ Agent 分段完成"
+        text = (
+            f"{prefix}：{subject}共 {len(sections)} 段；"
+            f"Agent {agent_chunks}/{chunks} 块，本地回退 {fallback_chunks} 块；"
+            f"覆盖率 {coverage:.0%}"
+        )
+        if repairs:
+            text += f"；格式修复 {repairs} 次"
+        if skills:
+            text += f"；Skills：{skills}"
+        errors = getattr(report, "errors", []) or []
+        if errors:
+            text += f"；{str(errors[0])[:180]}"
+        return text
+
+    def _folder_label(self, file_info: dict) -> str:
+        if file_info["needs_ai"]:
+            return f"{file_info['filename']} (AI分段中…)"
+        report = file_info.get("segmentation_report")
+        if report is not None and bool(getattr(report, "used_fallback", False)):
+            state = "Agent+本地回退"
+        elif report is not None:
+            state = "Agent"
+        else:
+            state = "AI"
+        return f"{file_info['filename']} ({len(file_info['sections'])}段 · {state})"
+
+    def _on_resegment_done(self, output, error):
+        """主线程：处理重新分段结果和可观测性信息。"""
         self._resegment_btn.setEnabled(True)
         self._confirm_btn.setEnabled(True)
-
         if error:
             self._status_label.setText(f"❌ 重新分段失败: {error}")
             self._status_label.setStyleSheet(_status_style(self, "error"))
             return
+        try:
+            sections, report = self._unpack_segmenter_output(output)
+        except ValueError as exc:
+            self._status_label.setText(f"❌ 重新分段失败: {exc}")
+            self._status_label.setStyleSheet(_status_style(self, "error"))
+            return
+        if not sections:
+            self._status_label.setText("❌ 重新分段失败: 未返回有效段落")
+            self._status_label.setStyleSheet(_status_style(self, "error"))
+            return
 
-        # 同时更新 _sections_data（供预览）和文件夹模式下当前文件的段落
         self._sections_data = sections
         if self._folder_files and 0 <= self._current_file_idx < len(self._folder_files):
-            self._folder_files[self._current_file_idx]["sections"] = sections
-            self._folder_files[self._current_file_idx]["needs_ai"] = False
-            # 文件夹模式下暂时断开文件夹信号，避免覆盖段落预览
+            file_info = self._folder_files[self._current_file_idx]
+            file_info["sections"] = sections
+            file_info["segmentation_report"] = report
+            file_info["needs_ai"] = False
             try:
                 self._section_list.currentRowChanged.disconnect(self._on_folder_file_selected)
             except TypeError:
                 pass
-            self._status_label.setText(
-                f"⚠️「{self._folder_files[self._current_file_idx]['filename']}」"
-                f"{'Agent' if self._segmenter else 'AI'} 分段完成，共 {len(sections)} 个段落"
-            )
+            self._status_label.setText(self._format_segmentation_status(sections, report, file_info["filename"]))
         else:
-            self._status_label.setText(f"⚠️ AI 分段完成，共 {len(sections)} 个段落")
+            self._status_label.setText(self._format_segmentation_status(sections, report))
+        self._status_label.setStyleSheet(
+            _status_style(self, "warn" if report is not None and getattr(report, "used_fallback", False) else "success")
+        )
         self._populate_sections()
 
     def _get_full_text(self) -> str:
@@ -818,6 +906,7 @@ class SectionPreviewDialog(QDialog):
                 "full_content": content,
                 "sections": sections,
                 "needs_ai": needs_ai,
+                "segmentation_report": None,
                 "checked": True,
             })
 
@@ -840,35 +929,45 @@ class SectionPreviewDialog(QDialog):
             threading.Thread(target=self._do_background_segmentation, daemon=True).start()
 
     def _do_background_segmentation(self):
-        """后台线程：对需要 AI 分段的文件逐个处理"""
+        """后台线程：对需要 AI 分段的文件逐个处理。"""
         from utils.summarize import segment_by_ai
-        for idx, f in enumerate(self._folder_files):
-            if f["needs_ai"]:
-                try:
-                    sections = self._segmenter(f["full_content"]) if self._segmenter else segment_by_ai(
-                        self._client, f["full_content"], self._model,
-                        global_user_prompt=self._global_prompt,
-                    )
-                    self._segmentation_progress.emit(idx, sections)
-                except Exception:
-                    self._segmentation_progress.emit(idx, [("全文", f["full_content"])])
+        for idx, file_info in enumerate(self._folder_files):
+            if not file_info["needs_ai"]:
+                continue
+            try:
+                output = self._segmenter(file_info["full_content"]) if self._segmenter else segment_by_ai(
+                    self._client, file_info["full_content"], self._model,
+                    global_user_prompt=self._global_prompt,
+                )
+                self._segmentation_progress.emit(idx, output)
+            except Exception:
+                self._segmentation_progress.emit(idx, [("全文", file_info["full_content"])])
 
-    def _on_file_segmented(self, idx: int, sections: list):
-        """主线程：AI 分段完成后更新列表显示"""
+    def _on_file_segmented(self, idx: int, output):
+        """主线程：保存文件夹中单个文件的分段结果与诊断。"""
         if 0 <= idx < len(self._folder_files):
-            self._folder_files[idx]["sections"] = sections
-            self._folder_files[idx]["needs_ai"] = False
+            try:
+                sections, report = self._unpack_segmenter_output(output)
+            except ValueError:
+                sections, report = [("全文", self._folder_files[idx]["full_content"])], None
+            file_info = self._folder_files[idx]
+            file_info["sections"] = sections
+            file_info["segmentation_report"] = report
+            file_info["needs_ai"] = False
             item = self._section_list.item(idx)
             if item:
-                f = self._folder_files[idx]
-                item.setText(f"{f['filename']} ({len(f['sections'])}段)")
+                item.setText(self._folder_label(file_info))
 
-        pending = sum(1 for f in self._folder_files if f["needs_ai"])
+        pending = sum(1 for file_info in self._folder_files if file_info["needs_ai"])
         if pending == 0:
+            reports = [file_info.get("segmentation_report") for file_info in self._folder_files]
+            fallback_files = sum(1 for report in reports if report is not None and getattr(report, "used_fallback", False))
+            suffix = f"；{fallback_files} 个文件含本地回退" if fallback_files else ""
             self._status_label.setText(
-                f"✅ Agent 分段完成，共 {len(self._folder_files)} 个文件，勾选后确认分析" if self._segmenter else f"✅ AI 分段完成，共 {len(self._folder_files)} 个文件，勾选后确认分析"
+                f"✅ Agent 分段完成，共 {len(self._folder_files)} 个文件，勾选后确认分析{suffix}"
+                if self._segmenter else f"✅ AI 分段完成，共 {len(self._folder_files)} 个文件，勾选后确认分析"
             )
-            self._status_label.setStyleSheet(_status_style(self, "success"))
+            self._status_label.setStyleSheet(_status_style(self, "warn" if fallback_files else "success"))
 
     def _populate_folder_list(self):
         """填充文件夹文件列表（带复选框）"""
@@ -877,7 +976,7 @@ class SectionPreviewDialog(QDialog):
         self._section_list.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
 
         for f in self._folder_files:
-            label = f"{f['filename']} (AI分段中…)" if f["needs_ai"] else f"{f['filename']} ({len(f['sections'])}段)"
+            label = self._folder_label(f)
             item = QListWidgetItem(label)
             item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
             item.setCheckState(Qt.CheckState.Checked if f["checked"] else Qt.CheckState.Unchecked)
