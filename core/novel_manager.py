@@ -54,6 +54,8 @@ class NovelMeta:
     author_plan: str = ""   # 作者规划层：主线/阶段目标/人物弧光/主题/节奏/禁写事项
     genre: str = ""        # 题材 key（对应 utils.genre_styles.GENRES）
     style_tone: str = ""   # 风格基调 key（对应 utils.genre_styles.STYLE_TONES）
+    style_profile_id: str = ""  # User-level reusable style profile ID
+    style_strength: str = "standard"  # reference / standard / strict
     xp_mode: bool = False  # 狂野向创作模式开关
     created_at: str = ""
     updated_at: str = ""
@@ -2074,6 +2076,9 @@ class NovelManager:
         polish_requirement: str = "",
         polish_plan: dict | None = None,
         fidelity_report: dict | None = None,
+        style_profile_id: str = "",
+        style_profile_revision: int = 0,
+        style_strength: str = "",
     ) -> str:
         """
         保存一次生成的完整配置记录（独立文件）
@@ -2135,6 +2140,12 @@ class NovelManager:
             record["polish_plan"] = copy.deepcopy(polish_plan)
         if fidelity_report is not None:
             record["fidelity_report"] = copy.deepcopy(fidelity_report)
+        if style_profile_id:
+            record["style_profile"] = {
+                "profile_id": style_profile_id,
+                "revision": int(style_profile_revision or 0),
+                "strength": style_strength or "standard",
+            }
 
         filename = f"ch{chapter_num:04d}_v{version:03d}.json"
         file_path = os.path.join(history_dir, filename)

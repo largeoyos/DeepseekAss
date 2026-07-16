@@ -99,6 +99,16 @@ from core.initial_novel_settings import (
     select_missing_initial_setting_updates,
     world_bible_to_setting_input,
 )
+from core.style_profiles import (
+    STYLE_STRENGTH_LABELS,
+    StyleExtractionCancelled,
+    StyleExtractionService,
+    StyleProfileRepository,
+    StyleSourceDocument,
+    render_style_audit,
+    render_style_prompt,
+    resolve_style,
+)
 from core.token_log_manager import TokenLogManager
 from ui.dialog_utils import apply_responsive_dialog_size
 from strategies import (
@@ -128,6 +138,7 @@ from ui.token_log_dialog import TokenLogDialog
 from ui.task_center_dialog import TaskCenterDialog
 from ui.diagnostics_dialog import DiagnosticsDialog
 from ui.world_bible_diff_dialog import WorldBibleDiffDialog
+from ui.style_profile_dialog import StyleProfileDialog
 from ui.markdown_workspace import MarkdownWorkspaceWidget
 from ui.chapter_tree_dialog import ChapterTreeDialog
 from ui.continuation_dialogs import (
@@ -1404,6 +1415,7 @@ class DeepSeekChatGUI(QMainWindow):
 
         left_panel = self._build_left_panel()
         splitter.addWidget(left_panel)
+        self._refresh_style_profile_controls()
 
         right_panel = self._build_right_panel()
         splitter.addWidget(right_panel)
@@ -2059,6 +2071,19 @@ class DeepSeekChatGUI(QMainWindow):
         tone_row.addWidget(self._novel_tone_combo, stretch=1)
         style_layout.addLayout(tone_row)
 
+        profile_row = QHBoxLayout()
+        profile_row.addWidget(QLabel("默认文风"))
+        self._novel_style_profile_combo = QComboBox()
+        profile_row.addWidget(self._novel_style_profile_combo, stretch=1)
+        self._novel_style_strength_combo = QComboBox()
+        for key, label in STYLE_STRENGTH_LABELS.items():
+            self._novel_style_strength_combo.addItem(label, userData=key)
+        profile_row.addWidget(self._novel_style_strength_combo)
+        manage_style_btn = QPushButton("管理")
+        manage_style_btn.clicked.connect(self._open_style_profile_manager)
+        profile_row.addWidget(manage_style_btn)
+        style_layout.addLayout(profile_row)
+
         layout.addWidget(style_group)
 
         self._xp_mode_check = QCheckBox("XP 模式（成人向创作提示词）")
@@ -2142,6 +2167,17 @@ class DeepSeekChatGUI(QMainWindow):
         word_row.addWidget(word_label)
         word_row.addWidget(self._chapter_word_count, stretch=1)
         layout.addLayout(word_row)
+
+        run_style_row = QHBoxLayout()
+        run_style_row.addWidget(QLabel("本次文风"))
+        self._novel_run_style_combo = QComboBox()
+        run_style_row.addWidget(self._novel_run_style_combo, stretch=1)
+        self._novel_run_strength_combo = QComboBox()
+        self._novel_run_strength_combo.addItem("跟随书籍", userData="follow_book")
+        for key, label in STYLE_STRENGTH_LABELS.items():
+            self._novel_run_strength_combo.addItem(label, userData=key)
+        run_style_row.addWidget(self._novel_run_strength_combo)
+        layout.addLayout(run_style_row)
 
         # ── 互斥生成操作区 ──
         self._generation_mode_stack = CurrentPageStackedWidget()
@@ -2451,6 +2487,19 @@ class DeepSeekChatGUI(QMainWindow):
         cont_tone_row.addWidget(self._cont_tone_combo, stretch=1)
         cont_style_layout.addLayout(cont_tone_row)
 
+        cont_profile_row = QHBoxLayout()
+        cont_profile_row.addWidget(QLabel("默认文风"))
+        self._cont_style_profile_combo = QComboBox()
+        cont_profile_row.addWidget(self._cont_style_profile_combo, stretch=1)
+        self._cont_style_strength_combo = QComboBox()
+        for key, label in STYLE_STRENGTH_LABELS.items():
+            self._cont_style_strength_combo.addItem(label, userData=key)
+        cont_profile_row.addWidget(self._cont_style_strength_combo)
+        cont_manage_style_btn = QPushButton("管理")
+        cont_manage_style_btn.clicked.connect(self._open_style_profile_manager)
+        cont_profile_row.addWidget(cont_manage_style_btn)
+        cont_style_layout.addLayout(cont_profile_row)
+
         layout.addWidget(cont_style_group)
 
         self._cont_xp_mode_check = QCheckBox("XP 模式（成人向创作提示词）")
@@ -2567,6 +2616,17 @@ class DeepSeekChatGUI(QMainWindow):
         word_row.addWidget(word_label)
         word_row.addWidget(self._continue_word_count, stretch=1)
         layout.addLayout(word_row)
+
+        cont_run_style_row = QHBoxLayout()
+        cont_run_style_row.addWidget(QLabel("本次文风"))
+        self._cont_run_style_combo = QComboBox()
+        cont_run_style_row.addWidget(self._cont_run_style_combo, stretch=1)
+        self._cont_run_strength_combo = QComboBox()
+        self._cont_run_strength_combo.addItem("跟随书籍", userData="follow_book")
+        for key, label in STYLE_STRENGTH_LABELS.items():
+            self._cont_run_strength_combo.addItem(label, userData=key)
+        cont_run_style_row.addWidget(self._cont_run_strength_combo)
+        layout.addLayout(cont_run_style_row)
 
         # 续写剧情（可选）
         plot_label = QLabel("续写剧情（可选）")
@@ -3693,6 +3753,7 @@ class DeepSeekChatGUI(QMainWindow):
             "chapter_tree_world_bible": "提取世界书",
             "continuation_import_analysis": "分析导入文档",
             "batch_import_analysis": "分析批量章节",
+            "style_profile_extract": "提取全文文风",
             "continuation_suggest": "分析发展方向",
             "character_book_update": "更新人物书",
         }
@@ -4663,6 +4724,74 @@ class DeepSeekChatGUI(QMainWindow):
 
     # ========== 📚 小说面板事件 ==========
 
+    @staticmethod
+    def _set_combo_data(combo: QComboBox, value: str) -> None:
+        index = combo.findData(value)
+        combo.setCurrentIndex(index if index >= 0 else 0)
+
+    def _refresh_style_profile_controls(self) -> None:
+        repository = StyleProfileRepository(self._novel_manager)
+        profiles = repository.list_profiles()
+        default_combos = [
+            combo for combo in (
+                getattr(self, "_novel_style_profile_combo", None),
+                getattr(self, "_cont_style_profile_combo", None),
+            ) if combo is not None
+        ]
+        run_combos = [
+            combo for combo in (
+                getattr(self, "_novel_run_style_combo", None),
+                getattr(self, "_cont_run_style_combo", None),
+            ) if combo is not None
+        ]
+        for combo in default_combos:
+            selected = combo.currentData() if combo.count() else ""
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem("未指定", userData="")
+            for profile in profiles:
+                combo.addItem(profile.name, userData=profile.profile_id)
+            self._set_combo_data(combo, str(selected or ""))
+            combo.blockSignals(False)
+        for combo in run_combos:
+            selected = combo.currentData() if combo.count() else "follow_book"
+            combo.blockSignals(True)
+            combo.clear()
+            combo.addItem("跟随书籍", userData="follow_book")
+            combo.addItem("不使用文风档案", userData="disabled")
+            for profile in profiles:
+                combo.addItem(profile.name, userData=profile.profile_id)
+            self._set_combo_data(combo, str(selected or "follow_book"))
+            combo.blockSignals(False)
+
+    def _open_style_profile_manager(self) -> None:
+        title = self._get_current_book_title() or ""
+        dialog = StyleProfileDialog(
+            self,
+            self._novel_manager,
+            self._usage_logged_client("style_profile_extract"),
+            self._client.model,
+            book_title=title,
+        )
+        dialog.profiles_changed.connect(self._refresh_style_profile_controls)
+        dialog.exec()
+        self._refresh_style_profile_controls()
+        if title:
+            self._on_book_selected(title)
+
+    def _resolve_generation_style(self, title: str, *, continuation: bool = False):
+        if continuation:
+            profile_combo = getattr(self, "_cont_run_style_combo", None)
+            strength_combo = getattr(self, "_cont_run_strength_combo", None)
+        else:
+            profile_combo = getattr(self, "_novel_run_style_combo", None)
+            strength_combo = getattr(self, "_novel_run_strength_combo", None)
+        profile_id = str(profile_combo.currentData() or "follow_book") if profile_combo else "follow_book"
+        strength = str(strength_combo.currentData() or "follow_book") if strength_combo else "follow_book"
+        if profile_id == "disabled":
+            return resolve_style(self._novel_manager, title, profile_id="__disabled__", strength=strength)
+        return resolve_style(self._novel_manager, title, profile_id=profile_id, strength=strength)
+
     def _refresh_novel_bookshelf(self) -> None:
         """刷新书架下拉列表（按最近编辑时间排序，同时更新续写面板）"""
         books = self._novel_manager.list_books()
@@ -4769,6 +4898,7 @@ class DeepSeekChatGUI(QMainWindow):
 
     def _on_book_selected(self, text: str) -> None:
         """书架选择变化 → 加载已有小说设定"""
+        self._active_novel_style = None
         self._clear_agent_transient_plan()
         self._last_advisor_result = None
         if hasattr(self, "_agent_advisor_status"):
@@ -4816,6 +4946,10 @@ class DeepSeekChatGUI(QMainWindow):
         self._novel_tone_combo.blockSignals(True)
         self._novel_tone_combo.setCurrentText(tone_display or "默认")
         self._novel_tone_combo.blockSignals(False)
+        self._refresh_style_profile_controls()
+        self._set_combo_data(self._novel_style_profile_combo, getattr(meta, "style_profile_id", ""))
+        self._set_combo_data(self._novel_style_strength_combo, getattr(meta, "style_strength", "standard"))
+        self._set_combo_data(self._novel_run_style_combo, "follow_book")
         self._xp_mode_check.blockSignals(True)
         self._xp_mode_check.setChecked(bool(meta.xp_mode))
         self._xp_mode_check.blockSignals(False)
@@ -5024,6 +5158,7 @@ class DeepSeekChatGUI(QMainWindow):
 
     def _on_cont_book_selected(self, text: str) -> None:
         """续写面板：书架选择变化 → 加载已有小说设定"""
+        self._active_cont_style = None
         title = text if text and not text.startswith("（暂无小说") else None
         if not title:
             self._cont_chapter_info_label.setText("尚未选择小说")
@@ -5060,6 +5195,10 @@ class DeepSeekChatGUI(QMainWindow):
         self._cont_tone_combo.blockSignals(True)
         self._cont_tone_combo.setCurrentText(tone_display or "默认")
         self._cont_tone_combo.blockSignals(False)
+        self._refresh_style_profile_controls()
+        self._set_combo_data(self._cont_style_profile_combo, getattr(meta, "style_profile_id", ""))
+        self._set_combo_data(self._cont_style_strength_combo, getattr(meta, "style_strength", "standard"))
+        self._set_combo_data(self._cont_run_style_combo, "follow_book")
         self._cont_xp_mode_check.blockSignals(True)
         self._cont_xp_mode_check.setChecked(bool(meta.xp_mode))
         self._cont_xp_mode_check.blockSignals(False)
@@ -5145,6 +5284,8 @@ class DeepSeekChatGUI(QMainWindow):
             background_story=self._cont_background_edit.toPlainText().strip(),
             writing_demand=self._cont_demand_edit.toPlainText().strip(),
             author_plan=self._cont_author_plan_edit.toPlainText().strip(),
+            style_profile_id=str(self._cont_style_profile_combo.currentData() or ""),
+            style_strength=str(self._cont_style_strength_combo.currentData() or "standard"),
             xp_mode=self._cont_xp_mode_check.isChecked(),
         )
         QMessageBox.information(self, "成功", f"「{title}」的设定已保存。")
@@ -5171,6 +5312,8 @@ class DeepSeekChatGUI(QMainWindow):
         self._cont_xp_mode_check.blockSignals(True)
         self._cont_xp_mode_check.setChecked(bool(meta.xp_mode))
         self._cont_xp_mode_check.blockSignals(False)
+        self._set_combo_data(self._cont_style_profile_combo, getattr(meta, "style_profile_id", ""))
+        self._set_combo_data(self._cont_style_strength_combo, getattr(meta, "style_strength", "standard"))
         self._sync_xp_mode_to_novel()
 
     def _on_cont_generate_chapter(self) -> None:
@@ -5221,8 +5364,11 @@ class DeepSeekChatGUI(QMainWindow):
             background_story=self._cont_background_edit.toPlainText().strip(),
             writing_demand=self._cont_demand_edit.toPlainText().strip(),
             author_plan=self._cont_author_plan_edit.toPlainText().strip(),
+            style_profile_id=str(self._cont_style_profile_combo.currentData() or ""),
+            style_strength=str(self._cont_style_strength_combo.currentData() or "standard"),
             xp_mode=self._cont_xp_mode_check.isChecked(),
         )
+        self._active_cont_style = self._resolve_generation_style(book_title, continuation=True)
 
         threading.Thread(
             target=self._run_continuation,
@@ -5282,6 +5428,8 @@ class DeepSeekChatGUI(QMainWindow):
             author_plan=self._author_plan_edit.toPlainText().strip(),
             genre=genre_cfg.key if genre_cfg else "",
             style_tone=tone_cfg.key if tone_cfg else "",
+            style_profile_id=str(self._novel_style_profile_combo.currentData() or ""),
+            style_strength=str(self._novel_style_strength_combo.currentData() or "standard"),
             xp_mode=self._xp_mode_check.isChecked(),
         )
         self._refresh_novel_bookshelf()
@@ -5743,6 +5891,8 @@ class DeepSeekChatGUI(QMainWindow):
             author_plan=self._author_plan_edit.toPlainText().strip(),
             genre=genre_cfg.key if genre_cfg else "",
             style_tone=tone_cfg.key if tone_cfg else "",
+            style_profile_id=str(self._novel_style_profile_combo.currentData() or ""),
+            style_strength=str(self._novel_style_strength_combo.currentData() or "standard"),
             xp_mode=self._xp_mode_check.isChecked(),
         )
         if isinstance(self._client.strategy, NovelStrategy):
@@ -5754,6 +5904,7 @@ class DeepSeekChatGUI(QMainWindow):
             self._client.strategy.genre = genre_cfg.key if genre_cfg else ""
             self._client.strategy.style_tone = tone_cfg.key if tone_cfg else ""
             self._client.strategy.xp_mode = self._xp_mode_check.isChecked()
+        self._active_novel_style = self._resolve_generation_style(title)
         from core.agent.chapter_generation import AgentChapterGenerationService, AgentChapterRequest
         request = AgentChapterRequest(
             book_title=title,
@@ -5764,6 +5915,8 @@ class DeepSeekChatGUI(QMainWindow):
             target_words=self._chapter_word_count.value(),
             model=self._client.model,
             global_prompt=self._client.global_user_prompt,
+            style_profile_id=str(self._novel_run_style_combo.currentData() or "follow_book"),
+            style_strength=str(self._novel_run_strength_combo.currentData() or "follow_book"),
         )
         self._agent_chapter_planning = True
         self._agent_generate_btn.setEnabled(False)
@@ -5957,8 +6110,11 @@ class DeepSeekChatGUI(QMainWindow):
             author_plan=self._author_plan_edit.toPlainText().strip(),
             genre=genre_cfg_save.key if genre_cfg_save else "",
             style_tone=tone_cfg_save.key if tone_cfg_save else "",
+            style_profile_id=str(self._novel_style_profile_combo.currentData() or ""),
+            style_strength=str(self._novel_style_strength_combo.currentData() or "standard"),
             xp_mode=self._xp_mode_check.isChecked(),
         )
+        self._active_novel_style = self._resolve_generation_style(title)
 
         self._append_user_message(f"📖 生成第{chapter_num}章：{chapter_title}")
 
@@ -5981,6 +6137,9 @@ class DeepSeekChatGUI(QMainWindow):
     ) -> str:
         """构造章节续写的完整 User Prompt（含历史记录参考）"""
         chapter_num = chapter_num or self._novel_manager.get_active_generation_target(title)["chapter_num"]
+        resolved_style = getattr(self, "_active_novel_style", None) or resolve_style(self._novel_manager, title)
+        style_prompt = render_style_prompt(
+            resolved_style, task_context="\n".join([chapter_title, plot_content]))
 
         # 智能前情提要（剧情摘要）
         context_report = self._chapter_service.build_context(
@@ -6057,6 +6216,8 @@ class DeepSeekChatGUI(QMainWindow):
             parts.append(f"【本章要求】：\n{demand}\n")
         if plot_content:
             parts.append(f"【本章已定情节（请严格据此扩展）】\n{plot_content}\n")
+        if style_prompt:
+            parts.append(style_prompt + "\n")
 
         global_prompt = ""
         if global_prompt.strip():
@@ -6131,9 +6292,11 @@ class DeepSeekChatGUI(QMainWindow):
         self, *, chapter_num: int, chapter_title: str, content: str,
         context: str, chapter_outline: str, requirements: str,
         target_words: int, xp_mode: bool, operation_prefix: str,
+        style_audit: str = "",
         agent_mode: bool = False,
     ) -> tuple[str, dict]:
         """Use the Agent supervisor only for Agent writing mode; keep classic behavior unchanged."""
+        effective_requirements = "\n".join(filter(None, [requirements, style_audit]))
         if not content.strip():
             return content, {"status": "warning", "audit_failed": True, "error": "empty chapter"}
 
@@ -6164,7 +6327,7 @@ class DeepSeekChatGUI(QMainWindow):
                     chapter_title=chapter_title,
                     chapter_content=content,
                     chapter_outline=chapter_outline,
-                    requirements=requirements,
+                    requirements=effective_requirements,
                     continuity_context=context,
                     target_words=target_words,
                     model=self._client.model,
@@ -6187,13 +6350,14 @@ class DeepSeekChatGUI(QMainWindow):
                 chapter_content=content,
                 chapter_title=f"Chapter {chapter_num}: {chapter_title}",
                 chapter_outline=chapter_outline,
-                requirements=requirements,
+                requirements=effective_requirements,
                 continuity_context=context,
                 target_words=target_words,
                 model=self._client.model,
                 temperature=min(float(getattr(self._client, "temperature", 0.7)), 0.5),
                 global_user_prompt=self._client.global_user_prompt,
                 xp_mode=xp_mode,
+                style_audit=style_audit,
                 max_repair_rounds=2,
                 progress=progress,
                 repair_change_callback=show_repair_changes,
@@ -6236,6 +6400,7 @@ class DeepSeekChatGUI(QMainWindow):
             chapter_num = int(generation_target["chapter_num"])
 
             strategy = self._client.strategy
+            resolved_style = getattr(self, "_active_novel_style", None) or resolve_style(self._novel_manager, title)
             messages = [{"role": "system", "content": Prompts.NOVEL_CHAPTER_WRITING}]
             xp_mode = isinstance(strategy, NovelStrategy) and strategy.xp_mode
             if xp_mode:
@@ -6249,7 +6414,7 @@ class DeepSeekChatGUI(QMainWindow):
                 ),
             })
             if isinstance(strategy, NovelStrategy):
-                messages += strategy.build_system_messages()
+                messages += strategy.build_system_messages(include_style=not resolved_style.active)
 
             if agent_plan is not None and agent_request is not None:
                 from core.agent.chapter_generation import AgentChapterGenerationService
@@ -6293,6 +6458,7 @@ class DeepSeekChatGUI(QMainWindow):
                 target_words=target_words,
                 xp_mode=xp_mode,
                 operation_prefix=operation_prefix,
+                style_audit=render_style_audit(resolved_style),
                 agent_mode=agent_plan is not None,
             )
             if self._client._cancel_requested:
@@ -6339,6 +6505,9 @@ class DeepSeekChatGUI(QMainWindow):
                 agent_data=agent_data,
                 generation_mode="agent" if agent_plan is not None else "classic",
                 agent_run_id=agent_plan.plan_id if agent_plan is not None else None,
+                style_profile_id=resolved_style.profile.profile_id if resolved_style.profile else "",
+                style_profile_revision=resolved_style.profile.revision if resolved_style.profile else 0,
+                style_strength=resolved_style.strength,
             )
             self._stream_signals.token.emit(f"✅ 已保存版本 v{saved_version} → `{file_path}`\n")
 
@@ -6642,6 +6811,8 @@ class DeepSeekChatGUI(QMainWindow):
                 author_plan=self._cont_author_plan_edit.toPlainText().strip(),
                 genre=genre_cfg_cont.key if genre_cfg_cont else "",
                 style_tone=tone_cfg_cont.key if tone_cfg_cont else "",
+                style_profile_id=str(self._cont_style_profile_combo.currentData() or ""),
+                style_strength=str(self._cont_style_strength_combo.currentData() or "standard"),
                 xp_mode=self._cont_xp_mode_check.isChecked(),
             )
             self._refresh_novel_bookshelf()
@@ -6672,8 +6843,11 @@ class DeepSeekChatGUI(QMainWindow):
             background_story=self._cont_background_edit.toPlainText().strip(),
             writing_demand=self._cont_demand_edit.toPlainText().strip(),
             author_plan=self._cont_author_plan_edit.toPlainText().strip(),
+            style_profile_id=str(self._cont_style_profile_combo.currentData() or ""),
+            style_strength=str(self._cont_style_strength_combo.currentData() or "standard"),
             xp_mode=self._cont_xp_mode_check.isChecked(),
         )
+        self._active_cont_style = self._resolve_generation_style(book_title, continuation=True)
 
         threading.Thread(
             target=self._run_continuation,
@@ -6699,6 +6873,9 @@ class DeepSeekChatGUI(QMainWindow):
         """后台线程：执行续写（增强版：含世界书+剧情摘要+设定）"""
         try:
             generation_target = generation_target or self._novel_manager.get_active_generation_target(book_title)
+            resolved_style = getattr(self, "_active_cont_style", None) or resolve_style(self._novel_manager, book_title)
+            style_prompt = render_style_prompt(
+                resolved_style, task_context="\n".join([chapter_title, requirement, plot]))
             # ── 构建 User Prompt（含前情提要 + 世界书 + 设定） ──
             context_report = self._continuation_service.build_context(
                 book_title,
@@ -6769,12 +6946,14 @@ class DeepSeekChatGUI(QMainWindow):
             # 加载小说设定（优先使用 analysis 传入的 setting，否则读 meta.json）
             bg_story = setting
             protagonist_bio = ""
+            book_writing_demand = ""
             xp_mode = False
             try:
                 meta = self._novel_manager.load_meta(book_title)
                 if not bg_story:
                     bg_story = meta.background_story
                 protagonist_bio = meta.protagonist_bio
+                book_writing_demand = meta.writing_demand
                 xp_mode = bool(meta.xp_mode)
             except Exception:
                 pass
@@ -6782,6 +6961,8 @@ class DeepSeekChatGUI(QMainWindow):
                 user_parts.append(f"【世界观/背景参考】\n{bg_story}\n")
             if protagonist_bio:
                 user_parts.append(f"【人物设定参考】\n{protagonist_bio}\n")
+            if book_writing_demand:
+                user_parts.append(f"【书籍写作要求】\n{book_writing_demand}\n")
 
             # 续写要求 + 剧情走向
             user_parts.append(f"请续写以上内容，作为第 {chapter_num} 章「{chapter_title}」。\n")
@@ -6819,10 +7000,12 @@ class DeepSeekChatGUI(QMainWindow):
                 if gcfg and gcfg.style_instruction:
                     style_parts.append(f"题材方向（{gcfg.display_name}）：{gcfg.style_instruction}")
                 tcfg = get_tone_by_key(tone_key)
-                if tcfg and tcfg.style_instruction:
+                if not resolved_style.active and tcfg and tcfg.style_instruction:
                     style_parts.append(f"写作基调（{tcfg.display_name}）：{tcfg.style_instruction}")
                 if style_parts:
                     messages.append({"role": "system", "content": f"【风格设定】\n{chr(10).join(style_parts)}"})
+            if style_prompt:
+                messages.append({"role": "system", "content": style_prompt})
             messages.append({"role": "user", "content": user_prompt})
 
             self._stream_signals.token.emit(
@@ -6850,6 +7033,7 @@ class DeepSeekChatGUI(QMainWindow):
                 target_words=word_count,
                 xp_mode=xp_mode,
                 operation_prefix="continuation",
+                style_audit=render_style_audit(resolved_style),
             )
 
             if self._client._cancel_requested:
@@ -6889,6 +7073,9 @@ class DeepSeekChatGUI(QMainWindow):
                 requirement=requirement,
                 supervision_report=supervision_report,
                 plot=plot,
+                style_profile_id=resolved_style.profile.profile_id if resolved_style.profile else "",
+                style_profile_revision=resolved_style.profile.revision if resolved_style.profile else 0,
+                style_strength=resolved_style.strength,
             )
 
             if self._client._cancel_requested:
@@ -8081,6 +8268,50 @@ class DeepSeekChatGUI(QMainWindow):
             title, source_text, sections, self._usage_logged_client("continuation_import_analysis")
         )
 
+    def _extract_and_bind_import_style(self, title: str, documents: list, client,
+                                       *, source_kind: str, base_name: str) -> list:
+        """Best-effort style extraction; import success never depends on it."""
+        repository = StyleProfileRepository(self._novel_manager)
+        service = StyleExtractionService(
+            self._usage_logged_client("style_profile_extract"), repository
+        )
+        total_chars = sum(len(item.text) for item in documents)
+        estimated = service.estimate_calls(documents)
+        self._stream_signals.token.emit(
+            f"\n🎨 开始提取全文文风：{total_chars} 字，预计约 {estimated} 次模型调用。\n"
+        )
+        try:
+            profiles = service.extract_documents(
+                documents,
+                self._client.model,
+                base_name=base_name,
+                source_kind=source_kind,
+                progress=lambda message, current, total: self._stream_signals.token.emit(
+                    f"  🎨 {message}（{current + 1}/{total}）\n"
+                ),
+                cancelled=lambda: bool(self._client._cancel_requested),
+                run_id=f"import:{title}:{total_chars}",
+            )
+            for profile in profiles:
+                repository.save(profile)
+            if profiles:
+                primary = max(profiles, key=lambda item: item.sample_chars)
+                self._novel_manager.save_meta(
+                    title,
+                    style_profile_id=primary.profile_id,
+                    style_strength="standard",
+                )
+                suffix = f"；另生成 {len(profiles) - 1} 个差异文风档案" if len(profiles) > 1 else ""
+                self._stream_signals.token.emit(
+                    f"✅ 已绑定文风档案“{primary.name}”（{primary.confidence}）{suffix}。\n"
+                )
+            return profiles
+        except StyleExtractionCancelled:
+            self._stream_signals.token.emit("⚠️ 文风提取已取消；小说导入结果保持不变。\n")
+        except Exception as exc:
+            self._stream_signals.token.emit(f"⚠️ 文风提取失败，小说导入仍已完成：{exc}\n")
+        return []
+
     def _start_analysis_with_sections(self, title: str, source_text: str, sections: list, client) -> None:
         """后台线程：单篇导入按确认分段保存为章节，并逐章绑定摘要与世界书来源。"""
         xp_mode = self._cont_xp_mode_check.isChecked()
@@ -8203,6 +8434,14 @@ class DeepSeekChatGUI(QMainWindow):
                     xp_mode=xp_mode,
                 )
 
+                source_name = os.path.basename(getattr(self, "_cont_analysis_source_path", "")) or title
+                self._extract_and_bind_import_style(
+                    title,
+                    [StyleSourceDocument(source_name, source_text)],
+                    client,
+                    source_kind="file",
+                    base_name=title,
+                )
                 si.token.emit(f"  ✅ 设定已保存\n")
                 si.token.emit(
                     f"\n{'='*50}\n"
@@ -8421,6 +8660,13 @@ class DeepSeekChatGUI(QMainWindow):
                 author_plan=settings.get("author_plan", ""),
                 xp_mode=xp_mode,
             )
+            self._extract_and_bind_import_style(
+                title,
+                [StyleSourceDocument(filename, content) for _number, filename, content in chapter_files],
+                client,
+                source_kind="folder",
+                base_name=title,
+            )
 
             si.token.emit(
                 f"\n{'='*50}\n"
@@ -8576,6 +8822,7 @@ class DeepSeekChatGUI(QMainWindow):
         if not plot:
             plot = self._continue_plot.toPlainText().strip()
         word_count = word_count or self._continue_word_count.value()
+        self._active_cont_style = self._resolve_generation_style(book_title, continuation=True)
 
         self._client.reset_cancel()
         self._stop_btn.setVisible(True)
@@ -8998,6 +9245,11 @@ class DeepSeekChatGUI(QMainWindow):
                         messages.append({"role": "system", "content": f"【人物背景】：\n{bio}"})
                     if demand:
                         messages.append({"role": "system", "content": f"【写作要求】：\n{demand}"})
+                    resolved_style = resolve_style(self._novel_mgr, self._book_title)
+                    style_prompt = render_style_prompt(
+                        resolved_style,
+                        task_context="\n".join(filter(None, [chapter_title, req, plot])),
+                    )
                     try:
                         meta = self._novel_mgr.load_meta(self._book_title)
                         style_parts = []
@@ -9007,7 +9259,7 @@ class DeepSeekChatGUI(QMainWindow):
                                 f"题材方向（{genre_cfg.display_name}）：{genre_cfg.style_instruction}"
                             )
                         tone_cfg = get_tone_by_key(getattr(meta, "style_tone", ""))
-                        if tone_cfg and tone_cfg.style_instruction:
+                        if not resolved_style.active and tone_cfg and tone_cfg.style_instruction:
                             style_parts.append(
                                 f"写作基调（{tone_cfg.display_name}）：{tone_cfg.style_instruction}"
                             )
@@ -9016,6 +9268,8 @@ class DeepSeekChatGUI(QMainWindow):
 
                     except Exception:
                         pass
+                    if style_prompt:
+                        messages.append({"role": "system", "content": style_prompt})
                     # 加载世界书
                     try:
                         bible = self._novel_mgr.load_world_bible(self._book_title)
@@ -9103,6 +9357,7 @@ class DeepSeekChatGUI(QMainWindow):
                         context=prompt_text,
                         xp_mode=xp_mode,
                         operation_prefix="chapter_regenerate",
+                        style_audit=render_style_audit(resolved_style),
                     )
 
                     new_version = self._novel_mgr.get_next_version(self._book_title, chapter_num)
@@ -9125,6 +9380,9 @@ class DeepSeekChatGUI(QMainWindow):
                         requirement=req,
                         plot=plot,
                         supervision_report=supervision_report,
+                        style_profile_id=resolved_style.profile.profile_id if resolved_style.profile else "",
+                        style_profile_revision=resolved_style.profile.revision if resolved_style.profile else 0,
+                        style_strength=resolved_style.strength,
                     )
 
 

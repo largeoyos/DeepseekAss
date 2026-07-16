@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass, field
 
 from core.agent.types import now_iso
 from core.agent.skills import HUMANIZER_ZH_STYLE_BRIEF
+from core.style_profiles import render_style_prompt, resolve_style
 
 
 @dataclass
@@ -20,6 +21,8 @@ class AgentChapterRequest:
     model: str
     manual_entity_ids: list[str] = field(default_factory=list)
     global_prompt: str = ""
+    style_profile_id: str = "follow_book"
+    style_strength: str = "follow_book"
 
 
 @dataclass
@@ -166,6 +169,8 @@ class AgentChapterGenerationService:
             request.book_title, request.chapter_num, request.chapter_title, request.plot
         )
         skills = self._select_skills(request)
+        resolved_style = resolve_style(self.manager, request.book_title, profile_id=request.style_profile_id, strength=request.style_strength)
+        style_prompt = render_style_prompt(resolved_style, task_context="\n".join([request.chapter_title, request.plot, request.requirement]))
         director_state = self._load_director_state(request.book_title)
         planning_input = {
             "book": request.book_title, "chapter_num": request.chapter_num,
@@ -176,6 +181,7 @@ class AgentChapterGenerationService:
             "user_preferences": request.global_prompt, "continuity_contract": continuity,
             "world_index": index, "history_index": history, "skills": skills.text,
             "story_director": director_state,
+            "style_profile": style_prompt,
         }
         if self.multi_plan_enabled:
             raw_options = self._call_plan_options(planning_input, request.model)
@@ -257,11 +263,14 @@ class AgentChapterGenerationService:
 
     def generate(self, request: AgentChapterRequest, approved_plan: AgentChapterPlan) -> AgentChapterResult:
         meta = self.manager.load_meta(request.book_title)
+        resolved_style = resolve_style(self.manager, request.book_title, profile_id=request.style_profile_id, strength=request.style_strength)
+        style_prompt = render_style_prompt(resolved_style, task_context="\n".join([request.chapter_title, request.plot, request.requirement]))
         prompt = "\n\n".join(filter(None, [
             f"【Agent 已确认章节计划】\n{approved_plan.render()}",
             f"【Agent 精选上下文】\n{approved_plan.context_report.get('content', '')}",
             f"【本次启用 Skills】\n{approved_plan.context_report.get('skills_text', '')}" if approved_plan.context_report.get("skills_text") else "",
             f"【风格硬约束】\n{HUMANIZER_ZH_STYLE_BRIEF}",
+            style_prompt,
             f"【主角设定】\n{meta.protagonist_bio}" if meta.protagonist_bio else "",
             f"【世界观】\n{meta.background_story}" if meta.background_story else "",
             f"【作者规划】\n{meta.author_plan}" if meta.author_plan else "",

@@ -9,6 +9,7 @@ from core.agent.types import now_iso
 from core.agent.skills import HUMANIZER_ZH_STYLE_BRIEF
 
 from utils.genre_styles import get_tone_by_key
+from core.style_profiles import render_style_prompt, resolve_style
 
 @dataclass
 class AgentExtraRequest:
@@ -24,6 +25,8 @@ class AgentExtraRequest:
     model: str = ""
     manual_entity_ids: list[str] = field(default_factory=list)
     global_prompt: str = ""
+    style_profile_id: str = "follow_book"
+    style_strength: str = "follow_book"
 
 
 @dataclass
@@ -84,6 +87,8 @@ class AgentExtraGenerationService:
 
     def prepare(self, request: AgentExtraRequest) -> AgentExtraPlan:
         self._validate_request(request)
+        resolved_style = resolve_style(self.manager, request.book_title, profile_id=request.style_profile_id, strength=request.style_strength)
+        style_prompt = render_style_prompt(resolved_style, task_context="\n".join([request.title, request.plot, request.requirement]))
         meta = self.manager.load_meta(request.book_title)
         anchor_id = request.start_node_id or request.reference_node_id
         path = self.manager.get_path_to_node(request.book_title, anchor_id)
@@ -110,6 +115,7 @@ class AgentExtraGenerationService:
             "world_index": world_index,
             "skills": skills.text,
             "type_contract": self._type_contract(request.extra_type),
+            "style_profile": style_prompt,
         }
         data = self._call_planner(payload, request.model)
         data = self._validate_plan(data, world_index, history)
@@ -164,12 +170,15 @@ class AgentExtraGenerationService:
     def generate(self, request: AgentExtraRequest, plan: AgentExtraPlan) -> AgentExtraResult:
         labels = {"enrichment": "丰富内容番外", "if_line": "IF线番外", "prequel": "前传", "sequel": "后传"}
         meta = self.manager.load_meta(request.book_title)
+        resolved_style = resolve_style(self.manager, request.book_title, profile_id=request.style_profile_id, strength=request.style_strength)
+        style_prompt = render_style_prompt(resolved_style, task_context="\n".join([request.title, request.plot, request.requirement]))
         tone = get_tone_by_key(getattr(meta, "style_tone", ""))
         prompt = "\n\n".join(filter(None, [
             f"【已确认的{labels.get(request.extra_type, '番外')}计划】\n{plan.render()}",
             f"【实际注入上下文】\n{plan.context_report.get('content', '')}",
             f"【风格硬约束】\n{HUMANIZER_ZH_STYLE_BRIEF}",
             f"【写作基调（{tone.display_name}）】\n{tone.style_instruction}" if tone and tone.style_instruction else "",
+            style_prompt,
             f"【用户剧情】\n{request.plot}",
             f"【写作要求】\n{request.requirement}",
             f"请创作「{request.title}」，不少于 {request.target_words} 字。只输出小说正文，不输出解释、标题或计划。",

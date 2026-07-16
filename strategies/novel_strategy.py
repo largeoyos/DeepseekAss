@@ -162,7 +162,7 @@ class NovelStrategy(BaseStrategy):
     def recommended_max_tokens(self) -> int:
         return 32768  # 长篇小说单次输出上限（约20000～30000中文字）
 
-    def build_system_messages(self) -> list[dict]:
+    def build_system_messages(self, include_style: bool = True) -> list[dict]:
         """
         构建多层 System Message 列表（核心设定 + 人物背景 + 风格设定）
 
@@ -181,7 +181,7 @@ class NovelStrategy(BaseStrategy):
                 "content": f"【人物背景】：\n{self._protagonist_bio}",
             })
         style_text = self.genre_style_text
-        if style_text:
+        if include_style and style_text:
             messages.append({
                 "role": "system",
                 "content": f"【风格设定】\n{style_text}",

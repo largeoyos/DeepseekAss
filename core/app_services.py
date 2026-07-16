@@ -150,6 +150,9 @@ class ChapterGenerationService:
         world_maintenance_report: dict | None = None,
         generation_mode: str = "classic",
         agent_run_id: str | None = None,
+        style_profile_id: str = "",
+        style_profile_revision: int = 0,
+        style_strength: str = "",
     ) -> tuple[str, int]:
         file_path, saved_version = self.novel_manager.save_chapter_version(
             title,
@@ -181,6 +184,9 @@ class ChapterGenerationService:
             world_maintenance_report=world_maintenance_report,
             generation_mode=generation_mode,
             agent_run_id=agent_run_id,
+            style_profile_id=style_profile_id,
+            style_profile_revision=style_profile_revision,
+            style_strength=style_strength,
         )
         return file_path, saved_version
 

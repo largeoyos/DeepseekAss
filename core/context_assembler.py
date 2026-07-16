@@ -65,6 +65,16 @@ def _clip(text: str, budget: int) -> tuple[str, int]:
     return text[:usable].rstrip() + marker, len(text) - usable
 
 
+def _clip_tail(text: str, budget: int) -> tuple[str, int]:
+    text = str(text or "").strip()
+    if budget <= 0 or len(text) <= budget:
+        return text, 0
+    omitted = len(text) - budget
+    marker = f"\u3010\u5c3e\u90e8\u8854\u63a5\u4e0a\u4e0b\u6587\uff1a\u524d\u6587\u5df2\u7701\u7565 {omitted} \u5b57\u7b26\u3011\n\n"
+    usable = max(0, budget - len(marker))
+    return marker + text[-usable:].lstrip(), len(text) - usable
+
+
 def _plain(value) -> dict:
     if is_dataclass(value):
         return asdict(value)
@@ -224,9 +234,10 @@ class ContextAssembler:
             report,
             "manual",
             "原文内容",
-            source_text[-self.budgets["manual"]:],
+            source_text,
             "用户选择的续写源文本",
             insert_at=0,
+            tail=True,
         )
         return report
 
@@ -294,12 +305,13 @@ class ContextAssembler:
         reason: str,
         *,
         insert_at: int | None = None,
+        tail: bool = False,
     ) -> None:
         content = str(content or "").strip()
         if not content:
             return
         budget = int(self.budgets.get(source, 4000))
-        clipped, omitted = _clip(content, budget)
+        clipped, omitted = _clip_tail(content, budget) if tail else _clip(content, budget)
         section = ContextSection(
             source=source,
             title=title,

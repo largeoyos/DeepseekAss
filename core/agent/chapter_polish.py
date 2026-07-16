@@ -9,6 +9,7 @@ from dataclasses import asdict, dataclass, field
 from core.agent.repository import AgentRepository
 from core.agent.types import now_iso
 from core.agent.skills import HUMANIZER_ZH_STYLE_BRIEF
+from core.style_profiles import render_style_audit, render_style_prompt, resolve_style
 
 from utils.genre_styles import get_tone_by_key
 
@@ -174,8 +175,10 @@ class AgentChapterPolishService:
 
     def build_prompt(self, request: AgentPolishRequest, plan: AgentPolishPlan) -> tuple[str, str]:
         original = self.manager.read_chapter_node(request.book_title, request.node_id) or ""
+        resolved_style = resolve_style(self.manager, request.book_title)
+        style_prompt = render_style_prompt(resolved_style, task_context="\n".join([request.chapter_title, request.requirement]))
         tone = get_tone_by_key(getattr(self.manager.load_meta(request.book_title), "style_tone", ""))
-        tone_prompt = f"【写作基调（{tone.display_name}）】\n{tone.style_instruction}" if tone and tone.style_instruction else ""
+        tone_prompt = f"【写作基调（{tone.display_name}）】\n{tone.style_instruction}" if not resolved_style.active and tone and tone.style_instruction else ""
         if plan.rewrite_required:
             raise AgentPolishError("该要求涉及剧情或事实修改，请使用“重写”。")
         prompt = "\n\n".join([
@@ -183,6 +186,7 @@ class AgentChapterPolishService:
             f"【润色要求】\n{request.requirement}", f"【已确认润色方案】\n{plan.render()}",
             f"【连续性保护上下文】\n{plan.context_report.get('content', '')}",
             f"【本次启用 Skills】\n{plan.context_report.get('skills_text', '')}" if plan.context_report.get("skills_text") else "",
+            style_prompt,
             f"【去 AI 腔风格约束】\n{HUMANIZER_ZH_STYLE_BRIEF}",
             tone_prompt,
             "【硬性边界】\n不得新增、删除或调换剧情事件；不得改变人物行为、动机、关系、时间线、地点、能力、关键事实和对白意图；不得把作者规划写成已发生事实。",
@@ -225,7 +229,9 @@ class AgentChapterPolishService:
             "\n".join([request.chapter_title, request.requirement, request.global_prompt]),
         )
     def _audit(self, request, plan, original, candidate) -> dict:
+        resolved_style = resolve_style(self.manager, request.book_title)
         payload = {"requirement": request.requirement, "preserved_facts": plan.preserved_facts, "preserved_dialogue_intents": plan.preserved_dialogue_intents, "skills": plan.context_report.get("skills_text", ""), "original": original, "polished": candidate}
+        payload["style_audit"] = render_style_audit(resolved_style)
         prompt = "你是小说润色保真审稿器。比较原文和润色稿，只返回严格 JSON：passed:boolean, plot_drift:[string], fact_drift:[string], character_drift:[string], dialogue_intent_drift:[string], new_facts:[string], requirement_issues:[string], format_issues:[string], style_issues:[string], repair_instruction:string。任何剧情事件、事实、人物行为/动机、时间线、关系或对白意图改变都必须令 passed=false；若出现明显 AI 腔、否定式排比或描写重复，写入 style_issues。\n\n" + json.dumps(payload, ensure_ascii=False)
         data = self._call_json(prompt, request.model, max_tokens=8192)
         fields = ("plot_drift", "fact_drift", "character_drift", "dialogue_intent_drift", "new_facts", "requirement_issues", "format_issues", "style_issues")
@@ -237,9 +243,13 @@ class AgentChapterPolishService:
         return data
 
     def _repair(self, request, plan, original, candidate, report) -> str:
+        resolved_style = resolve_style(self.manager, request.book_title)
+        style_prompt = render_style_prompt(resolved_style, task_context="\n".join([request.chapter_title, request.requirement]))
         tone = get_tone_by_key(getattr(self.manager.load_meta(request.book_title), "style_tone", ""))
-        tone_prompt = f"【写作基调（{tone.display_name}）】\n{tone.style_instruction}" if tone and tone.style_instruction else ""
+        tone_prompt = f"【写作基调（{tone.display_name}）】\n{tone.style_instruction}" if not resolved_style.active and tone and tone.style_instruction else ""
         prompt = "\n\n".join(["你是小说润色修复编辑。根据审查报告做最小修复，只输出完整正文。", "必须恢复原文剧情、事实、人物行为、事件顺序和对白意图；不得新增内容。", f"【去 AI 腔风格约束】\n{HUMANIZER_ZH_STYLE_BRIEF}", f"【润色要求】\n{request.requirement}", f"【保留事实】\n{json.dumps(plan.preserved_facts, ensure_ascii=False)}", f"【审查报告】\n{json.dumps(report, ensure_ascii=False)}", f"【本次启用 Skills】\n{plan.context_report.get('skills_text', '')}", f"【原文】\n{original}", f"【待修复润色稿】\n{candidate}"])
+        if style_prompt:
+            prompt = style_prompt + "\n\n" + prompt
         if tone_prompt:
             prompt = tone_prompt + "\n\n" + prompt
         response = self.client.chat.completions.create(model=request.model, messages=[{"role": "user", "content": prompt}], temperature=0.2, max_tokens=32768)

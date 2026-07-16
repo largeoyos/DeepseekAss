@@ -233,6 +233,7 @@ def audit_chapter(
     model: str,
     global_user_prompt: str = "",
     xp_mode: bool = False,
+    style_audit: str = "",
 ) -> SupervisionResult:
     """执行本地硬约束检查和模型语义审计；模型失败时安全降级。"""
     local_issues = _local_hard_constraint_issues(chapter_content, target_words)
@@ -246,6 +247,8 @@ def audit_chapter(
         f"【本地风格迹象计数（仅作线索，不等于问题）】\n{json.dumps(collect_style_tic_counts(chapter_content), ensure_ascii=False)}\n",
         "注意：字数由程序另行检查，你不需要估算字数；孤立出现一次的模板句不得据此判定为风格问题。",
     ]
+    if style_audit.strip():
+        parts.append(f"\u3010\u6307\u5b9a\u6587\u98ce\u5ba1\u67e5\u8981\u6c42\u3011\n{style_audit}\n")
     if global_user_prompt.strip():
         parts.append(f"【用户全局偏好】\n{global_user_prompt}\n")
     if xp_mode:
@@ -279,6 +282,7 @@ def repair_chapter(
     model: str,
     temperature: float = 0.4,
     global_user_prompt: str = "",
+    style_audit: str = "",
     xp_mode: bool = False,
 ) -> str:
     """按未通过项最小化修订完整正文。输出异常时返回空字符串。"""
@@ -294,6 +298,8 @@ def repair_chapter(
         f"【中文自然写作约束】\n{HUMANIZER_ZH_STYLE_BRIEF}\n",
         f"【原章节正文】\n{chapter_content}\n",
     ]
+    if style_audit.strip():
+        parts.append(f"\u3010\u6307\u5b9a\u6587\u98ce\u4fee\u8ba2\u8981\u6c42\u3011\n{style_audit}\n")
     if global_user_prompt.strip():
         parts.append(f"【用户全局偏好】\n{global_user_prompt}\n")
     if xp_mode:
@@ -329,6 +335,7 @@ def supervise_chapter(
     temperature: float = 0.4,
     global_user_prompt: str = "",
     xp_mode: bool = False,
+    style_audit: str = "",
     max_repair_rounds: int = 2,
     progress: Callable[[str], None] | None = None,
     repair_change_callback: Callable[[int, str], None] | None = None,
@@ -350,6 +357,7 @@ def supervise_chapter(
             model=model,
             global_user_prompt=global_user_prompt,
             xp_mode=xp_mode,
+            style_audit=style_audit,
         )
         final_result.repair_rounds = round_index
         if not final_result.needs_repair:
@@ -373,6 +381,7 @@ def supervise_chapter(
             temperature=temperature,
             global_user_prompt=global_user_prompt,
             xp_mode=xp_mode,
+            style_audit=style_audit,
         )
         if not repaired:
             final_result.status = "warning"

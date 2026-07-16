@@ -32,6 +32,7 @@ def supplement_content(
     history_summary: str = "",
     xp_mode: bool = False,
     style_tone: str = "",
+    style_prompt: str = "",
 ) -> str:
     """
     字数不足时，将整章内容 + 全部上下文发送给 AI 进行扩写
@@ -62,9 +63,12 @@ def supplement_content(
         parts.append(f"【本章已定情节】\n{plot_content}\n")
     if history_summary.strip():
         parts.append(f"【历史生成参考】\n{history_summary}\n")
-    tone = get_tone_by_key(style_tone)
-    if tone and tone.style_instruction:
-        parts.append(f"【写作基调（{tone.display_name}）】\n{tone.style_instruction}\n")
+    if style_prompt.strip():
+        parts.append(style_prompt + "\n")
+    else:
+        tone = get_tone_by_key(style_tone)
+        if tone and tone.style_instruction:
+            parts.append(f"【写作基调（{tone.display_name}）】\n{tone.style_instruction}\n")
     parts.append(f"【humanizer-zh 风格硬约束】\n{HUMANIZER_ZH_STYLE_BRIEF}\n")
     if xp_mode:
         parts.append(f"{Prompts.XP_MODE_SYSTEM}\n")
