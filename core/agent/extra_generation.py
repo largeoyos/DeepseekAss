@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass, field
 from core.agent.types import now_iso
 from core.agent.skills import HUMANIZER_ZH_STYLE_BRIEF
 
+from utils.genre_styles import get_tone_by_key
 
 @dataclass
 class AgentExtraRequest:
@@ -162,10 +163,13 @@ class AgentExtraGenerationService:
 
     def generate(self, request: AgentExtraRequest, plan: AgentExtraPlan) -> AgentExtraResult:
         labels = {"enrichment": "丰富内容番外", "if_line": "IF线番外", "prequel": "前传", "sequel": "后传"}
+        meta = self.manager.load_meta(request.book_title)
+        tone = get_tone_by_key(getattr(meta, "style_tone", ""))
         prompt = "\n\n".join(filter(None, [
             f"【已确认的{labels.get(request.extra_type, '番外')}计划】\n{plan.render()}",
             f"【实际注入上下文】\n{plan.context_report.get('content', '')}",
             f"【风格硬约束】\n{HUMANIZER_ZH_STYLE_BRIEF}",
+            f"【写作基调（{tone.display_name}）】\n{tone.style_instruction}" if tone and tone.style_instruction else "",
             f"【用户剧情】\n{request.plot}",
             f"【写作要求】\n{request.requirement}",
             f"请创作「{request.title}」，不少于 {request.target_words} 字。只输出小说正文，不输出解释、标题或计划。",

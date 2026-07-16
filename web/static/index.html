@@ -117,7 +117,7 @@
                 <section class="detail-pane agent-grid">
                   <div class="tool-box"><h3>通用 Agent 会话</h3><div class="inline-form compact"><select id="workbenchAgentKind"></select><input id="workbenchSessionTitle" placeholder="会话标题"></div><div class="button-row"><button id="createAgentSessionBtn" type="button">新建会话</button><button id="refreshAgentRunBtn" type="button">读取运行</button></div><label><span>任务描述</span><textarea id="workbenchMessage" rows="4" placeholder="自由分析、规划、检查或构思"></textarea></label><label><span>手动引用（每行一个章节/设定/片段提示）</span><textarea id="workbenchReferences" rows="3"></textarea></label><div class="button-row"><button id="runAgentSessionBtn" class="primary" type="button">发送到 Agent</button><button id="pauseAgentRunBtn" type="button">暂停</button><button id="resumeAgentRunBtn" type="button">恢复</button><button id="cancelAgentRunBtn" type="button">停止</button></div><div id="agentRunTimeline" class="agent-run-view"><div class="notice small">发送后显示 Agent 回答、运行状态、工具调用和事件时间线。</div></div></div>
                   <div class="tool-box"><h3>写作顾问</h3><label><span>问题</span><textarea id="advisorMessage" rows="5"></textarea></label><label class="check-line"><input id="advisorFictionContext" type="checkbox" checked>按虚构小说创作任务包装</label><label><span>手动引用（每行一个章节/设定/片段提示）</span><textarea id="advisorReferences" rows="3"></textarea></label><div class="button-row"><button id="advisorBtn" class="primary" type="button">询问顾问</button><button id="saveAdvisorAdviceBtn" type="button">保存为构思</button><button id="advisorWorldBtn" type="button">加入世界书审批</button></div></div>
-                  <div class="tool-box"><h3>主线章节 Agent</h3><label><span>章节标题</span><input id="agentChapterTitle"></label><label><span>章节剧情</span><textarea id="agentPlot" rows="5"></textarea></label><label><span>写作要求</span><textarea id="agentRequirement" rows="3" placeholder="本章额外要求；留空时沿用小说设定"></textarea></label><div class="inline-form compact"><label><span>目标字数</span><input id="agentWords" type="number" min="500" max="30000" step="500" value="3000"></label><label><span>手动世界书实体 ID</span><input id="agentManualEntities" placeholder="可选，逗号分隔"></label></div><div class="button-row"><button id="agentPlanBtn" type="button">生成规划</button><button id="agentGenerateBtn" class="primary" type="button">按计划生成</button></div><textarea id="agentPlanView" class="code-area" rows="8" placeholder="规划结果"></textarea></div><div class="tool-box"><h3>构思与审批</h3><textarea id="agentInspector" class="code-area" rows="8" placeholder="点击左侧构思或历史消息查看内容"></textarea><div id="changeScopeList" class="stack-list compact"></div><div class="button-row"><button id="approveSelectedChangeBtn" type="button">确认作用域并批准</button><button id="rejectSelectedChangeBtn" type="button">拒绝选中变更</button></div></div>
+                  <div class="tool-box"><h3>主线章节 Agent</h3><label><span>章节标题</span><input id="agentChapterTitle"></label><label><span>章节剧情</span><textarea id="agentPlot" rows="5"></textarea></label><label><span>写作要求</span><textarea id="agentRequirement" rows="3" placeholder="本章额外要求；留空时沿用小说设定"></textarea></label><div class="inline-form compact"><label><span>目标字数</span><input id="agentWords" type="number" min="500" max="30000" step="500" value="3000"></label><label><span>手动世界书实体 ID</span><input id="agentManualEntities" placeholder="可选，逗号分隔"></label></div><div class="button-row"><button id="agentPlanBtn" type="button">生成规划</button><button id="agentGenerateBtn" class="primary" type="button">按计划生成</button></div><label id="agentCandidateField" class="hidden"><span>候选规划</span><select id="agentCandidateSelect"></select></label><div id="agentPlanRecommendation" class="notice small hidden"></div><textarea id="agentPlanView" class="code-area" rows="8" placeholder="规划结果"></textarea></div><div class="tool-box"><h3>构思与审批</h3><textarea id="agentInspector" class="code-area" rows="8" placeholder="点击左侧构思或历史消息查看内容"></textarea><div id="changeScopeList" class="stack-list compact"></div><div class="button-row"><button id="approveSelectedChangeBtn" type="button">确认作用域并批准</button><button id="rejectSelectedChangeBtn" type="button">拒绝选中变更</button></div></div>
                   <div class="tool-box"><h3>章节润色 Agent</h3><label><span>节点 ID</span><input id="polishNodeId" placeholder="从章节树选择后自动填入"></label><label><span>润色要求</span><textarea id="polishRequirement" rows="4"></textarea></label><div class="button-row"><button id="polishPlanBtn" type="button">规划润色</button><button id="polishGenerateBtn" type="button">执行润色</button></div></div>
                   <div class="tool-box"><h3>扩展章节 / 分支线</h3><label><span>类型</span><select id="extraType"><option value="enrichment">丰富内容</option><option value="if_line">IF线</option><option value="prequel">前传</option><option value="sequel">后传</option></select></label><label><span>起点节点</span><input id="extraStartNodeId"></label><label><span>终点节点</span><input id="extraEndNodeId"></label><label><span>参考节点</span><input id="extraRefNodeId"></label><label><span>标题</span><input id="extraTitle"></label><label><span>大致剧情</span><textarea id="extraPlot" rows="4" placeholder="输入关键场景、分歧选择或希望发生的事件"></textarea></label><label><span>写作要求</span><textarea id="extraRequirement" rows="3" placeholder="额外风格、限制、人物动机要求，可留空"></textarea></label><label><span>目标字数</span><input id="extraWords" type="number" min="500" max="50000" step="500" value="5000"></label><label><span>手动世界书实体 ID</span><input id="extraManualEntities" placeholder="可选，逗号分隔"></label><div class="button-row"><button id="extraPlanBtn" type="button">规划番外</button><button id="extraGenerateBtn" type="button">生成番外</button></div></div>
                 </section>
@@ -344,7 +344,7 @@
                 <h3>基础 API</h3>
                 <label><span>当前生成模型</span><input id="currentModel" list="modelOptions" placeholder="deepseek-v4-flash"></label>
                 <datalist id="modelOptions"></datalist>
-                <div class="button-row"><button id="saveCurrentModelBtn" type="button">切换当前模型</button></div>
+                <div class="button-row"><button id="saveCurrentModelBtn" type="button">切换当前模型</button></div><label><span>章节模型路由</span><select id="modelRoutingMode"><option value="standard">正文与辅助任务均使用当前模型</option><option value="pro_body_flash_aux">正文 Pro · 摘要/世界书/监督 Flash（省费）</option></select></label><button id="saveModelRoutingBtn" type="button">保存模型路由</button>
                 <label><span>文字 API Key</span><input id="apiKey" type="password"></label>
                 <label><span>文字 Base URL</span><input id="baseUrl"></label>
                 <label><span>文字模型</span><input id="apiModel"></label>
@@ -380,7 +380,7 @@
               <section class="tool-box">
                 <h3>Agent 设置</h3>
                 <label><span>生成模式</span><select id="agentGenerationMode"><option value="classic">经典模式</option><option value="agent">Agent 模式</option></select></label>
-                <label class="check-line"><input id="agentSkillsEnabled" type="checkbox">启用 Skills</label>
+                <label class="check-line"><input id="agentSkillsEnabled" type="checkbox">启用 Skills</label><label class="check-line"><input id="agentMultiPlanEnabled" type="checkbox">生成多个章节方案并确认选择</label>
                 <label><span>Agent 运行时</span><select id="agentRuntimeBackend"><option value="legacy">自研运行时</option><option value="langgraph">LangGraph</option></select></label>
                 <label class="check-line"><input id="agentWebEnabled" type="checkbox">启用受控网页搜索</label>
                 <label><span>搜索 Endpoint</span><input id="agentWebEndpoint"></label>
@@ -456,7 +456,7 @@
           </section>
 
           <section id="tasksPanel" class="section-panel hidden">
-            <div class="pane-title"><h3>任务中心</h3><div class="button-row tight"><button id="refreshTasksBtn" type="button">刷新</button><button id="loadDiagnosticsBtn" type="button">诊断</button><button id="exportDiagnosticsBtn" type="button">导出诊断</button></div></div>
+            <div class="pane-title"><h3>任务中心</h3><div class="button-row tight"><button id="cancelActiveTaskBtn" class="danger-action hidden" type="button">停止当前任务</button><button id="refreshTasksBtn" type="button">刷新</button><button id="loadDiagnosticsBtn" type="button">诊断</button><button id="exportDiagnosticsBtn" type="button">导出诊断</button></div></div>
             <div class="task-card"><div class="progress-row"><span id="taskStage">暂无任务</span><strong id="taskPercent">0%</strong></div><div class="progress-track"><div id="taskBar"></div></div><p id="taskMessage" class="task-message"></p></div>
             <pre id="streamText" class="stream-text"></pre>
             <div class="split-layout task-diagnostics-layout"><div><div class="pane-title"><h3>任务历史</h3></div><div id="taskList" class="stack-list"></div></div><div><div class="pane-title"><h3>详情 / 诊断</h3></div><div id="taskDetail" class="task-detail-shell"><div class="notice small">选择任务或点击诊断后显示结构化详情。</div></div><div class="pane-title"><h3>下载</h3></div><div id="taskDownloadList" class="stack-list compact"></div></div></div>
@@ -464,6 +464,19 @@
         </main>
       </div>
     </section>
+    <dialog id="agentPlanDialog" class="agent-plan-dialog" aria-labelledby="agentPlanDialogTitle">
+      <section class="agent-plan-dialog-card">
+        <header class="agent-plan-dialog-header"><div><p class="eyebrow">正文生成前确认</p><h2 id="agentPlanDialogTitle">确认 Agent 章节计划</h2></div><button id="closeAgentPlanDialogBtn" class="icon-button" type="button" aria-label="关闭">×</button></header>
+        <p class="agent-plan-dialog-notice">你可以选择候选方案，或仅修改当前方案。确认后才会开始生成正文。</p>
+        <label id="agentPlanDialogCandidateField"><span>章节方案</span><select id="agentPlanDialogCandidateSelect"></select></label>
+        <div id="agentPlanDialogRecommendation" class="notice small"></div>
+        <div class="agent-plan-tabs" role="tablist" aria-label="计划详情"><button type="button" class="active" data-agent-plan-tab="plan">章节计划</button><button type="button" data-agent-plan-tab="context">实际注入上下文</button><button type="button" data-agent-plan-tab="sources">来源与预算</button></div>
+        <pre id="agentPlanDialogContent" class="agent-plan-dialog-content"></pre>
+        <label><span>计划修改要求（只修改当前显示的方案）</span><textarea id="agentPlanRevisionInput" rows="4" placeholder="例如：保留前两个场景，只把第三场的选择改成主角主动隐瞒线索，并补上对应代价。"></textarea></label>
+        <div class="button-row"><button id="reviseAgentPlanBtn" type="button">让 AI 修改当前计划</button><button id="confirmAgentPlanBtn" class="primary" type="button">确认所选方案并生成正文</button><button id="cancelAgentPlanBtn" type="button">取消</button></div>
+        <p id="agentPlanDialogStatus" class="muted">修改会更新当前计划，不会重新生成其他方案或正文。</p>
+      </section>
+    </dialog>
     <div id="toast" class="toast hidden"></div>
   </div>
   <script type="module" src="/app.js"></script>

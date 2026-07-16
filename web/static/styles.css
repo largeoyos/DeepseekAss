@@ -495,3 +495,19 @@ label span { display: block; margin-bottom: 6px; color: var(--muted); font-size:
 .snapshot-file-card strong, .continuation-result-card strong { overflow-wrap: anywhere; }
 .snapshot-file-card p, .continuation-result-card p { margin: 0; line-height: 1.55; overflow-wrap: anywhere; }
 .snapshot-file-card p span, .continuation-result-card span { display: inline-block; min-width: 42px; margin-right: 6px; color: var(--muted); }
+.agent-plan-dialog { width: min(900px, calc(100vw - 32px)); max-width: none; max-height: min(720px, calc(100vh - 32px)); padding: 0; border: 1px solid rgba(31,37,34,.18); border-radius: 12px; color: var(--ink); background: #fffaf0; box-shadow: 0 24px 72px rgba(31,37,34,.28); }
+.agent-plan-dialog::backdrop { background: rgba(28,31,29,.46); backdrop-filter: blur(2px); }
+.agent-plan-dialog-card { display: grid; gap: 12px; max-height: min(720px, calc(100vh - 32px)); padding: 18px; overflow: auto; }
+.agent-plan-dialog-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--line); }
+.agent-plan-dialog-header h2 { margin: 2px 0 0; font-size: 21px; letter-spacing: -.02em; }
+.agent-plan-dialog-header .eyebrow { margin: 0; color: var(--accent); font-size: 12px; font-weight: 800; letter-spacing: .08em; }
+.icon-button { min-width: 34px; min-height: 34px; padding: 0; border-radius: 50%; font-size: 24px; line-height: 1; }
+.agent-plan-dialog-notice { margin: 0; color: var(--muted); line-height: 1.6; }
+.agent-plan-tabs { display: flex; gap: 4px; padding: 4px; overflow-x: auto; border: 1px solid rgba(31,37,34,.11); border-radius: 8px; background: rgba(31,37,34,.035); }
+.agent-plan-tabs button { flex: 1 0 max-content; min-height: 32px; border-color: transparent; background: transparent; color: var(--muted); }
+.agent-plan-tabs button.active { color: #fff; border-color: var(--accent); background: var(--accent); box-shadow: none; }
+.agent-plan-dialog-content { min-height: 270px; max-height: 360px; margin: 0; padding: 13px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; border: 1px solid var(--line); border-radius: 8px; background: rgba(255,253,247,.82); font: 13px/1.65 "Cascadia Mono", "Microsoft YaHei UI", monospace; }
+.agent-plan-dialog textarea { resize: vertical; }
+@media (max-width: 620px) { .agent-plan-dialog { width: calc(100vw - 16px); max-height: calc(100vh - 16px); } .agent-plan-dialog-card { max-height: calc(100vh - 16px); padding: 14px; } .agent-plan-dialog-header h2 { font-size: 18px; } .agent-plan-dialog-content { min-height: 200px; max-height: 280px; } .agent-plan-dialog .button-row > button { flex: 1 1 100%; } }
+.danger-action { color: #fff; border-color: #a73f35; background: #b44a3d; }
+.danger-action:hover { border-color: #8f342c; background: #9f3c32; }

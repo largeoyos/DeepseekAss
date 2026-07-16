@@ -648,6 +648,22 @@ class SectionPreviewDialog(QDialog):
         left_layout.addWidget(self._section_list)
         splitter.addWidget(left_frame)
 
+        # File mode displays sections; folder mode displays files.
+        self._merge_section_btn = None
+        self._delete_section_btn = None
+        if self._source_text is not None:
+            section_actions = QHBoxLayout()
+            self._merge_section_btn = QPushButton("\u2b06 \u5408\u5e76\u5230\u4e0a\u4e00\u6bb5")
+            self._merge_section_btn.setToolTip("\u5c06\u5f53\u524d\u9009\u4e2d\u7684\u6bb5\u843d\u6b63\u6587\u5e76\u5165\u4e0a\u4e00\u6bb5")
+            self._merge_section_btn.clicked.connect(self._merge_selected_section_into_previous)
+            section_actions.addWidget(self._merge_section_btn)
+
+            self._delete_section_btn = QPushButton("\U0001f5d1 \u5220\u9664\u5f53\u524d\u6bb5\u843d")
+            self._delete_section_btn.setToolTip("\u4ece\u672c\u6b21\u5bfc\u5165\u7ed3\u679c\u4e2d\u79fb\u9664\u5f53\u524d\u9009\u4e2d\u7684\u6bb5\u843d")
+            self._delete_section_btn.clicked.connect(self._delete_selected_section)
+            section_actions.addWidget(self._delete_section_btn)
+            left_layout.addLayout(section_actions)
+
         # 右侧：内容预览
         right_frame = QFrame()
         right_layout = QVBoxLayout(right_frame)
@@ -711,7 +727,7 @@ class SectionPreviewDialog(QDialog):
             self._populate_sections()
             self._start_initial_segmentation()
 
-    def _populate_sections(self):
+    def _populate_sections(self, selected_row: int = 0):
         """用 self._sections_data 刷新列表"""
         self._section_list.blockSignals(True)
         self._section_list.clear()
@@ -719,13 +735,54 @@ class SectionPreviewDialog(QDialog):
             self._section_list.addItem(f"# {title}")
         self._section_list.blockSignals(False)
         if self._sections_data:
-            self._section_list.setCurrentRow(0)
+            self._section_list.setCurrentRow(max(0, min(selected_row, len(self._sections_data) - 1)))
+        else:
+            self._preview_edit.clear()
+        self._update_section_edit_controls()
 
     def _on_section_selected(self, row: int):
         """段落选中 → 预览内容（文件模式 + 文件夹模式重新分段后共用）"""
         if 0 <= row < len(self._sections_data):
             _, content = self._sections_data[row]
-            self._preview_edit.setPlainText(content[:2000])
+            self._preview_edit.setPlainText(content)
+
+        self._update_section_edit_controls()
+
+    def _update_section_edit_controls(self):
+        """Update the file-mode section editing actions for the current row."""
+        if self._merge_section_btn is None or self._delete_section_btn is None:
+            return
+        row = self._section_list.currentRow()
+        count = len(getattr(self, "_sections_data", []))
+        self._merge_section_btn.setEnabled(0 < row < count)
+        # Keep one section so confirmation never produces an empty import.
+        self._delete_section_btn.setEnabled(0 <= row < count and count > 1)
+
+    def _merge_selected_section_into_previous(self):
+        """Append the selected section to the previous section."""
+        row = self._section_list.currentRow()
+        if row <= 0 or row >= len(self._sections_data):
+            return
+
+        previous_title, previous_content = self._sections_data[row - 1]
+        current_title, current_content = self._sections_data[row]
+        separator = "" if previous_content.endswith(("\n", "\r")) or current_content.startswith(("\n", "\r")) else "\n\n"
+        self._sections_data[row - 1] = (previous_title, previous_content + separator + current_content)
+        del self._sections_data[row]
+        self._status_label.setText(f"\u270f\ufe0f \u5df2\u5c06\u300c{current_title}\u300d\u5408\u5e76\u5230\u4e0a\u4e00\u6bb5\uff1b\u53ef\u7ee7\u7eed\u8c03\u6574\u6216\u786e\u8ba4\u5bfc\u5165\u3002")
+        self._status_label.setStyleSheet(_status_style(self, "normal"))
+        self._populate_sections(row - 1)
+
+    def _delete_selected_section(self):
+        """Remove the selected section from the pending import."""
+        row = self._section_list.currentRow()
+        if row < 0 or row >= len(self._sections_data) or len(self._sections_data) <= 1:
+            return
+
+        title, _ = self._sections_data.pop(row)
+        self._status_label.setText(f"\u270f\ufe0f \u5df2\u5220\u9664\u300c{title}\u300d\uff1b\u53ef\u7ee7\u7eed\u8c03\u6574\u6216\u786e\u8ba4\u5bfc\u5165\u3002")
+        self._status_label.setStyleSheet(_status_style(self, "normal"))
+        self._populate_sections(min(row, len(self._sections_data) - 1))
 
     def _start_initial_segmentation(self):
         """后台线程：首次 AI 自动分段（不阻塞 UI，不阻止确认）"""
@@ -1014,7 +1071,7 @@ class SectionPreviewDialog(QDialog):
         f = self._folder_files[row]
 
         # 更新预览为文件内容（非段落）
-        self._preview_edit.setPlainText(f["full_content"][:2000])
+        self._preview_edit.setPlainText(f["full_content"])
 
     def _on_confirm_analysis(self):
         """确认分析/续写 → 构建结果并关闭弹窗"""

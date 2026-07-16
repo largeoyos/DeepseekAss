@@ -1,3 +1,4 @@
+import copy
 import json
 import tempfile
 import unittest
@@ -135,6 +136,106 @@ class AgentChapterGenerationTests(unittest.TestCase):
             result = service.generate(request, plan)
             self.assertEqual([], plan.selected_skills)
             self.assertNotIn("本次启用 Skills", result.prompt)
+    def test_prepare_compares_three_distinct_candidate_plans(self):
+        with tempfile.TemporaryDirectory() as root:
+            manager = NovelManager(bookshelf_root=root)
+            manager.create_book("book")
+            first, second, third = copy.deepcopy(valid_plan()), copy.deepcopy(valid_plan()), copy.deepcopy(valid_plan())
+            for index, item in enumerate((first, second, third), 1):
+                item["chapter_goal"] = f"方案{index}的章节目标"
+                item["scenes"][0]["scene_id"] = f"scene_{index}"
+                item["scenes"][0]["choice"] = f"方案{index}的主动选择"
+                item["scenes"][0]["irreversible_change"] = f"方案{index}造成不可逆主线变化"
+            payload = {
+                "options": [
+                    {"option_id": "choice", "strategy": "人物选择驱动", "summary": "主动抉择", "plan": first},
+                    {"option_id": "event", "strategy": "外部事件驱动", "summary": "危机突发", "plan": second},
+                    {"option_id": "reveal", "strategy": "信息揭示驱动", "summary": "真相反转", "plan": third},
+                ]
+            }
+            critic = {
+                "recommended_option_id": "event",
+                "recommendation_reason": "外部危机能抬升当前主线压力。",
+                "evaluations": [
+                    {"option_id": "choice", "causality": 8, "character_agency": 9, "surprise": 6, "main_plot_value": 7, "reason": "", "risk": ""},
+                    {"option_id": "event", "causality": 9, "character_agency": 8, "surprise": 8, "main_plot_value": 9, "reason": "推进有效", "risk": "节奏偏快"},
+                    {"option_id": "reveal", "causality": 7, "character_agency": 7, "surprise": 9, "main_plot_value": 8, "reason": "", "risk": ""},
+                ],
+            }
+            plan = AgentChapterGenerationService(
+                manager, FakeClient([payload, critic]), skills_enabled=False,
+                multi_plan_enabled=True,
+            ).prepare(AgentChapterRequest("book", 1, "开始", "", "", 1200, "fake"))
+            self.assertEqual("event", plan.candidate_id)
+            self.assertEqual(3, len(plan.candidate_plans))
+            self.assertEqual("外部事件驱动", plan.strategy)
+            self.assertEqual(9, plan.critic["main_plot_value"])
+
+    def test_revise_plan_updates_current_plan_without_replanning_candidates(self):
+        with tempfile.TemporaryDirectory() as root:
+            manager = NovelManager(bookshelf_root=root)
+            manager.create_book("book")
+            request = AgentChapterRequest("book", 1, "开始", "", "", 1000, "fake")
+            plan = AgentChapterGenerationService(
+                manager, FakeClient([valid_plan()]), skills_enabled=False
+            ).prepare(request)
+            revised_payload = copy.deepcopy(valid_plan())
+            revised_payload["chapter_goal"] = "主角主动隐瞒线索并承担同伴不信任的代价"
+            revised_payload["scenes"][0]["choice"] = "向同伴隐瞒暗门线索"
+            revised_payload["scenes"][0]["cost"] = "同伴发现异常后不再完全信任主角"
+            client = FakeClient([revised_payload])
+            revised = AgentChapterGenerationService(
+                manager, client, skills_enabled=False
+            ).revise_plan(request=request, current_plan=plan, instruction="修改主角选择并补上代价")
+
+            self.assertEqual(plan.plan_id, revised.plan_id)
+            self.assertEqual(plan.candidate_id, revised.candidate_id)
+            self.assertIn("主动隐瞒线索", revised.chapter_goal)
+            self.assertEqual(1, len(revised.candidate_plans))
+            prompt = client.chat.completions.calls[0]["messages"][0]["content"]
+            self.assertIn("不得重新构思整章", prompt)
+            workspace = manager.get_workspace("book")
+            record = workspace.storage.read_json(
+                f"{workspace.agent_root}/chapter_runs/{plan.plan_id}.json"
+            )
+            self.assertEqual("plan_revised", record["status"])
+            self.assertEqual(1, len(record["plan_revision_history"]))
+
+            AgentChapterGenerationService(
+                manager, FakeClient([]), skills_enabled=False
+            ).generate(request, revised)
+            approved_record = workspace.storage.read_json(
+                f"{workspace.agent_root}/chapter_runs/{plan.plan_id}.json"
+            )
+            self.assertEqual("approved", approved_record["status"])
+            self.assertEqual(1, len(approved_record["plan_revision_history"]))
+
+    def test_story_director_persists_chapter_progress(self):
+        with tempfile.TemporaryDirectory() as root:
+            manager = NovelManager(bookshelf_root=root)
+            manager.create_book("book")
+            director = {
+                "current_volume_goal": "逼近钟楼真相",
+                "protagonist_stage_goal": "取得守卫口供",
+                "core_conflict_pressure": "中高",
+                "recent_major_choice": "进入暗门",
+                "recent_failure_or_cost": "暴露调查意图",
+                "unredeemed_promises": ["午夜钟声来源"],
+                "next_turn_distance": 2,
+                "foreshadowing_density_risks": ["钟声伏笔过密"],
+                "chapters_without_main_progress": 0,
+            }
+            client = FakeClient([valid_plan(), director])
+            service = AgentChapterGenerationService(manager, client, skills_enabled=False)
+            request = AgentChapterRequest("book", 1, "开始", "", "", 1000, "fake")
+            plan = service.prepare(request)
+            result = service.update_director_state(request, plan, "阿离进入钟楼暗门。", "fake")
+            self.assertTrue(result["reviewed"])
+            workspace = manager.get_workspace("book")
+            saved = workspace.storage.read_json(f"{workspace.agent_root}/story_director.json")
+            self.assertEqual("逼近钟楼真相", saved["current_volume_goal"])
+            self.assertEqual(1, saved["last_review_chapter"])
+
     def test_maintenance_archives_resolved_but_protects_resident(self):
         with tempfile.TemporaryDirectory() as root:
             manager = NovelManager(bookshelf_root=root)

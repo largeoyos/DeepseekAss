@@ -3848,6 +3848,8 @@ class DeepSeekChatGUI(QMainWindow):
         max_tokens: int,
         emit_tokens: bool = True,
     ) -> tuple[str, dict, bool]:
+        self._last_generation_stats = None
+        self._stream_has_generation_stats = True
         started_at = time.strftime("%Y-%m-%d %H:%M:%S")
         start_time = time.time()
         usage_dict: dict | None = None
@@ -3907,6 +3909,8 @@ class DeepSeekChatGUI(QMainWindow):
             "usage": usage_dict,
             "model": body_model,
         }
+        # 供主线程在流结束后保留最终统计；实时标签不应在完成时直接消失。
+        self._last_generation_stats = stats
         cancelled = bool(self._client._cancel_requested)
         if cancelled:
             self._log_token_usage(
@@ -5772,6 +5776,7 @@ class DeepSeekChatGUI(QMainWindow):
                     self._novel_manager,
                     self._usage_logged_client("agent_chapter_plan"),
                     skills_enabled=bool(self._settings.get("agent_skills_enabled", True)),
+                    multi_plan_enabled=bool(self._settings.get("agent_multi_plan_enabled", False)),
                 )
                 plan = service.prepare(request)
                 self._stream_signals.agent_chapter_plan_ready.emit(request, plan, generation_target)
@@ -5791,7 +5796,19 @@ class DeepSeekChatGUI(QMainWindow):
         )
         self._agent_plan_preview.setPlainText(plan.render())
         from ui.agent_chapter_dialog import AgentChapterPlanDialog
-        dialog = AgentChapterPlanDialog(self, request, plan)
+
+        def revise_current_plan(current_plan, instruction):
+            from core.agent.chapter_generation import AgentChapterGenerationService
+            return AgentChapterGenerationService(
+                self._novel_manager,
+                self._usage_logged_client("agent_chapter_plan_revision"),
+                skills_enabled=bool(self._settings.get("agent_skills_enabled", True)),
+                multi_plan_enabled=False,
+            ).revise_plan(request, current_plan, instruction)
+
+        dialog = AgentChapterPlanDialog(
+            self, request, plan, revise_callback=revise_current_plan
+        )
         if dialog.exec() != QDialog.DialogCode.Accepted:
             self._agent_plan_status.setText("本章 Agent 计划已取消，未修改任何正式数据。")
             workspace = self._novel_manager.get_workspace(request.book_title)
@@ -5800,6 +5817,11 @@ class DeepSeekChatGUI(QMainWindow):
             record.update({"status": "cancelled", "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S")})
             workspace.storage.write_json(path, record)
             return
+        plan = dialog.selected_plan
+        self._agent_plan_preview.setPlainText(plan.render())
+        self._agent_plan_status.setText(
+            f"已选择「{plan.strategy or '章节方案'}」：{plan.chapter_goal}"
+        )
         self._chapter_finalized = False
         self._generate_btn.setEnabled(False)
         self._agent_generate_btn.setEnabled(False)
@@ -6194,7 +6216,7 @@ class DeepSeekChatGUI(QMainWindow):
             return content, {
                 "status": "warning", "audit_failed": True, "error": str(e),
                 "outline_items": [], "hard_constraint_issues": [],
-                "continuity_issues": [], "repair_rounds": 0,
+                "continuity_issues": [], "style_issues": [], "repair_rounds": 0,
             }
 
     def _run_chapter_generation(
@@ -6222,8 +6244,8 @@ class DeepSeekChatGUI(QMainWindow):
                 "role": "system",
                 "content": (
                     f"【本章硬性字数要求】本章字数不少于{target_words}字。"
-                    "请通过场景细节、对话交互、动作过程和内心活动自然充实内容，"
-                    "不得用解释、提纲或作者说明凑字数。"
+                    "请优先写全必要行动过程、人物选择及其后果、带目的和阻力的对话，"
+                    "以及影响后文的场景变化；不得用装饰性描写、重复反应或旁白解释凑字数。"
                 ),
             })
             if isinstance(strategy, NovelStrategy):
@@ -6273,7 +6295,6 @@ class DeepSeekChatGUI(QMainWindow):
                 operation_prefix=operation_prefix,
                 agent_mode=agent_plan is not None,
             )
-
             if self._client._cancel_requested:
                 self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
                 self._stream_signals.finished.emit()
@@ -6343,6 +6364,34 @@ class DeepSeekChatGUI(QMainWindow):
                 self._novel_manager.set_chapter_node_summary(title, chapter_num, saved_version, summary)
             self._novel_manager.rebuild_plot_summary_from_tree(title)
             self._stream_signals.token.emit(f"📋 剧情摘要已绑定至章节树。\n\n")
+
+            if agent_plan is not None and agent_request is not None:
+                try:
+                    from core.agent.chapter_generation import AgentChapterGenerationService
+                    director_result = AgentChapterGenerationService(
+                        self._novel_manager,
+                        self._usage_logged_client("agent_story_director"),
+                        skills_enabled=bool(self._settings.get("agent_skills_enabled", True)),
+                    ).update_director_state(
+                        agent_request, agent_plan, summary or agent_plan.chapter_goal,
+                        self._client.model,
+                    )
+                    self._novel_manager.update_generation_record(
+                        title, chapter_num, saved_version,
+                        story_director=director_result,
+                    )
+                    if director_result.get("reviewed"):
+                        self._stream_signals.token.emit("🎬 卷级导演已完成本轮节奏复盘。\n")
+                    elif director_result.get("error"):
+                        self._stream_signals.token.emit(
+                            f"⚠️ 卷级导演复盘待下次重试：{director_result['error']}\n"
+                        )
+                    else:
+                        self._stream_signals.token.emit("🎬 卷级导演已记录本章推进。\n")
+                except Exception as director_error:
+                    self._stream_signals.token.emit(
+                        f"⚠️ 卷级导演状态更新跳过：{director_error}\n"
+                    )
 
             if self._client._cancel_requested and agent_plan is None:
                 self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
@@ -6749,8 +6798,8 @@ class DeepSeekChatGUI(QMainWindow):
             user_parts.append(f"【humanizer-zh 风格硬约束】\n{HUMANIZER_ZH_STYLE_BRIEF}\n")
 
             user_parts.append(
-                f"请直接输出续写正文，不要加任何解释或前言。"
-                f"字数不少于{word_count}字，请通过扩展场景细节、增加对话交互、深入刻画内心活动来充实内容。"
+                f"请直接输出续写正文，不要加任何解释或前言。字数不少于{word_count}字。"
+                "不足部分优先补足必要行动过程、人物选择及其后果和带阻力的对话，不用装饰性描写或重复情绪解释凑字数。"
             )
 
             user_prompt = "\n".join(user_parts)
@@ -7508,7 +7557,25 @@ class DeepSeekChatGUI(QMainWindow):
         self._stop_btn.setVisible(False)
         self._stop_btn.setEnabled(True)
         self._mode_combo.setEnabled(True)
-        self._stream_count_label.setVisible(False)
+        stats = getattr(self, "_last_generation_stats", None)
+        has_generation_stats = bool(getattr(self, "_stream_has_generation_stats", False))
+        self._stream_has_generation_stats = False
+        if stats and has_generation_stats and not was_cancelled:
+            usage = stats.get("usage") or {}
+            completion_tokens = usage.get("completion_tokens")
+            token_text = str(completion_tokens) if completion_tokens is not None else "未返回"
+            self._stream_count_label.setText(
+                "📊 耗时 %.1f 秒 · 输出 %s 字符 / %s 汉字 · 返回 token %s"
+                % (
+                    stats.get("duration_ms", 0) / 1000,
+                    stats.get("char_count", 0),
+                    stats.get("hanzi_count", 0),
+                    token_text,
+                )
+            )
+            self._stream_count_label.setVisible(True)
+        else:
+            self._stream_count_label.setVisible(False)
 
         if was_cancelled:
             self._streaming = False
@@ -8931,7 +8998,24 @@ class DeepSeekChatGUI(QMainWindow):
                         messages.append({"role": "system", "content": f"【人物背景】：\n{bio}"})
                     if demand:
                         messages.append({"role": "system", "content": f"【写作要求】：\n{demand}"})
+                    try:
+                        meta = self._novel_mgr.load_meta(self._book_title)
+                        style_parts = []
+                        genre_cfg = get_genre_by_key(getattr(meta, "genre", ""))
+                        if genre_cfg and genre_cfg.style_instruction:
+                            style_parts.append(
+                                f"题材方向（{genre_cfg.display_name}）：{genre_cfg.style_instruction}"
+                            )
+                        tone_cfg = get_tone_by_key(getattr(meta, "style_tone", ""))
+                        if tone_cfg and tone_cfg.style_instruction:
+                            style_parts.append(
+                                f"写作基调（{tone_cfg.display_name}）：{tone_cfg.style_instruction}"
+                            )
+                        if style_parts:
+                            messages.append({"role": "system", "content": f"【风格设定】\n{chr(10).join(style_parts)}"})
 
+                    except Exception:
+                        pass
                     # 加载世界书
                     try:
                         bible = self._novel_mgr.load_world_bible(self._book_title)
@@ -8993,7 +9077,7 @@ class DeepSeekChatGUI(QMainWindow):
                     if xp_mode:
                         user_parts.append(f"{Prompts.XP_MODE_SYSTEM}\n")
                     user_parts.append(f"【humanizer-zh 风格硬约束】\n{HUMANIZER_ZH_STYLE_BRIEF}\n")
-                    user_parts.append(f"请直接输出第 {chapter_num} 章正文。字数不少于{target_words}字，通过丰富环境细节、增加对话交互和内心描写来充实内容。")
+                    user_parts.append(f"请直接输出第 {chapter_num} 章正文。字数不少于{target_words}字；不足部分优先补足必要行动过程、人物选择及其后果和带阻力的对话，不用装饰性描写或重复情绪解释凑字数。")
                     messages.append({"role": "user", "content": "\n".join(user_parts)})
 
                     prompt_text = messages[-1].get("content", "")

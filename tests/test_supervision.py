@@ -4,6 +4,7 @@ from types import SimpleNamespace
 
 from utils.supervision import (
     audit_chapter,
+    collect_style_tic_counts,
     format_repair_diff,
     format_repair_diff_for_markdown,
     supervise_chapter,
@@ -67,6 +68,7 @@ class SupervisionTests(unittest.TestCase):
         self.assertEqual("passed", result.status)
         self.assertEqual(0, result.repair_rounds)
         self.assertEqual(1, client.completions.calls)
+        self.assertEqual([], result.style_issues)
 
     def test_missing_outline_is_repaired_and_reaudited(self):
         original = "a" * 300
@@ -186,6 +188,56 @@ class SupervisionTests(unittest.TestCase):
         self.assertEqual("warning", result.status)
         self.assertEqual(2, client.completions.calls)
 
+    def test_style_tic_counts_are_diagnostics_not_hard_failures(self):
+        single = collect_style_tic_counts("这不是推脱，而是事实。")
+        repeated = collect_style_tic_counts(
+            "这不是推脱，而是事实。他不仅没有离开，而且坐了下来。"
+            "他成了这场变化的见证者，空气中弥漫着说不清的意味。"
+        )
+        self.assertEqual(1, single["template_contrast"])
+        self.assertEqual(2, repeated["template_contrast"])
+        self.assertEqual(1, repeated["abstract_role"])
+        self.assertEqual(1, repeated["canned_reaction"])
+
+    def test_style_issues_are_normalized_and_request_repair(self):
+        payload = json.dumps({
+            "outline_items": [],
+            "hard_constraint_issues": [],
+            "continuity_issues": [],
+            "style_issues": [{
+                "severity": "minor",
+                "type": "template_contrast",
+                "problem": "同类模板对比句重复出现",
+                "repair": "改为直接陈述动作和事实",
+            }],
+            "repair_instruction": "只改重复句式",
+        }, ensure_ascii=False)
+        result = audit_chapter(
+            FakeClient([payload]),
+            chapter_content="不是甲，而是乙。不是丙，而是丁。",
+            chapter_title="第一章",
+            chapter_outline="",
+            requirements="",
+            continuity_context="",
+            target_words=0,
+            model="test",
+        )
+        self.assertTrue(result.needs_repair)
+        self.assertEqual("template_contrast", result.style_issues[0]["type"])
+        self.assertIn(result.style_issues[0], result.unresolved_issues)
+
+    def test_old_supervision_schema_defaults_style_issues_to_empty(self):
+        result = audit_chapter(
+            FakeClient([audit_payload()]),
+            chapter_content="plain prose" * 30,
+            chapter_title="Chapter 1",
+            chapter_outline="",
+            requirements="",
+            continuity_context="",
+            target_words=0,
+            model="test",
+        )
+        self.assertEqual([], result.style_issues)
 
 if __name__ == "__main__":
     unittest.main()

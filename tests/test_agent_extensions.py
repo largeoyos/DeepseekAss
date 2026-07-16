@@ -16,6 +16,10 @@ from core.agent.web_search import WebSearchClient, WebSearchConfig
 from core.novel_manager import NovelManager
 from core.world_bible import ManualOverride, WorldBible, apply_manual_overrides
 from ui.continuation_dialogs import SectionPreviewDialog, suggest_directions
+from strategies.novel_strategy import NovelStrategy
+from utils.genre_styles import get_tone_by_key, get_tone_display
+from utils.prompts import Prompts
+from utils.supplement import supplement_content
 
 
 
@@ -439,7 +443,42 @@ class ExtendedAgentTests(unittest.TestCase):
     def test_humanizer_style_brief_blocks_common_ai_patterns(self):
         self.assertIn("不是", HUMANIZER_ZH_STYLE_BRIEF)
         self.assertIn("不仅", HUMANIZER_ZH_STYLE_BRIEF)
-        self.assertIn("描写要多样化", HUMANIZER_ZH_STYLE_BRIEF)
+        self.assertIn("细节服从", HUMANIZER_ZH_STYLE_BRIEF)
+        self.assertIn("参与者", HUMANIZER_ZH_STYLE_BRIEF)
+        self.assertIn("当前视角", HUMANIZER_ZH_STYLE_BRIEF)
+        self.assertNotIn("【humanizer-zh 风格硬约束】", HUMANIZER_ZH_STYLE_BRIEF)
+
+    def test_novel_prompt_removes_mechanical_detail_padding(self):
+        self.assertNotIn("善用五感描写", Prompts.NOVEL_CHAPTER_WRITING)
+        self.assertNotIn("每个段落至少包含 2-3 层信息", Prompts.NOVEL_CHAPTER_WRITING)
+        self.assertNotIn("微表情变化", Prompts.NOVEL_CHAPTER_WRITING)
+        self.assertIn("新增文字推动事件、关系或人物认识", Prompts.NOVEL_CHAPTER_WRITING)
+
+    def test_restrained_prose_tone_round_trips_and_injects(self):
+        tone = get_tone_by_key("restrained_prose")
+        self.assertIsNotNone(tone)
+        self.assertEqual("朴素克制（散文感）", tone.display_name)
+        self.assertEqual(tone.display_name, get_tone_display("restrained_prose"))
+        strategy = NovelStrategy()
+        strategy.style_tone = "restrained_prose"
+        self.assertIn("白描", strategy.genre_style_text)
+        with tempfile.TemporaryDirectory() as root:
+            manager = NovelManager(bookshelf_root=root)
+            manager.create_book("book")
+            manager.save_meta("book", style_tone="restrained_prose")
+            self.assertEqual("restrained_prose", manager.load_meta("book").style_tone)
+
+    def test_supplement_prompt_injects_humanizer_once_and_saved_tone(self):
+        client = _FakeContinuationClient("补写后的正文" * 80)
+        result = supplement_content(
+            client, "原文" * 20, 200, 40, "第一章", "model-x",
+            style_tone="restrained_prose",
+        )
+        prompt = client.chat.completions.calls[0]["messages"][0]["content"]
+        self.assertTrue(result)
+        self.assertEqual(1, prompt.count("正文避免 AI 腔"))
+        self.assertIn("朴素克制（散文感）", prompt)
+        self.assertNotIn("每个场景至少扩展2-3层细节", prompt)
 
 
 if __name__ == "__main__":

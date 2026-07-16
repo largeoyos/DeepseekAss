@@ -22,7 +22,9 @@ from core.novel_manager import NovelManager, NovelMeta
 from core.settings_manager import SettingsManager
 from core.task_manager import TaskEvent, TaskRunner
 from core.token_log_manager import TokenLogManager
+from core.agent.skills import HUMANIZER_ZH_STYLE_BRIEF
 from strategies.novel_strategy import NovelStrategy
+from utils.prompts import Prompts
 
 
 class WebAuthError(Exception):
@@ -465,6 +467,12 @@ class WebRuntime:
         manager = ctx.novel_manager
         service = ChapterGenerationService(manager)
         params = generation_params(ctx.settings, api_config)
+        body_params = {
+            **params,
+            "model": body_generation_model(ctx.settings, params["model"]),
+            "max_tokens": max(target_words * 2, params["max_tokens"]),
+        }
+        auxiliary_model = auxiliary_generation_model(ctx.settings, params["model"])
         raw_client = self.client_factory(api_config)
 
         handle.progress("准备章节上下文", percent=5, stage="准备上下文")
@@ -481,7 +489,7 @@ class WebRuntime:
             plot,
             global_prompt=str(ctx.settings.get("global_user_prompt") or ""),
             client=raw_client,
-            model=params["model"],
+            model=auxiliary_model,
         )
         prompt = build_generation_prompt(
             title=title,
@@ -491,6 +499,7 @@ class WebRuntime:
             target_words=target_words,
             meta=meta,
             context_text=context_report.render(),
+            global_prompt=str(ctx.settings.get("global_user_prompt") or ""),
         )
 
         strategy = NovelStrategy()
@@ -503,16 +512,50 @@ class WebRuntime:
         strategy.style_tone = meta.style_tone
         strategy.xp_mode = bool(meta.xp_mode)
         strategy.chapter_mode = True
-        messages = [
-            {"role": "system", "content": strategy.get_system_prompt()},
-            *strategy.build_system_messages(),
-            {"role": "user", "content": prompt},
-        ]
+        messages = [{"role": "system", "content": Prompts.NOVEL_CHAPTER_WRITING}]
+        if strategy.xp_mode:
+            messages.append({"role": "system", "content": Prompts.XP_MODE_SYSTEM})
+        messages.append({
+            "role": "system",
+            "content": (
+                f"【本章硬性字数要求】本章字数不少于{target_words}字。"
+                "请优先写全必要行动过程、人物选择及其后果、带目的和阻力的对话，"
+                "以及影响后文的场景变化；不得用装饰性描写、重复反应或旁白解释凑字数。"
+            ),
+        })
+        messages.extend(strategy.build_system_messages())
+        messages.append({"role": "user", "content": prompt})
 
         handle.progress("正在生成正文", percent=20, stage="生成正文")
-        content = self._stream_completion(handle, raw_client, messages, params)
+        content = self._stream_completion(handle, raw_client, messages, body_params)
         if not content.strip():
             raise RuntimeError("模型未返回章节正文")
+
+        from utils.supervision import supervise_chapter
+
+        def supervision_progress(stage: str) -> None:
+            labels = {
+                "audit": "正在审查章节要求与连续性",
+                "repair": "正在最小化修复章节问题",
+                "reaudit": "正在复检修复后的章节",
+            }
+            handle.progress(labels.get(stage, "正在监督章节"), percent=60, stage="章节监督")
+
+        content, supervision = supervise_chapter(
+            lambda _kind: raw_client,
+            chapter_content=content,
+            chapter_title=f"Chapter {chapter_num}: {chapter_title}",
+            chapter_outline=plot,
+            requirements=meta.writing_demand,
+            continuity_context=prompt,
+            target_words=target_words,
+            model=auxiliary_model,
+            temperature=min(float(body_params["temperature"]), 0.5),
+            global_user_prompt=str(ctx.settings.get("global_user_prompt") or ""),
+            xp_mode=bool(meta.xp_mode),
+            max_repair_rounds=2,
+            progress=supervision_progress,
+        )
 
         handle.progress("保存章节版本", percent=62, stage="保存章节")
         _, saved_version = service.persist_chapter(
@@ -520,32 +563,36 @@ class WebRuntime:
             chapter_num=chapter_num,
             chapter_title=chapter_title,
             content=content,
-            version=manager.get_next_version(title, chapter_num),
+            version=int(target.get("version") or manager.get_next_version(title, chapter_num)),
             parent_id=parent_id,
             prompt=prompt,
-            model=params["model"],
-            temperature=params["temperature"],
-            top_p=params["top_p"],
-            max_tokens=params["max_tokens"],
-            frequency_penalty=params["frequency_penalty"],
+            model=body_params["model"],
+            temperature=body_params["temperature"],
+            top_p=body_params["top_p"],
+            max_tokens=body_params["max_tokens"],
+            frequency_penalty=body_params["frequency_penalty"],
             requirement=meta.writing_demand,
             plot=plot,
-            generation_mode="classic-web",
+            supervision_report=supervision.to_dict(),
+            generation_mode="classic",
         )
 
         warnings: list[str] = []
         handle.progress("生成章节摘要", percent=74, stage="生成摘要")
         try:
-            manager.generate_summary(
+            summary = manager.generate_summary(
                 raw_client,
                 content,
                 chapter_num,
                 chapter_title,
-                model=params["model"],
+                model=auxiliary_model,
                 global_user_prompt=str(ctx.settings.get("global_user_prompt") or ""),
                 xp_mode=bool(meta.xp_mode),
                 raise_on_error=True,
             )
+            if summary.strip():
+                manager.set_chapter_node_summary(title, chapter_num, saved_version, summary)
+            manager.rebuild_plot_summary_from_tree(title)
         except Exception as exc:
             warnings.append(f"摘要生成失败：{exc}")
             handle.progress("摘要生成失败，章节已保存", percent=78, stage="生成摘要")
@@ -558,7 +605,7 @@ class WebRuntime:
                 chapter_num,
                 saved_version,
                 content,
-                model=params["model"],
+                model=auxiliary_model,
                 global_user_prompt=str(ctx.settings.get("global_user_prompt") or ""),
                 xp_mode=bool(meta.xp_mode),
             )
@@ -613,6 +660,8 @@ class WebRuntime:
                     data={"text": "".join(chunks[-8:])[-500:]},
                 )
                 seen = 0
+        if handle.cancelled:
+            raise RuntimeError("任务已取消")
         if seen:
             handle.progress(
                 "生成正文中",
@@ -638,6 +687,19 @@ def generation_params(settings: dict, api_config: dict) -> dict:
     }
 
 
+def body_generation_model(settings: dict, selected_model: str) -> str:
+    """Match the desktop '正文 Pro / 其余任务 Flash' routing option."""
+    if str(settings.get("model_routing_mode") or "") == "pro_body_flash_aux":
+        return Config.MODEL_V4_PRO
+    return selected_model
+
+
+def auxiliary_generation_model(settings: dict, selected_model: str) -> str:
+    if str(settings.get("model_routing_mode") or "") == "pro_body_flash_aux":
+        return Config.MODEL_V4_FLASH
+    return selected_model
+
+
 def _scale_preset_value(value, default: float) -> float:
     if value is None or value == "":
         return default
@@ -657,23 +719,24 @@ def build_generation_prompt(
     target_words: int,
     meta: NovelMeta,
     context_text: str,
+    global_prompt: str = "",
 ) -> str:
-    plan = meta.author_plan.strip() if isinstance(meta.author_plan, str) else ""
-    demand = meta.writing_demand.strip() if isinstance(meta.writing_demand, str) else ""
-    parts = [
-        f"请为小说《{title}》生成第{chapter_num}章《{chapter_title}》。",
-        f"目标字数：约 {target_words} 字，优先保证完整场景和可续写性。",
-    ]
+    """Qt-free equivalent of DeepSeekChatGUI._build_chapter_prompt."""
+    parts = [context_text, f"现在请开始撰写第 {chapter_num} 章：{chapter_title}。\n"]
+    if meta.protagonist_bio:
+        parts.append(f"【人物设定参考】：\n{meta.protagonist_bio}\n")
+    if meta.background_story:
+        parts.append(f"【世界观/背景参考】：\n{meta.background_story}\n")
+    if meta.writing_demand:
+        parts.append(f"【本章要求】：\n{meta.writing_demand}\n")
     if plot.strip():
-        parts.append(f"本章必须兑现的情节：\n{plot.strip()}")
-    if demand:
-        parts.append(f"写作要求：\n{demand}")
-    if plan:
-        parts.append(f"作者规划参考：\n{plan}")
-    parts.append(f"续写上下文：\n{context_text}")
-    parts.append("只输出章节正文，不要输出解释、提纲、Markdown 标题或附加说明。")
+        parts.append(f"【本章已定情节（请严格据此扩展）】\n{plot.strip()}\n")
+    if global_prompt.strip():
+        parts.append(f"【用户偏好提示】：\n{global_prompt.strip()}\n")
+    if meta.xp_mode:
+        parts.append(f"{Prompts.XP_MODE_SYSTEM}\n")
+    parts.append(f"【humanizer-zh 风格硬约束】\n{HUMANIZER_ZH_STYLE_BRIEF}\n")
     return "\n\n".join(parts)
-
 
 def task_event_to_sse(event: TaskEvent) -> str:
     payload = {

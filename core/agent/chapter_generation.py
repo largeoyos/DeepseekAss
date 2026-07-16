@@ -41,13 +41,44 @@ class AgentChapterPlan:
     end_state_requirements: list[str] = field(default_factory=list)
     planning_notes: str = ""
     selected_skills: list[dict] = field(default_factory=list)
+    candidate_id: str = ""
+    strategy: str = ""
+    strategy_summary: str = ""
+    selection_reason: str = ""
+    critic: dict = field(default_factory=dict)
+    candidate_plans: list[dict] = field(default_factory=list)
+    recommended_candidate_id: str = ""
+    director_state: dict = field(default_factory=dict)
     created_at: str = field(default_factory=now_iso)
 
-    def to_dict(self) -> dict:
-        return asdict(self)
+    def to_dict(self, *, include_candidates: bool = True) -> dict:
+        data = asdict(self)
+        if not include_candidates:
+            data["candidate_plans"] = []
+        return data
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "AgentChapterPlan":
+        fields = cls.__dataclass_fields__
+        return cls(**{name: data[name] for name in fields if name in data})
 
     def render(self) -> str:
         lines = [f"章节目标：{self.chapter_goal}"]
+        if self.strategy:
+            lines.insert(0, f"方案策略：{self.strategy}")
+        if self.strategy_summary:
+            lines.insert(1, f"策略说明：{self.strategy_summary}")
+        if self.selection_reason:
+            lines.insert(2, f"推荐理由：{self.selection_reason}")
+        if self.director_state:
+            director_lines = [
+                f"卷目标：{self.director_state.get('current_volume_goal', '')}",
+                f"主角阶段目标：{self.director_state.get('protagonist_stage_goal', '')}",
+                f"核心矛盾压力：{self.director_state.get('core_conflict_pressure', '')}",
+                f"下一转折距离：{self.director_state.get('next_turn_distance', '')}章",
+                f"主线停滞：{self.director_state.get('chapters_without_main_progress', 0)}章",
+            ]
+            lines.extend(["", "卷级导演约束：", *[f"- {item}" for item in director_lines if item]])
         contract_sections = (
             ("必须发生", self.must_happen),
             ("可以发生", self.may_happen),
@@ -117,18 +148,25 @@ class AgentPlanError(RuntimeError):
 class AgentChapterGenerationService:
     """Deterministic chapter planning and two-stage context selection."""
 
-    def __init__(self, novel_manager, client, *, skills_enabled: bool = True) -> None:
+    def __init__(
+        self, novel_manager, client, *, skills_enabled: bool = True,
+        multi_plan_enabled: bool = False,
+    ) -> None:
         self.manager = novel_manager
         self.client = getattr(client, "raw_client", client)
         self.skills_enabled = skills_enabled
+        self.multi_plan_enabled = multi_plan_enabled
 
     def prepare(self, request: AgentChapterRequest) -> AgentChapterPlan:
         meta = self.manager.load_meta(request.book_title)
         bible = self.manager.load_world_bible(request.book_title)
         index = self._world_index(bible, request.book_title)
         history = self._history_candidates(request.book_title)
-        continuity = self.manager.build_continuity_contract(request.book_title, request.chapter_num, request.chapter_title, request.plot)
+        continuity = self.manager.build_continuity_contract(
+            request.book_title, request.chapter_num, request.chapter_title, request.plot
+        )
         skills = self._select_skills(request)
+        director_state = self._load_director_state(request.book_title)
         planning_input = {
             "book": request.book_title, "chapter_num": request.chapter_num,
             "chapter_title": request.chapter_title, "target_words": request.target_words,
@@ -136,58 +174,86 @@ class AgentChapterGenerationService:
             "writing_requirement": request.requirement or meta.writing_demand,
             "author_plan": meta.author_plan, "user_plot": request.plot,
             "user_preferences": request.global_prompt, "continuity_contract": continuity,
-            "world_index": index, "history_index": history,
-            "skills": skills.text,
+            "world_index": index, "history_index": history, "skills": skills.text,
+            "story_director": director_state,
         }
-        raw_plan = self._call_planner(planning_input, request.model)
-        try:
-            data = self._validate_plan(raw_plan, index, history, request.target_words)
-        except Exception as validation_error:
-            repair_input = {**planning_input, "invalid_plan": raw_plan, "validation_error": str(validation_error), "instruction": "修复 invalid_plan，只返回符合既定字段和类型的完整 JSON。"}
-            data = self._validate_plan(
-                self._call_planner(repair_input, request.model, attempts=1),
-                index, history,
-                request.target_words,
+        if self.multi_plan_enabled:
+            raw_options = self._call_plan_options(planning_input, request.model)
+            validated_options = []
+            validation_errors = []
+            for option in raw_options:
+                try:
+                    data = self._validate_plan(option.get("plan", {}), index, history, request.target_words)
+                    validated_options.append({**option, "plan": data})
+                except Exception as exc:
+                    validation_errors.append(str(exc))
+            if not validated_options:
+                repaired = self._call_planner(
+                    {**planning_input, "invalid_options": raw_options, "validation_errors": validation_errors,
+                     "instruction": "修复为一份完整、可验证的章节 JSON 契约。"},
+                    request.model, attempts=1,
+                )
+                validated_options = [{
+                    "option_id": "option_1", "strategy": "稳健推进",
+                    "summary": "修复后的可执行章节方案。",
+                    "plan": self._validate_plan(repaired, index, history, request.target_words),
+                }]
+        else:
+            raw_plan = self._call_planner(planning_input, request.model)
+            try:
+                data = self._validate_plan(raw_plan, index, history, request.target_words)
+            except Exception as validation_error:
+                repair_input = {
+                    **planning_input, "invalid_plan": raw_plan,
+                    "validation_error": str(validation_error),
+                    "instruction": "修复 invalid_plan，只返回符合既定字段和类型的完整 JSON。",
+                }
+                data = self._validate_plan(
+                    self._call_planner(repair_input, request.model, attempts=1),
+                    index, history, request.target_words,
+                )
+            validated_options = [{
+                "option_id": "option_1", "strategy": "单方案规划",
+                "summary": "默认单方案章节规划。",
+                "plan": data,
+            }]
+
+        plan_id = f"chapter_plan_{uuid.uuid4().hex}"
+        candidates = [
+            self._build_plan(
+                request, option["plan"], index, history, skills, plan_id, director_state,
+                option.get("option_id", f"option_{position}"),
+                option.get("strategy", "剧情推进"),
+                option.get("summary", ""),
             )
-        selected_ids = list(dict.fromkeys([*request.manual_entity_ids, *[item["id"] for item in data["selected_world_entities"]]]))
-        context = self.manager.context_assembler().assemble_chapter(
-            request.book_title, request.chapter_num, request.chapter_title, request.plot,
-            global_prompt=request.global_prompt, manual_entity_ids=selected_ids,
-            max_recent=5, client=self.client, model=request.model,
-        )
-        selected_history = self._resolve_history(data.get("selected_history_chapters", []), history)
-        history_text = self._selected_history_text(selected_history)
-        rendered_context = context.render() + (("\n\n" + history_text) if history_text else "")
-        sources = [asdict(item) for item in context.sections]
-        if history_text:
-            sources.append({"source": "agent_history", "title": "Agent 精选历史剧情", "content": history_text, "reason": "近期承接或 Agent 语义命中", "budget": len(history_text), "original_chars": len(history_text), "omitted_chars": 0})
-        injected_chars = context.total_chars + len(history_text)
-        report = {
-            "preview": context.preview() + (f"\n- Agent 精选历史剧情: {len(history_text)} 字；来源=agent_history；原因=近期承接或 Agent 语义命中" if history_text else ""),
-            "content": rendered_context,
-            "candidate_chars": injected_chars + context.omitted_chars,
-            "injected_chars": injected_chars, "omitted_chars": context.omitted_chars,
-            "sources": sources,
-            "skills": skills.summaries,
-            "skills_text": skills.text,
+            for position, option in enumerate(validated_options, 1)
+        ]
+        critique = self._compare_candidates(request, candidates) if len(candidates) > 1 else {}
+        evaluations = {
+            str(item.get("option_id", "")): item
+            for item in critique.get("evaluations", []) if isinstance(item, dict)
         }
-        plan = AgentChapterPlan(
-            plan_id=f"chapter_plan_{uuid.uuid4().hex}", chapter_goal=data["chapter_goal"], scenes=data["scenes"],
-            character_arcs=data["character_arcs"], plot_threads=data["plot_threads"],
-            foreshadowing_actions=data["foreshadowing_actions"],
-            selected_world_entities=data["selected_world_entities"], selected_history=selected_history,
-            constraints=data["constraints"], context_report=report,
-            must_happen=data["must_happen"], may_happen=data["may_happen"],
-            must_not_happen=data["must_not_happen"], withheld_reveals=data["withheld_reveals"],
-            end_state_requirements=data["end_state_requirements"],
-            planning_notes=data.get("planning_notes", ""), selected_skills=skills.summaries,
+        for candidate in candidates:
+            candidate.critic = evaluations.get(candidate.candidate_id, {})
+        recommended_id = str(critique.get("recommended_option_id", "") or candidates[0].candidate_id)
+        selected = next((item for item in candidates if item.candidate_id == recommended_id), candidates[0])
+        selected.selection_reason = str(
+            critique.get("recommendation_reason", "")
+            or selected.critic.get("reason", "")
+            or "该方案最贴合当前章节约束。"
         )
+        selected.recommended_candidate_id = selected.candidate_id
+        selected.candidate_plans = [item.to_dict(include_candidates=False) for item in candidates]
         workspace = self.manager.get_workspace(request.book_title)
         workspace.storage.write_json(
-            f"{workspace.agent_root}/chapter_runs/{plan.plan_id}.json",
-            {"schema_version": 1, "run_id": plan.plan_id, "status": "prepared", "request": asdict(request), "plan": plan.to_dict(), "created_at": now_iso()},
+            f"{workspace.agent_root}/chapter_runs/{plan_id}.json",
+            {
+                "schema_version": 2, "run_id": plan_id, "status": "prepared",
+                "request": asdict(request), "plan": selected.to_dict(),
+                "critic": critique, "story_director": director_state, "created_at": now_iso(),
+            },
         )
-        return plan
+        return selected
 
     def generate(self, request: AgentChapterRequest, approved_plan: AgentChapterPlan) -> AgentChapterResult:
         meta = self.manager.load_meta(request.book_title)
@@ -204,11 +270,419 @@ class AgentChapterGenerationService:
             f"请严格依据以上计划创作第{request.chapter_num}章「{request.chapter_title}」，正文不少于{request.target_words}字。只输出小说正文。",
         ]))
         workspace = self.manager.get_workspace(request.book_title)
-        workspace.storage.write_json(
-            f"{workspace.agent_root}/chapter_runs/{approved_plan.plan_id}.json",
-            {"schema_version": 1, "run_id": approved_plan.plan_id, "status": "approved", "request": asdict(request), "plan": approved_plan.to_dict(), "prompt_chars": len(prompt), "updated_at": now_iso()},
-        )
+        path = f"{workspace.agent_root}/chapter_runs/{approved_plan.plan_id}.json"
+        record = workspace.storage.read_json(path, default={}) or {}
+        record.update({
+            "schema_version": 2,
+            "run_id": approved_plan.plan_id,
+            "status": "approved",
+            "request": asdict(request),
+            "plan": approved_plan.to_dict(),
+            "prompt_chars": len(prompt),
+            "updated_at": now_iso(),
+        })
+        workspace.storage.write_json(path, record)
         return AgentChapterResult(approved_plan.plan_id, prompt, approved_plan.context_report)
+
+    def _build_plan(
+        self, request: AgentChapterRequest, data: dict, index: list[dict], history: list[dict],
+        skills, plan_id: str, director_state: dict, candidate_id: str, strategy: str,
+        strategy_summary: str,
+    ) -> AgentChapterPlan:
+        selected_ids = list(dict.fromkeys([
+            *request.manual_entity_ids,
+            *[item["id"] for item in data["selected_world_entities"]],
+        ]))
+        context = self.manager.context_assembler().assemble_chapter(
+            request.book_title, request.chapter_num, request.chapter_title, request.plot,
+            global_prompt=request.global_prompt, manual_entity_ids=selected_ids,
+            max_recent=5, client=self.client, model=request.model,
+        )
+        selected_history = self._resolve_history(data.get("selected_history_chapters", []), history)
+        history_text = self._selected_history_text(selected_history)
+        rendered_context = context.render() + (("\n\n" + history_text) if history_text else "")
+        sources = [asdict(item) for item in context.sections]
+        if history_text:
+            sources.append({
+                "source": "agent_history", "title": "Agent 精选历史剧情", "content": history_text,
+                "reason": "近期承接或 Agent 语义命中", "budget": len(history_text),
+                "original_chars": len(history_text), "omitted_chars": 0,
+            })
+        injected_chars = context.total_chars + len(history_text)
+        report = {
+            "preview": context.preview() + (
+                f"\n- Agent 精选历史剧情: {len(history_text)} 字；来源=agent_history；原因=近期承接或 Agent 语义命中"
+                if history_text else ""
+            ),
+            "content": rendered_context,
+            "candidate_chars": injected_chars + context.omitted_chars,
+            "injected_chars": injected_chars, "omitted_chars": context.omitted_chars,
+            "sources": sources, "skills": skills.summaries, "skills_text": skills.text,
+        }
+        return AgentChapterPlan(
+            plan_id=plan_id, chapter_goal=data["chapter_goal"], scenes=data["scenes"],
+            character_arcs=data["character_arcs"], plot_threads=data["plot_threads"],
+            foreshadowing_actions=data["foreshadowing_actions"],
+            selected_world_entities=data["selected_world_entities"], selected_history=selected_history,
+            constraints=data["constraints"], context_report=report,
+            must_happen=data["must_happen"], may_happen=data["may_happen"],
+            must_not_happen=data["must_not_happen"], withheld_reveals=data["withheld_reveals"],
+            end_state_requirements=data["end_state_requirements"],
+            planning_notes=data.get("planning_notes", ""), selected_skills=skills.summaries,
+            candidate_id=candidate_id, strategy=strategy, strategy_summary=strategy_summary,
+            director_state=director_state,
+        )
+
+    def _call_plan_options(self, payload: dict, model: str, attempts: int = 2) -> list[dict]:
+        schema = (
+            "你是长篇小说章节规划 Agent。请先用卷级导演状态控制节奏，再给出三个可执行章节方案。"
+            "三个方案必须分别是“人物选择驱动”“外部事件驱动”“信息揭示驱动”，不得只换措辞；"
+            "每个方案的主角选择、不可逆变化和结尾状态必须不同。只输出严格 JSON，不得输出 Markdown。\n\n"
+            "输出：{options:[{option_id:string,strategy:string,summary:string,plan:{"
+            "chapter_goal:string,must_happen:[string],may_happen:[string],must_not_happen:[string],"
+            "withheld_reveals:[string],end_state_requirements:[string],"
+            "scenes:[{scene_id:string,title:string,purpose:string,pov_character:string,time:string,location:string,"
+            "entry_state:string,goal:string,conflict:string,key_actions:[string],information_released:[string],"
+            "turning_point:string,choice:string,cost:string,outcome:string,exit_state:string,"
+            "irreversible_change:string,target_words:integer,forbidden:[string]}],"
+            "character_arcs:[{character:string,start_state:string,end_state:string,trigger:string,choice:string,cost:string}],"
+            "plot_threads:[string],foreshadowing_actions:[{action:string,target:string}],"
+            "selected_world_entities:[{id:string,name:string,reason:string}],selected_history_chapters:[integer],"
+            "constraints:[string],planning_notes:string}}]}.\n\n输入："
+        )
+        prompt = schema + json.dumps(payload, ensure_ascii=False)
+        last_error = None
+        for _attempt in range(max(1, attempts)):
+            try:
+                response = self.client.chat.completions.create(
+                    model=model, messages=[{"role": "user", "content": prompt}],
+                    temperature=0.35, max_tokens=12000,
+                )
+                raw = self._parse_json(response.choices[0].message.content or "")
+                options = raw.get("options") if isinstance(raw, dict) else None
+                if not isinstance(options, list):
+                    return [{"option_id": "option_1", "strategy": "单方案兼容模式", "summary": "", "plan": raw}]
+                result = []
+                for index, option in enumerate(options[:3], 1):
+                    if isinstance(option, dict) and isinstance(option.get("plan"), dict):
+                        result.append({
+                            "option_id": str(option.get("option_id") or f"option_{index}"),
+                            "strategy": str(option.get("strategy") or "剧情推进"),
+                            "summary": str(option.get("summary") or ""),
+                            "plan": option["plan"],
+                        })
+                if result:
+                    return result
+                raise AgentPlanError("候选方案为空")
+            except Exception as exc:
+                last_error = exc
+                prompt += "\n\n上一次输出无效。仅返回含三个 options 的完整合法 JSON。"
+        raise AgentPlanError(f"Agent 多方案章节规划失败: {last_error}")
+
+    def _compare_candidates(self, request: AgentChapterRequest, candidates: list[AgentChapterPlan]) -> dict:
+        payload = {
+            "chapter": request.chapter_num,
+            "director": candidates[0].director_state if candidates else {},
+            "options": [{
+                "option_id": item.candidate_id, "strategy": item.strategy,
+                "summary": item.strategy_summary, "goal": item.chapter_goal,
+                "must_happen": item.must_happen, "end_state": item.end_state_requirements,
+                "choice_cost": [
+                    {"choice": scene.get("choice", ""), "cost": scene.get("cost", ""),
+                     "change": scene.get("irreversible_change", "")}
+                    for scene in item.scenes
+                ],
+            } for item in candidates],
+        }
+        prompt = (
+            "你是长篇小说章节方案 Critic。比较候选方案，只返回严格 JSON："
+            "recommended_option_id:string,recommendation_reason:string,"
+            "evaluations:[{option_id:string,causality:integer,character_agency:integer,"
+            "surprise:integer,main_plot_value:integer,reason:string,risk:string}]。"
+            "每项评分 1-10；优先选择能兑现卷级导演约束、让主角主动付出代价并造成不可逆主线变化的方案。\n\n"
+            + json.dumps(payload, ensure_ascii=False)
+        )
+        try:
+            response = self.client.chat.completions.create(
+                model=request.model, messages=[{"role": "user", "content": prompt}],
+                temperature=0.15, max_tokens=3000,
+            )
+            result = self._parse_json(response.choices[0].message.content or "")
+            valid_ids = {item.candidate_id for item in candidates}
+            if str(result.get("recommended_option_id", "")) not in valid_ids:
+                result["recommended_option_id"] = candidates[0].candidate_id
+            if not isinstance(result.get("evaluations"), list):
+                result["evaluations"] = []
+            return result
+        except Exception:
+            return {
+                "recommended_option_id": candidates[0].candidate_id,
+                "recommendation_reason": "比较器暂不可用，采用第一个有效方案。",
+                "evaluations": [],
+            }
+
+    @staticmethod
+    def _director_defaults() -> dict:
+        return {
+            "current_volume_goal": "建立本卷的核心推进目标。",
+            "protagonist_stage_goal": "明确主角在当前阶段要主动达成的目标。",
+            "core_conflict_pressure": "低",
+            "recent_major_choice": "",
+            "recent_failure_or_cost": "",
+            "unredeemed_promises": [],
+            "next_turn_distance": 3,
+            "foreshadowing_density_risks": [],
+            "chapters_without_main_progress": 0,
+            "last_chapter": 0,
+            "last_review_chapter": 0,
+        }
+
+    def _load_director_state(self, book_title: str) -> dict:
+        workspace = self.manager.get_workspace(book_title)
+        saved = workspace.storage.read_json(
+            f"{workspace.agent_root}/story_director.json", default={}
+        ) or {}
+        state = self._director_defaults()
+        if isinstance(saved, dict):
+            for key in state:
+                if key in saved:
+                    state[key] = saved[key]
+        return state
+
+    def update_director_state(
+        self, request: AgentChapterRequest, approved_plan: AgentChapterPlan,
+        chapter_summary: str, model: str,
+    ) -> dict:
+        """Persist lightweight progress every chapter and refresh the director every 3 chapters."""
+        state = self._load_director_state(request.book_title)
+        state["last_chapter"] = request.chapter_num
+        state["recent_major_choice"] = self._last_scene_value(approved_plan, "choice")
+        state["recent_failure_or_cost"] = self._last_scene_value(approved_plan, "cost")
+        old_promises = [str(item).strip() for item in state.get("unredeemed_promises", []) if str(item).strip()]
+        new_promises = [
+            *approved_plan.withheld_reveals,
+            *[str(item.get("target", "")).strip() for item in approved_plan.foreshadowing_actions],
+        ]
+        state["unredeemed_promises"] = list(dict.fromkeys([
+            *old_promises, *[item for item in new_promises if item],
+        ]))[-12:]
+        state["chapters_without_main_progress"] = (
+            0 if approved_plan.plot_threads
+            else int(state.get("chapters_without_main_progress", 0) or 0) + 1
+        )
+        state["next_turn_distance"] = max(
+            0, int(state.get("next_turn_distance", 3) or 3) - 1
+        )
+        review_due = (
+            request.chapter_num <= 1
+            or request.chapter_num - int(state.get("last_review_chapter", 0) or 0) >= 3
+        )
+        review_error = ""
+        if review_due:
+            try:
+                reviewed = self._call_story_director(
+                    state, request, approved_plan, chapter_summary, model
+                )
+                state.update(reviewed)
+                state["last_review_chapter"] = request.chapter_num
+                state["next_turn_distance"] = max(
+                    0, int(state.get("next_turn_distance", 0) or 0)
+                )
+            except Exception as exc:
+                review_error = str(exc)
+        state["updated_at"] = now_iso()
+        workspace = self.manager.get_workspace(request.book_title)
+        workspace.storage.write_json(
+            f"{workspace.agent_root}/story_director.json", state
+        )
+        return {"state": state, "reviewed": review_due and not review_error, "error": review_error}
+
+    @staticmethod
+    def _last_scene_value(plan: AgentChapterPlan, key: str) -> str:
+        for scene in reversed(plan.scenes):
+            value = str(scene.get(key, "")).strip()
+            if value:
+                return value
+        return ""
+
+    def _call_story_director(
+        self, state: dict, request: AgentChapterRequest, plan: AgentChapterPlan,
+        chapter_summary: str, model: str,
+    ) -> dict:
+        payload = {
+            "previous_state": state,
+            "chapter": {
+                "number": request.chapter_num, "title": request.chapter_title,
+                "summary": chapter_summary, "plan_goal": plan.chapter_goal,
+                "strategy": plan.strategy, "main_threads": plan.plot_threads,
+                "choices_and_costs": [
+                    {"choice": scene.get("choice", ""), "cost": scene.get("cost", ""),
+                     "change": scene.get("irreversible_change", "")}
+                    for scene in plan.scenes
+                ],
+            },
+        }
+        prompt = (
+            "你是长篇小说的卷级导演。根据已完成章节更新跨章节节奏状态；只写可由摘要和计划支持的事实，"
+            "不编造正文不存在的事件。只返回严格 JSON：current_volume_goal:string,"
+            "protagonist_stage_goal:string,core_conflict_pressure:string,recent_major_choice:string,"
+            "recent_failure_or_cost:string,unredeemed_promises:[string],next_turn_distance:integer,"
+            "foreshadowing_density_risks:[string],chapters_without_main_progress:integer。\n\n"
+            + json.dumps(payload, ensure_ascii=False)
+        )
+        response = self.client.chat.completions.create(
+            model=model, messages=[{"role": "user", "content": prompt}],
+            temperature=0.15, max_tokens=2500,
+        )
+        raw = self._parse_json(response.choices[0].message.content or "")
+        defaults = self._director_defaults()
+        result = {}
+        for key, fallback in defaults.items():
+            if key in ("last_chapter", "last_review_chapter"):
+                continue
+            value = raw.get(key, fallback)
+            if isinstance(fallback, list):
+                result[key] = [str(item).strip() for item in value if str(item).strip()] if isinstance(value, list) else []
+            elif isinstance(fallback, int):
+                try:
+                    result[key] = max(0, int(value))
+                except (TypeError, ValueError):
+                    result[key] = fallback
+            else:
+                result[key] = str(value).strip()
+        return result
+
+    def revise_plan(
+        self, request: AgentChapterRequest, current_plan: AgentChapterPlan,
+        instruction: str,
+    ) -> AgentChapterPlan:
+        """Apply a targeted change to the current structured plan without replanning candidates."""
+        instruction = str(instruction or "").strip()
+        if not instruction:
+            raise AgentPlanError("请填写具体的章节计划修改要求。")
+        bible = self.manager.load_world_bible(request.book_title)
+        index = self._world_index(bible, request.book_title)
+        history = self._history_candidates(request.book_title)
+        skills = self._select_skills(request)
+        contract = {
+            "chapter_goal": current_plan.chapter_goal,
+            "must_happen": current_plan.must_happen,
+            "may_happen": current_plan.may_happen,
+            "must_not_happen": current_plan.must_not_happen,
+            "withheld_reveals": current_plan.withheld_reveals,
+            "end_state_requirements": current_plan.end_state_requirements,
+            "scenes": current_plan.scenes,
+            "character_arcs": current_plan.character_arcs,
+            "plot_threads": current_plan.plot_threads,
+            "foreshadowing_actions": current_plan.foreshadowing_actions,
+            "selected_world_entities": current_plan.selected_world_entities,
+            "selected_history_chapters": [
+                int(item.get("chapter_num", 0) or 0) for item in current_plan.selected_history
+            ],
+            "constraints": current_plan.constraints,
+            "planning_notes": current_plan.planning_notes,
+        }
+        prompt = self._plan_revision_prompt(
+            request, current_plan, contract, instruction, index, history
+        )
+        last_error = None
+        data = None
+        for attempt in range(2):
+            try:
+                response = self.client.chat.completions.create(
+                    model=request.model,
+                    messages=[{"role": "user", "content": prompt}],
+                    temperature=0.15,
+                    max_tokens=8192,
+                )
+                raw = self._parse_json(response.choices[0].message.content or "")
+                data = self._validate_plan(raw, index, history, request.target_words)
+                break
+            except Exception as exc:
+                last_error = exc
+                prompt += (
+                    "\n\n上一次修改结果无效。请保留未被要求修改的内容，"
+                    f"并修复以下格式问题：{exc}。只输出完整合法 JSON。"
+                )
+        if data is None:
+            raise AgentPlanError(f"章节计划修改失败: {last_error}")
+
+        revised = self._build_plan(
+            request, data, index, history, skills, current_plan.plan_id,
+            current_plan.director_state, current_plan.candidate_id,
+            current_plan.strategy, current_plan.strategy_summary,
+        )
+        revised.recommended_candidate_id = current_plan.recommended_candidate_id
+        revised.selection_reason = f"已按用户要求修改当前计划：{instruction}"
+        revised.critic = {}
+        candidates = []
+        source_candidates = current_plan.candidate_plans or [
+            current_plan.to_dict(include_candidates=False)
+        ]
+        for candidate in source_candidates:
+            if str(candidate.get("candidate_id", "")) == current_plan.candidate_id:
+                candidates.append(revised.to_dict(include_candidates=False))
+            else:
+                candidates.append(candidate)
+        revised.candidate_plans = candidates
+
+        workspace = self.manager.get_workspace(request.book_title)
+        path = f"{workspace.agent_root}/chapter_runs/{current_plan.plan_id}.json"
+        record = workspace.storage.read_json(path, default={}) or {}
+        history_records = list(record.get("plan_revision_history", []) or [])
+        history_records.append({
+            "instruction": instruction,
+            "candidate_id": current_plan.candidate_id,
+            "updated_at": now_iso(),
+        })
+        record.update({
+            "schema_version": 2,
+            "status": "plan_revised",
+            "plan": revised.to_dict(),
+            "plan_revision_history": history_records,
+            "updated_at": now_iso(),
+        })
+        workspace.storage.write_json(path, record)
+        return revised
+
+    @staticmethod
+    def _plan_revision_prompt(
+        request: AgentChapterRequest, current_plan: AgentChapterPlan,
+        contract: dict, instruction: str, index: list[dict], history: list[dict],
+    ) -> str:
+        schema = (
+            "chapter_goal:string,must_happen:[string],may_happen:[string],"
+            "must_not_happen:[string],withheld_reveals:[string],end_state_requirements:[string],"
+            "scenes:[{scene_id:string,title:string,purpose:string,pov_character:string,time:string,"
+            "location:string,entry_state:string,goal:string,conflict:string,key_actions:[string],"
+            "information_released:[string],turning_point:string,choice:string,cost:string,"
+            "outcome:string,exit_state:string,irreversible_change:string,target_words:integer,"
+            "forbidden:[string]}],character_arcs:[{character:string,start_state:string,"
+            "end_state:string,trigger:string,choice:string,cost:string}],plot_threads:[string],"
+            "foreshadowing_actions:[{action:string,target:string}],"
+            "selected_world_entities:[{id:string,name:string,reason:string}],"
+            "selected_history_chapters:[integer],constraints:[string],planning_notes:string"
+        )
+        payload = {
+            "chapter": {
+                "number": request.chapter_num,
+                "title": request.chapter_title,
+                "target_words": request.target_words,
+            },
+            "strategy": current_plan.strategy,
+            "current_plan": contract,
+            "modification_instruction": instruction,
+            "valid_world_entities": index,
+            "valid_history_chapters": history,
+            "story_director": current_plan.director_state,
+        }
+        return (
+            "你是章节计划修订编辑。必须基于 current_plan 做最小范围修改，不得重新构思整章，"
+            "不得改动用户未要求修改的场景、事实、选择、代价和结束状态。"
+            "修改后仍须保持因果完整、人物主动性和卷级导演约束。"
+            "只输出修改后的完整 JSON，不输出解释或 Markdown。\n\n"
+            f"字段：{schema}\n\n输入：{json.dumps(payload, ensure_ascii=False)}"
+        )
 
     def _select_skills(self, request: AgentChapterRequest):
         from core.agent.repository import AgentRepository

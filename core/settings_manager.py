@@ -36,6 +36,7 @@ DEFAULT_SETTINGS = {
     "novel_generation_mode": "classic",
     "controlled_agent_enabled": False,
     "agent_skills_enabled": True,
+    "agent_multi_plan_enabled": False,
     "agent_web_enabled": False,
     "agent_web_endpoint": "",
     "agent_web_method": "POST",

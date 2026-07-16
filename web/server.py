@@ -30,7 +30,7 @@ from core.world_bible import audit_world_bible_consistency, dict_to_world_bible,
 from core.world_bible_diff import diff_world_bibles, summarize_world_bible_diff
 from utils.export import export_book, export_chapter, export_conversation
 from utils.summarize import detect_sections, split_text_locally
-from web.services import WebApiConfigError, WebAuthError, WebRuntime, WebSensitiveError, WebUserContext, generation_params, masked_api_config, task_event_to_sse
+from web.services import WebApiConfigError, WebAuthError, WebRuntime, WebSensitiveError, WebUserContext, auxiliary_generation_model, body_generation_model, generation_params, masked_api_config, task_event_to_sse
 
 class LoginRequest(BaseModel):
     username: str
@@ -256,6 +256,15 @@ class SnapshotRequest(BaseModel):
 
 class AgentChapterGenerateRequest(BaseModel):
     plan_id: str
+    candidate_id: str = ""
+
+class AgentChapterPlanCancelRequest(BaseModel):
+    plan_id: str
+
+class AgentChapterPlanRevisionRequest(BaseModel):
+    plan_id: str
+    candidate_id: str = ""
+    instruction: str = Field(min_length=1, max_length=6000)
 
 class AgentPolishPlanRequest(BaseModel):
     node_id: str
@@ -1544,18 +1553,83 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
     def agent_chapter_plan(title: str, payload: AgentChapterPlanRequest, ctx: WebUserContext = Depends(current_context)):
         api_config = ctx.require_text_api()
         def target(handle):
-            from core.agent.chapter_generation import AgentChapterGenerationService, AgentChapterRequest
+            from core.agent.chapter_generation import AgentChapterGenerationService, AgentChapterPlan, AgentChapterRequest
             client = runtime.client_factory(api_config)
             model = (api_config.get("text") or {}).get("model") or "deepseek-v4-flash"
+            planning_model = auxiliary_generation_model(ctx.settings, model)
             target_info = ctx.novel_manager.get_active_generation_target(title)
             chapter_num = int(target_info.get("chapter_num") or 1)
             chapter_title = payload.chapter_title or f"第{chapter_num}章"
             handle.progress("Agent 规划章节", percent=15, stage="Agent 规划")
-            plan = AgentChapterGenerationService(ctx.novel_manager, client, skills_enabled=bool(ctx.settings.get("agent_skills_enabled", True))).prepare(AgentChapterRequest(title, chapter_num, chapter_title, payload.plot, payload.requirement, payload.target_words, model, payload.manual_entity_ids, str(ctx.settings.get("global_user_prompt") or "")))
-            handle.progress("Agent 规划完成", percent=100, stage="完成", data={"plan": plan.to_dict(), "rendered": plan.render()})
-            return {"plan": plan.to_dict(), "rendered": plan.render()}
+            plan = AgentChapterGenerationService(ctx.novel_manager, client, skills_enabled=bool(ctx.settings.get("agent_skills_enabled", True)), multi_plan_enabled=bool(ctx.settings.get("agent_multi_plan_enabled", False))).prepare(AgentChapterRequest(title, chapter_num, chapter_title, payload.plot, payload.requirement, payload.target_words, planning_model, payload.manual_entity_ids, str(ctx.settings.get("global_user_prompt") or "")))
+            plan_data = plan.to_dict()
+            for candidate in plan_data.get("candidate_plans") or []:
+                candidate["rendered"] = AgentChapterPlan.from_dict(candidate).render()
+            handle.progress("Agent 规划完成", percent=100, stage="完成", data={"plan": plan_data, "rendered": plan.render()})
+            return {"plan": plan_data, "rendered": plan.render()}
         return {"task_id": runtime.start_task(ctx.username, f"Agent 规划《{title}》", target, metadata={"kind": "agent_chapter_plan", "book": title}, retryable=True)}
 
+    @app.post("/api/books/{title}/agent/chapter/cancel", tags=["agent"])
+    def cancel_agent_chapter_plan(title: str, payload: AgentChapterPlanCancelRequest, ctx: WebUserContext = Depends(current_context)):
+        workspace = ctx.novel_manager.get_workspace(title)
+        path = f"{workspace.agent_root}/chapter_runs/{payload.plan_id}.json"
+        record = workspace.storage.read_json(path, default={}) or {}
+        if not record:
+            raise HTTPException(status_code=404, detail="Agent 章节计划不存在")
+        record.update({"status": "cancelled", "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S")})
+        workspace.storage.write_json(path, record)
+        return {"ok": True, "plan_id": payload.plan_id, "status": "cancelled"}
+    @app.post("/api/books/{title}/agent/chapter/revise", tags=["agent"])
+    def agent_chapter_revise(title: str, payload: AgentChapterPlanRevisionRequest, ctx: WebUserContext = Depends(current_context)):
+        api_config, client, model = text_client_and_model(ctx)
+
+        def target(handle):
+            from core.agent.chapter_generation import AgentChapterGenerationService, AgentChapterPlan, AgentChapterRequest
+
+            workspace = ctx.novel_manager.get_workspace(title)
+            record = workspace.storage.read_json(
+                f"{workspace.agent_root}/chapter_runs/{payload.plan_id}.json", default={}
+            ) or {}
+            if not record:
+                raise RuntimeError("Agent 章节计划不存在")
+            request_data = dict(record.get("request") or {})
+            request_data["model"] = auxiliary_generation_model(ctx.settings, model)
+            request = AgentChapterRequest(**request_data)
+            stored_plan = AgentChapterPlan.from_dict(dict(record.get("plan") or {}))
+            candidates = list(stored_plan.candidate_plans or [stored_plan.to_dict(include_candidates=False)])
+            selected_id = payload.candidate_id or stored_plan.candidate_id
+            selected = next(
+                (item for item in candidates if str(item.get("candidate_id") or "") == selected_id),
+                None,
+            )
+            if selected is None:
+                raise RuntimeError("所选 Agent 章节方案不存在")
+            current_plan = AgentChapterPlan.from_dict(selected)
+            current_plan.candidate_plans = candidates
+            current_plan.recommended_candidate_id = stored_plan.recommended_candidate_id
+            handle.progress("Agent 正在修改章节计划", percent=20, stage="计划修改")
+            revised = AgentChapterGenerationService(
+                ctx.novel_manager,
+                client,
+                skills_enabled=bool(ctx.settings.get("agent_skills_enabled", True)),
+                multi_plan_enabled=False,
+            ).revise_plan(request, current_plan, payload.instruction)
+            plan_data = revised.to_dict()
+            for candidate in plan_data.get("candidate_plans") or []:
+                candidate["rendered"] = AgentChapterPlan.from_dict(candidate).render()
+            handle.progress(
+                "Agent 章节计划已修改", percent=100, stage="完成",
+                data={"plan": plan_data, "rendered": revised.render()},
+            )
+            return {"plan": plan_data, "rendered": revised.render()}
+
+        return {"task_id": runtime.start_task(
+            ctx.username,
+            f"Agent 修改计划《{title}》",
+            target,
+            metadata={"kind": "agent_chapter_revise", "book": title, "plan_id": payload.plan_id},
+            retryable=True,
+        )}
     @app.post("/api/books/{title}/agent/sessions", tags=["agent"])
     def create_agent_session(title: str, payload: AgentSessionCreateRequest, ctx: WebUserContext = Depends(current_context)):
         from core.agent.profiles import AGENT_PROFILES
@@ -1713,42 +1787,214 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
     @app.post("/api/books/{title}/agent/chapter/generate", tags=["agent"])
     def agent_chapter_generate(title: str, payload: AgentChapterGenerateRequest, ctx: WebUserContext = Depends(current_context)):
         api_config, client, model = text_client_and_model(ctx)
+
         def target(handle):
             from core.agent.chapter_generation import AgentChapterGenerationService, AgentChapterPlan, AgentChapterRequest
-            service = AgentChapterGenerationService(ctx.novel_manager, client, skills_enabled=bool(ctx.settings.get("agent_skills_enabled", True)))
-            workspace = ctx.novel_manager.get_workspace(title)
-            record = workspace.storage.read_json(f"{workspace.agent_root}/chapter_runs/{payload.plan_id}.json", default={}) or {}
+            from core.agent.supervision_agent import AgentSupervisionService, SupervisionRequest
+            from core.agent.world_bible_agent import WorldBibleAgentService
+            from core.app_services import ChapterGenerationService
+            from strategies.novel_strategy import NovelStrategy
+            from utils.prompts import Prompts
+
+            manager = ctx.novel_manager
+            workspace = manager.get_workspace(title)
+            record = workspace.storage.read_json(
+                f"{workspace.agent_root}/chapter_runs/{payload.plan_id}.json", default={}
+            ) or {}
             if not record:
                 raise RuntimeError("Agent 章节计划不存在")
+
+            auxiliary_model = auxiliary_generation_model(ctx.settings, model)
+            body_model = body_generation_model(ctx.settings, model)
             req_data = dict(record.get("request") or {})
-            req_data["model"] = model
+            req_data["model"] = auxiliary_model
             request = AgentChapterRequest(**req_data)
-            plan = AgentChapterPlan(**dict(record.get("plan") or {}))
+            plan = AgentChapterPlan.from_dict(dict(record.get("plan") or {}))
+            if payload.candidate_id:
+                candidate = next(
+                    (item for item in plan.candidate_plans if item.get("candidate_id") == payload.candidate_id),
+                    None,
+                )
+                if candidate is None:
+                    raise RuntimeError("所选 Agent 章节方案不存在")
+                plan = AgentChapterPlan.from_dict(candidate)
+                plan.candidate_plans = list((record.get("plan") or {}).get("candidate_plans") or [])
+                plan.recommended_candidate_id = str((record.get("plan") or {}).get("recommended_candidate_id") or "")
+
+            service = AgentChapterGenerationService(
+                manager,
+                client,
+                skills_enabled=bool(ctx.settings.get("agent_skills_enabled", True)),
+            )
             result = service.generate(request, plan)
+            meta = manager.load_meta(title)
+            strategy = NovelStrategy()
+            strategy.novel_title = title
+            strategy.chapter_title = request.chapter_title
+            strategy.protagonist_bio = meta.protagonist_bio
+            strategy.background_story = meta.background_story
+            strategy.writing_demand = meta.writing_demand
+            strategy.genre = meta.genre
+            strategy.style_tone = meta.style_tone
+            strategy.xp_mode = bool(meta.xp_mode)
+            strategy.chapter_mode = True
             params = generation_params(ctx.settings, api_config)
-            params["model"] = model
+            body_params = {
+                **params,
+                "model": body_model,
+                "max_tokens": max(request.target_words * 2, params["max_tokens"]),
+            }
+            messages = [{"role": "system", "content": Prompts.NOVEL_CHAPTER_WRITING}]
+            if strategy.xp_mode:
+                messages.append({"role": "system", "content": Prompts.XP_MODE_SYSTEM})
+            messages.append({
+                "role": "system",
+                "content": (
+                    f"【本章硬性字数要求】本章字数不少于{request.target_words}字。"
+                    "请优先写全必要行动过程、人物选择及其后果、带目的和阻力的对话，"
+                    "以及影响后文的场景变化；不得用装饰性描写、重复反应或旁白解释凑字数。"
+                ),
+            })
+            messages.extend(strategy.build_system_messages())
+            messages.append({"role": "user", "content": result.prompt})
             handle.progress("Agent 生成正文", percent=20, stage="Agent 正文")
-            content = runtime._stream_completion(handle, client, [{"role": "user", "content": result.prompt}], params)
+            content = runtime._stream_completion(handle, client, messages, body_params)
             if not content.strip():
                 raise RuntimeError("模型未返回章节正文")
-            app_service = __import__("core.app_services", fromlist=["ChapterGenerationService"]).ChapterGenerationService(ctx.novel_manager)
-            target_info = ctx.novel_manager.get_active_generation_target(title)
-            _path, saved_version = app_service.persist_chapter(title=title, chapter_num=request.chapter_num, chapter_title=request.chapter_title, content=content, version=ctx.novel_manager.get_next_version(title, request.chapter_num), parent_id=target_info.get("parent_id"), prompt=result.prompt, model=model, temperature=params["temperature"], top_p=params["top_p"], max_tokens=params["max_tokens"], frequency_penalty=params["frequency_penalty"], requirement=request.requirement, plot=request.plot, agent_data={"plan": plan.to_dict(), "context_report": result.context_report}, generation_mode="agent-web", agent_run_id=payload.plan_id)
-            handle.progress("生成摘要", percent=72, stage="摘要")
-            try:
-                ctx.novel_manager.generate_summary(client, content, request.chapter_num, request.chapter_title, model=model, global_user_prompt=str(ctx.settings.get("global_user_prompt") or ""), xp_mode=bool(ctx.novel_manager.load_meta(title).xp_mode), raise_on_error=True)
-            except Exception:
-                pass
-            handle.progress("更新世界书", percent=84, stage="世界书")
-            try:
-                app_service.world_bible.sync_chapter(client, title, request.chapter_num, saved_version, content, model=model, global_user_prompt=str(ctx.settings.get("global_user_prompt") or ""), xp_mode=bool(ctx.novel_manager.load_meta(title).xp_mode))
-            except Exception:
-                pass
-            snapshot = app_service.create_auto_snapshot(title, request.chapter_num, saved_version)
-            handle.progress("Agent 章节生成完成", percent=100, stage="完成", data={"result": {"chapter_num": request.chapter_num, "version": saved_version, "snapshot_id": snapshot.snapshot_id}})
-            return {"chapter_num": request.chapter_num, "version": saved_version, "snapshot_id": snapshot.snapshot_id}
-        return {"task_id": runtime.start_task(ctx.username, f"Agent 生成《{title}》章节", target, metadata={"kind": "agent_chapter_generate", "book": title, "plan_id": payload.plan_id}, retryable=True)}
 
+            def supervision_progress(stage: str) -> None:
+                labels = {
+                    "audit": "正在审查计划、硬性要求和连续性",
+                    "repair": "正在最小化修复未通过项",
+                    "reaudit": "正在复检修复稿",
+                }
+                handle.progress(labels.get(stage, "正在监督章节"), percent=58, stage="章节监督")
+
+            try:
+                supervised = AgentSupervisionService(
+                    manager,
+                    lambda _action: client,
+                    skills_enabled=bool(ctx.settings.get("agent_skills_enabled", True)),
+                ).supervise(
+                    SupervisionRequest(
+                        book_title=title,
+                        chapter_num=request.chapter_num,
+                        chapter_title=request.chapter_title,
+                        chapter_content=content,
+                        chapter_outline=request.plot,
+                        requirements=request.requirement or meta.writing_demand,
+                        continuity_context=result.prompt,
+                        target_words=request.target_words,
+                        model=auxiliary_model,
+                        global_prompt=str(ctx.settings.get("global_user_prompt") or ""),
+                        xp_mode=strategy.xp_mode,
+                    ),
+                    progress=supervision_progress,
+                )
+                content = supervised.content
+                supervision_report = supervised.report
+            except Exception as exc:
+                supervision_report = {
+                    "status": "warning", "audit_failed": True, "error": str(exc),
+                    "outline_items": [], "hard_constraint_issues": [],
+                    "continuity_issues": [], "style_issues": [], "repair_rounds": 0,
+                }
+                handle.progress(
+                    f"章节监督跳过，保留当前正文：{exc}", percent=60, stage="章节监督"
+                )
+            app_service = ChapterGenerationService(manager)
+            target_info = manager.get_active_generation_target(title)
+            if int(target_info.get("chapter_num") or 0) != request.chapter_num:
+                raise RuntimeError("章节计划已过期：活跃路径已变化，请重新规划")
+            _path, saved_version = app_service.persist_chapter(
+                title=title,
+                chapter_num=request.chapter_num,
+                chapter_title=request.chapter_title,
+                content=content,
+                version=int(target_info.get("version") or manager.get_next_version(title, request.chapter_num)),
+                parent_id=target_info.get("parent_id"),
+                prompt=result.prompt,
+                model=body_model,
+                temperature=body_params["temperature"],
+                top_p=body_params["top_p"],
+                max_tokens=body_params["max_tokens"],
+                frequency_penalty=body_params["frequency_penalty"],
+                requirement=request.requirement,
+                plot=request.plot,
+                supervision_report=supervision_report,
+                agent_data={"enabled": True, "run_id": plan.plan_id, "plan": plan.to_dict(), "context_report": result.context_report},
+                generation_mode="agent",
+                agent_run_id=payload.plan_id,
+            )
+            handle.progress("生成摘要", percent=70, stage="摘要")
+            summary = manager.generate_summary(
+                client,
+                content,
+                request.chapter_num,
+                request.chapter_title,
+                model=auxiliary_model,
+                global_user_prompt=str(ctx.settings.get("global_user_prompt") or ""),
+                xp_mode=strategy.xp_mode,
+                raise_on_error=False,
+            )
+            if summary.strip():
+                manager.set_chapter_node_summary(title, request.chapter_num, saved_version, summary)
+            manager.rebuild_plot_summary_from_tree(title)
+
+            try:
+                director_result = service.update_director_state(
+                    request, plan, summary or plan.chapter_goal, auxiliary_model
+                )
+                manager.update_generation_record(
+                    title, request.chapter_num, saved_version, story_director=director_result
+                )
+            except Exception as exc:
+                handle.progress(
+                    f"卷级导演复盘跳过：{exc}", percent=80, stage="卷级导演"
+                )
+            handle.progress("更新世界书", percent=84, stage="世界书")
+            maintenance = WorldBibleAgentService(manager).analyze_chapter(
+                client,
+                title,
+                request.chapter_num,
+                saved_version,
+                model=auxiliary_model,
+                global_user_prompt=str(ctx.settings.get("global_user_prompt") or ""),
+                xp_mode=strategy.xp_mode,
+                plan=plan.to_dict(),
+            )
+            manager.update_generation_record(
+                title, request.chapter_num, saved_version, world_maintenance=asdict(maintenance)
+            )
+            try:
+                snapshot = app_service.create_auto_snapshot(title, request.chapter_num, saved_version)
+                snapshot_id = snapshot.snapshot_id
+            except Exception as exc:
+                snapshot_id = ""
+                handle.progress(f"Snapshot skipped: {exc}", percent=94, stage="Snapshot")
+            run_record = workspace.storage.read_json(
+                f"{workspace.agent_root}/chapter_runs/{payload.plan_id}.json", default={}
+            ) or {}
+            run_record.update({
+                "status": "completed_with_pending_maintenance" if maintenance.status != "completed" else "completed",
+                "chapter_num": request.chapter_num,
+                "version": saved_version,
+                "chapter_node_id": manager._node_id(request.chapter_num, saved_version),
+                "world_maintenance_task_id": maintenance.task_id,
+                "world_maintenance_status": maintenance.status,
+                "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            })
+            workspace.storage.write_json(f"{workspace.agent_root}/chapter_runs/{payload.plan_id}.json", run_record)
+            result_data = {
+                "chapter_num": request.chapter_num,
+                "version": saved_version,
+                "snapshot_id": snapshot_id,
+                "world_maintenance_status": maintenance.status,
+            }
+            handle.progress("Agent 章节生成完成", percent=100, stage="完成", data={"result": result_data})
+            return result_data
+
+        return {"task_id": runtime.start_task(ctx.username, f"Agent 生成《{title}》章节", target, metadata={"kind": "agent_chapter_generate", "book": title, "plan_id": payload.plan_id}, retryable=True)}
     @app.post("/api/books/{title}/agent/polish/plan", tags=["agent"])
     def agent_polish_plan(title: str, payload: AgentPolishPlanRequest, ctx: WebUserContext = Depends(current_context)):
         _api, client, model = text_client_and_model(ctx)

@@ -9,24 +9,28 @@ import re
 from typing import Any, Callable
 
 from utils.prompts import Prompts
+from core.agent.skills import HUMANIZER_ZH_STYLE_BRIEF
 
 
 OUTLINE_STATUSES = {"fulfilled", "partial", "missing", "conflict"}
-SUPERVISION_AUDIT_SYSTEM = """You are a fiction chapter compliance supervisor. Audit task completion, not literary taste.
+SUPERVISION_AUDIT_SYSTEM = """You are a fiction chapter compliance and prose-style supervisor.
 Split the user's chapter outline into minimal verifiable requirements. Each outline item status must be exactly fulfilled, partial, missing, or conflict. Mark fulfilled only when the chapter actually depicts the necessary process or outcome; a mention, memory, preview, or vague hint is insufficient.
 Also detect title mismatch, forbidden-content violations, ignored requirements, major plot deviations, and continuity errors involving time, place, motivation, character knowledge, world rules, foreshadowing, or causality.
+Audit Chinese prose against the supplied humanizer rules. Add style_issues only for a repeated/systematic tic (the same template at least twice or three mixed template tics in the chapter), or for a clearly damaging passage of abstract elevation, canned symbolism, mechanical micro-reactions, or narrator over-explanation. A single natural contrast or isolated phrase is not an issue.
+Style repair must be minimal and must not change plot facts, point of view, character behavior, event order, dialogue intent, or the specified ending.
 If no outline is supplied, do not invent outline items.
 Return JSON only with this shape:
 {
   "outline_items": [{"id":"1","requirement":"...","status":"fulfilled/partial/missing/conflict","evidence":"...","problem":"...","repair":"..."}],
   "hard_constraint_issues": [{"severity":"major/minor","type":"title/forbidden/requirement/plot_deviation","problem":"...","repair":"..."}],
   "continuity_issues": [{"severity":"major/minor","type":"timeline/place/motivation/knowledge/rule/foreshadowing/causality","problem":"...","repair":"..."}],
+  "style_issues": [{"severity":"major/minor","type":"template_contrast/abstract_role/canned_reaction/abstract_elevation/over_explanation/style_mismatch","problem":"...","repair":"..."}],
   "repair_instruction": "minimum combined repair instruction, or empty when all checks pass"
 }"""
 SUPERVISION_REPAIR_SYSTEM = """You are a fiction chapter repair editor. Repair only failed supervision items.
-Preserve fulfilled plot points, voice, point of view, relationships, core events, and the user-specified ending.
+Preserve fulfilled plot points, facts, voice, point of view, relationships, character behavior, event order, dialogue intent, core events, and the user-specified ending.
 Depict missing processes and outcomes rather than summarizing them in one sentence. Fix continuity with the smallest necessary change and introduce no new contradictions.
-When length expansion is required, add relevant scene action, dialogue, sensory detail, and interiority without changing plot direction.
+When length expansion is required, add necessary action processes, consequential choices, purposeful dialogue, or scene changes that affect later events. Do not pad with decorative scenery, reaction chains, or repeated emotional explanation.
 Output the complete repaired chapter only. Do not add explanations, prefaces, outlines, review notes, or afterwords."""
 
 
@@ -37,6 +41,7 @@ class SupervisionResult:
     hard_constraint_issues: list[dict[str, Any]] = field(default_factory=list)
     continuity_issues: list[dict[str, Any]] = field(default_factory=list)
     repair_instruction: str = ""
+    style_issues: list[dict[str, Any]] = field(default_factory=list)
     repair_rounds: int = 0
     audit_failed: bool = False
 
@@ -49,7 +54,7 @@ class SupervisionResult:
             item for item in self.outline_items
             if item.get("status") in {"partial", "missing", "conflict"}
         ]
-        return outline + self.hard_constraint_issues + self.continuity_issues
+        return outline + self.hard_constraint_issues + self.continuity_issues + self.style_issues
 
     @property
     def needs_repair(self) -> bool:
@@ -62,6 +67,30 @@ def count_content_units(text: str) -> int:
     words = len(re.findall(r"[A-Za-z0-9]+", text or ""))
     return hanzi + words
 
+
+_STYLE_TIC_PATTERNS: dict[str, tuple[str, ...]] = {
+    "template_contrast": (
+        r"不是[^。！？\n]{0,48}而是",
+        r"不仅[^。！？\n]{0,48}(?:而且|更)",
+    ),
+    "abstract_role": (r"(?:参与者|见证者|守护者|旁观者)",),
+    "canned_reaction": (
+        r"(?:空气中弥漫着|仿佛在诉说|心头一震|眼神中闪过|嘴角勾起)",
+    ),
+    "abstract_elevation": (
+        r"(?:标志着|彰显了|体现了|这(?:一刻|一幕)[^。！？\n]{0,48}(?:象征|证明|意味着))",
+    ),
+}
+
+
+def collect_style_tic_counts(text: str) -> dict[str, int]:
+    """Return deterministic hints for the semantic style audit, not hard failures."""
+    source = text or ""
+    counts = {
+        name: sum(len(re.findall(pattern, source)) for pattern in patterns)
+        for name, patterns in _STYLE_TIC_PATTERNS.items()
+    }
+    return {name: count for name, count in counts.items() if count}
 
 def format_repair_diff(before: str, after: str, max_chars: int = 6000) -> str:
     diff = ''.join(difflib.unified_diff(
@@ -114,7 +143,7 @@ def _local_hard_constraint_issues(
             "problem": f"正文约 {actual} 字，低于目标 {target_words} 字。",
             "repair": (
                 f"在不改变既定剧情方向的前提下，将正文自然扩充到不少于 {target_words} 字；"
-                "优先补足场景过程、动作、对话和必要心理活动，不得添加作者说明。"
+                "优先补足必要行动过程、人物选择及其后果和带阻力的对话，不得用装饰性描写或重复情绪解释凑字数。"
             ),
             "actual": actual,
             "expected": target_words,
@@ -176,8 +205,14 @@ def _normalize_audit(
         for item in (data.get("continuity_issues", []) or [])
         if (normalized := _normalize_issue(item, "continuity"))
     ]
+    style = [
+        normalized
+        for item in (data.get("style_issues", []) or [])
+        if (normalized := _normalize_issue(item, "style"))
+    ]
     result = SupervisionResult(
         outline_items=outline_items,
+        style_issues=style,
         hard_constraint_issues=local_issues + semantic_hard,
         continuity_issues=continuity,
         repair_instruction=str(data.get("repair_instruction", "") or "").strip(),
@@ -207,7 +242,9 @@ def audit_chapter(
         f"【其他硬性要求/禁写项】\n{requirements or '（未提供）'}\n",
         f"【前文、世界书与连续性契约】\n{continuity_context[:18000]}\n",
         f"【待监督正文】\n{chapter_content[:40000]}\n",
-        "注意：字数由程序另行检查，你不需要估算字数。",
+        f"【中文自然写作约束】\n{HUMANIZER_ZH_STYLE_BRIEF}\n",
+        f"【本地风格迹象计数（仅作线索，不等于问题）】\n{json.dumps(collect_style_tic_counts(chapter_content), ensure_ascii=False)}\n",
+        "注意：字数由程序另行检查，你不需要估算字数；孤立出现一次的模板句不得据此判定为风格问题。",
     ]
     if global_user_prompt.strip():
         parts.append(f"【用户全局偏好】\n{global_user_prompt}\n")
@@ -254,6 +291,7 @@ def repair_chapter(
         "【未通过的监督项】\n"
         + json.dumps(audit_result.unresolved_issues, ensure_ascii=False, indent=2),
         f"【综合修订指令】\n{audit_result.repair_instruction}\n",
+        f"【中文自然写作约束】\n{HUMANIZER_ZH_STYLE_BRIEF}\n",
         f"【原章节正文】\n{chapter_content}\n",
     ]
     if global_user_prompt.strip():

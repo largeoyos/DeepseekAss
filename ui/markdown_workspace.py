@@ -147,14 +147,7 @@ class MarkdownWorkspaceWidget(QWidget):
         self.setObjectName("markdownWorkspace")
         self.setStyleSheet("""
             #markdownWorkspace { background: #f8f9fa; }
-            QWidget#notesHeader {
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #1e272e, stop:1 #2d3436);
-                border-radius: 14px;
-            }
-            QLabel#notesTitle { color: #ffffff; font-size: 20px; font-weight: 700; }
-            QLabel#notesCaption { color: #b2bec3; font-size: 12px; }
-            QLabel#notesStatus { color: #dfe6e9; font-size: 12px; }
+            QLabel#notesStatus { color: #718096; font-size: 12px; }
             QWidget#notesToolbar { background: #ffffff; border: 1px solid #e9eef2; border-radius: 12px; }
             QLineEdit#noteSearch {
                 min-height: 30px; padding: 4px 10px; border: 1px solid #dce6ee;
@@ -191,26 +184,6 @@ class MarkdownWorkspaceWidget(QWidget):
         layout.setContentsMargins(18, 16, 18, 16)
         layout.setSpacing(10)
 
-        header = QWidget()
-        header.setObjectName("notesHeader")
-        header_layout = QHBoxLayout(header)
-        header_layout.setContentsMargins(18, 13, 18, 13)
-        header_layout.setSpacing(10)
-        title_column = QVBoxLayout()
-        title = QLabel("Markdown 笔记")
-        title.setObjectName("notesTitle")
-        title_column.addWidget(title)
-        caption = QLabel("沉静阅读 · 即点即改 · 本地加密保存")
-        caption.setObjectName("notesCaption")
-        title_column.addWidget(caption)
-        header_layout.addLayout(title_column)
-        header_layout.addStretch(1)
-        self._status = QLabel("选择一篇笔记开始编辑")
-        self._status.setObjectName("notesStatus")
-        self._status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        header_layout.addWidget(self._status)
-        layout.addWidget(header)
-
         toolbar = QWidget()
         toolbar.setObjectName("notesToolbar")
         toolbar_layout = QHBoxLayout(toolbar)
@@ -237,6 +210,10 @@ class MarkdownWorkspaceWidget(QWidget):
         self._export_button.clicked.connect(self._export_file)
         toolbar_layout.addWidget(self._export_button)
         toolbar_layout.addStretch(1)
+        self._status = QLabel("选择一篇笔记开始编辑")
+        self._status.setObjectName("notesStatus")
+        self._status.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        toolbar_layout.addWidget(self._status)
         self._search = QLineEdit()
         self._search.setObjectName("noteSearch")
         self._search.setPlaceholderText("搜索笔记名称…")

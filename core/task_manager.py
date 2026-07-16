@@ -171,7 +171,10 @@ class TaskRunner:
                 else:
                     self._emit(handle, "completed", name, {"result": self._preview(result)})
             except Exception as exc:
-                self._emit(handle, "failed", str(exc), {"exception_type": type(exc).__name__})
+                if handle.cancelled:
+                    self._emit(handle, "cancelled", name)
+                else:
+                    self._emit(handle, "failed", str(exc), {"exception_type": type(exc).__name__})
             finally:
                 self._emit(handle, "finished", name, {"duration_ms": int((time.time() - started) * 1000)})
                 with self._lock:

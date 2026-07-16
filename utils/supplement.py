@@ -6,6 +6,8 @@
 import re
 
 from utils.prompts import Prompts
+from utils.genre_styles import get_tone_by_key
+from core.agent.skills import HUMANIZER_ZH_STYLE_BRIEF
 
 
 def count_cn(text: str) -> int:
@@ -29,22 +31,22 @@ def supplement_content(
     plot_content: str = "",
     history_summary: str = "",
     xp_mode: bool = False,
+    style_tone: str = "",
 ) -> str:
     """
     字数不足时，将整章内容 + 全部上下文发送给 AI 进行扩写
     返回扩写后的完整章节内容（非追加片段），失败返回空字符串
     """
     parts = [
-        "你是一位文笔细腻、想象力丰富的长篇小说作家。",
+        "你是一位成熟的中文小说编辑，负责在不改变事实和声音的前提下补足章节。",
         f"下面是一章小说的当前版本（当前{actual_chars}字，目标{target_chars}字），",
         "字数不足需要扩写。",
         "",
         "【要求】",
         "1. 保留所有现有情节走向和已写内容，不可删减。",
-        "2. 在现有基础上丰富细节描写——环境的光线/声音/气味氛围、角色的神态/动作/微表情、",
-        "   对话中的语气停顿和肢体语言、内心活动和情绪转折，每个场景至少扩展2-3层细节。",
-        "3. 保持人物性格、语言风格和世界观设定的一致性。",
-        "4. 使章节更饱满、生动，达到目标字数。",
+        "2. 优先补足事件的必要过程、人物的选择与后果、存在目的和阻力的对话，以及会影响后文的场景变化。",
+        "3. 保持人物性格、叙事视角、语言风格和世界观设定一致；细节必须是当前视角会注意且对本章有作用的内容。",
+        "4. 不用同义反复、装饰性景物、成套表情动作或重复解释情绪来凑字数。",
         "5. 直接输出扩写后的完整章节正文，不要添加任何解释或前言。",
         "",
     ]
@@ -60,6 +62,10 @@ def supplement_content(
         parts.append(f"【本章已定情节】\n{plot_content}\n")
     if history_summary.strip():
         parts.append(f"【历史生成参考】\n{history_summary}\n")
+    tone = get_tone_by_key(style_tone)
+    if tone and tone.style_instruction:
+        parts.append(f"【写作基调（{tone.display_name}）】\n{tone.style_instruction}\n")
+    parts.append(f"【humanizer-zh 风格硬约束】\n{HUMANIZER_ZH_STYLE_BRIEF}\n")
     if xp_mode:
         parts.append(f"{Prompts.XP_MODE_SYSTEM}\n")
     if global_user_prompt.strip():
@@ -67,8 +73,8 @@ def supplement_content(
 
     parts.append(f"【当前章节正文】\n{original_content}\n")
     parts.append(
-        "请基于以上设定扩写本章节正文，保留所有现有内容并丰富之。"
-        "直接输出扩写后的完整章节。"
+        "请基于以上设定补足本章节，新增文字必须推动事件、关系或人物认识。"
+        "直接输出扩写后的完整章节正文。"
     )
 
     prompt = "\n".join(parts)

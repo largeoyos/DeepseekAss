@@ -412,6 +412,14 @@ class SettingsDialog(QDialog):
         self._agent_skills.stateChanged.connect(self._save_agent_settings)
         layout.addWidget(self._agent_skills)
 
+        self._agent_multi_plan = QCheckBox("启用三方案章节规划与 Critic 推荐（额外消耗一次比较调用）")
+        self._agent_multi_plan.setToolTip(
+            "关闭时沿用原来的单方案章节规划；开启后生成三种剧情策略并允许在生成正文前选择。"
+        )
+        self._agent_multi_plan.setChecked(bool(self._settings.get("agent_multi_plan_enabled", False)))
+        self._agent_multi_plan.stateChanged.connect(self._save_agent_settings)
+        layout.addWidget(self._agent_multi_plan)
+
         framework_group = QGroupBox("Agent 框架与混合检索（开发预览）")
         framework_form = QFormLayout(framework_group)
         self._agent_runtime_backend = QComboBox()
@@ -533,6 +541,7 @@ class SettingsDialog(QDialog):
         settings["novel_generation_mode"] = mode
         settings["controlled_agent_enabled"] = mode == "agent"
         settings["agent_skills_enabled"] = self._agent_skills.isChecked()
+        settings["agent_multi_plan_enabled"] = self._agent_multi_plan.isChecked()
         settings["agent_web_enabled"] = self._agent_web.isChecked()
         settings["agent_web_endpoint"] = self._agent_web_endpoint.text().strip()
         settings["agent_web_method"] = self._agent_web_method.text().strip().upper() or "POST"

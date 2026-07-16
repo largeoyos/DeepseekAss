@@ -49,6 +49,18 @@ class TaskManagerTests(unittest.TestCase):
         self.assertEqual(first.task_id, runner.get_record(second.task_id).retry_of)
         self.assertEqual(2, calls["count"])
 
+    def test_task_runner_marks_cancelled_when_cancelled_work_raises(self):
+        runner = TaskRunner()
+
+        def task(handle):
+            while not handle.cancelled:
+                time.sleep(0.005)
+            raise RuntimeError("stream interrupted after cancellation")
+
+        handle = runner.start("cancellable", task)
+        self.assertTrue(runner.cancel(handle.task_id))
+        self.wait_done(runner, handle.task_id)
+        self.assertEqual("cancelled", runner.get_record(handle.task_id).status)
     def test_workspace_task_history_store_round_trip(self):
         with tempfile.TemporaryDirectory() as root:
             workspace = BookWorkspace(root)
