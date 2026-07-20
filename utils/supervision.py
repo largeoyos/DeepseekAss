@@ -42,6 +42,7 @@ class SupervisionResult:
     continuity_issues: list[dict[str, Any]] = field(default_factory=list)
     repair_instruction: str = ""
     style_issues: list[dict[str, Any]] = field(default_factory=list)
+    local_style_evaluation: dict[str, Any] = field(default_factory=dict)
     repair_rounds: int = 0
     audit_failed: bool = False
 
@@ -79,6 +80,12 @@ _STYLE_TIC_PATTERNS: dict[str, tuple[str, ...]] = {
     ),
     "abstract_elevation": (
         r"(?:标志着|彰显了|体现了|这(?:一刻|一幕)[^。！？\n]{0,48}(?:象征|证明|意味着))",
+    ),
+    "explanatory_summary": (
+        r"(?:这说明|这意味着|这一切(?:说明|意味着)|他终于明白|她终于明白|他意识到|她意识到)",
+    ),
+    "mechanical_micro_reaction": (
+        r"(?:呼吸一滞|眸光一闪|瞳孔(?:微微)?一缩|手指(?:微微)?蜷缩|指节(?:微微)?发白|喉结滚动)",
     ),
 }
 
@@ -235,6 +242,8 @@ def audit_chapter(
     xp_mode: bool = False,
     style_audit: str = "",
     content_lock: str = "",
+    style_profile_metrics: dict | None = None,
+    style_profile_name: str = "",
 ) -> SupervisionResult:
     """执行本地硬约束检查和模型语义审计；模型失败时安全降级。"""
     local_issues = _local_hard_constraint_issues(chapter_content, target_words)
@@ -269,7 +278,13 @@ def audit_chapter(
         data = _parse_json(response.choices[0].message.content or "")
     except Exception:
         data = None
-    return _normalize_audit(data, local_issues)
+    result = _normalize_audit(data, local_issues)
+    if style_profile_metrics:
+        from core.style_evaluation import evaluate_style_text
+        result.local_style_evaluation = evaluate_style_text(
+            style_profile_metrics, chapter_content, profile_name=style_profile_name,
+        ).to_dict()
+    return result
 
 
 def repair_chapter(
@@ -344,6 +359,8 @@ def supervise_chapter(
     style_audit: str = "",
     content_lock: str = "",
     max_repair_rounds: int = 2,
+    style_profile_metrics: dict | None = None,
+    style_profile_name: str = "",
     progress: Callable[[str], None] | None = None,
     repair_change_callback: Callable[[int, str], None] | None = None,
 ) -> tuple[str, SupervisionResult]:
@@ -366,6 +383,8 @@ def supervise_chapter(
             xp_mode=xp_mode,
             style_audit=style_audit,
             content_lock=content_lock,
+            style_profile_metrics=style_profile_metrics,
+            style_profile_name=style_profile_name,
         )
         final_result.repair_rounds = round_index
         if not final_result.needs_repair:

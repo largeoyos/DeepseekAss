@@ -31,6 +31,8 @@ class StyleSupervisionFlowTests(unittest.TestCase):
                 style_audit="???????????????",
                 content_lock="人物身份和事件顺序不得改变",
                 max_repair_rounds=1,
+                style_profile_metrics={"sentence_length_avg": 12.0},
+                style_profile_name="测试文风",
             )
             service = AgentSupervisionService(manager, lambda _action: None)
             with patch("utils.supervision.supervise_chapter", side_effect=fake_supervise):
@@ -41,6 +43,8 @@ class StyleSupervisionFlowTests(unittest.TestCase):
             self.assertEqual(request.chapter_content, result.content)
             self.assertEqual(request.content_lock, captured["content_lock"])
             self.assertEqual(1, captured["max_repair_rounds"])
+            self.assertEqual(request.style_profile_metrics, captured["style_profile_metrics"])
+            self.assertEqual("测试文风", captured["style_profile_name"])
 
 
 if __name__ == "__main__":

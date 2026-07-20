@@ -6413,6 +6413,7 @@ class DeepSeekChatGUI(QMainWindow):
         style_audit: str = "",
         agent_mode: bool = False,
         max_repair_rounds: int = 2,
+        style_profile=None,
     ) -> tuple[str, dict]:
         """Use the Agent supervisor only for Agent writing mode; keep classic behavior unchanged."""
         from core.style_rerank import build_content_lock, render_content_lock
@@ -6422,6 +6423,8 @@ class DeepSeekChatGUI(QMainWindow):
             requirements=requirements,
             continuity_context=context,
         ))
+        style_profile_metrics = dict(getattr(style_profile, "metrics", {}) or {})
+        style_profile_name = str(getattr(style_profile, "name", "") or "")
 
         if not content.strip():
             return content, {"status": "warning", "audit_failed": True, "error": "empty chapter"}
@@ -6437,6 +6440,15 @@ class DeepSeekChatGUI(QMainWindow):
         def show_repair_changes(round_index: int, diff: str) -> None:
             self._stream_signals.token.emit(
                 f'[Supervision] 第 {round_index} 轮修改内容：\n{diff}\n'
+            )
+
+        def show_local_evaluation(report: dict) -> None:
+            evaluation = dict(report.get("local_style_evaluation") or {})
+            if not evaluation:
+                return
+            self._stream_signals.token.emit(
+                f"[文风指纹] 匹配 {float(evaluation.get('style_match_score', 0)):.1f}/100；"
+                f"去 AI 痕迹 {float(evaluation.get('anti_ai_score', 0)):.1f}/100。\n"
             )
 
         try:
@@ -6461,6 +6473,8 @@ class DeepSeekChatGUI(QMainWindow):
                     xp_mode=xp_mode,
                     style_audit=style_audit,
                     content_lock=content_lock,
+                    style_profile_metrics=style_profile_metrics,
+                    style_profile_name=style_profile_name,
                     max_repair_rounds=max_repair_rounds,
                 ),
                     progress=progress,
@@ -6471,6 +6485,7 @@ class DeepSeekChatGUI(QMainWindow):
                     f"[Agent Supervision] 完成；工具调用 {len(supervised.tool_calls)} 次，"
                     f"修复轮次 {report.get('repair_rounds', 0)}。\n"
                 )
+                show_local_evaluation(report)
                 return supervised.content, report
 
             from utils.supervision import supervise_chapter
@@ -6488,6 +6503,8 @@ class DeepSeekChatGUI(QMainWindow):
                 xp_mode=xp_mode,
                 style_audit=style_audit,
                 content_lock=content_lock,
+                style_profile_metrics=style_profile_metrics,
+                style_profile_name=style_profile_name,
                 max_repair_rounds=max_repair_rounds,
                 progress=progress,
                 repair_change_callback=show_repair_changes,
@@ -6504,7 +6521,9 @@ class DeepSeekChatGUI(QMainWindow):
                     f"[Supervision] Completed{coverage}; {len(result.unresolved_issues)} risks remain. "
                     f"Keeping the last valid chapter after {result.repair_rounds} repair rounds.\n"
                 )
-            return final_content, result.to_dict()
+            report = result.to_dict()
+            show_local_evaluation(report)
+            return final_content, report
         except Exception as e:
             self._stream_signals.token.emit(f"[Supervision] Skipped after error: {e}\n")
             return content, {
@@ -6710,6 +6729,7 @@ class DeepSeekChatGUI(QMainWindow):
                 ),
                 agent_mode=agent_plan is not None,
                 max_repair_rounds=1 if style_contest else 2,
+                style_profile=resolved_style.profile,
             )
             if style_selection_report:
                 supervision_report["style_candidate_selection"] = style_selection_report
@@ -7319,6 +7339,7 @@ class DeepSeekChatGUI(QMainWindow):
                     task_context="\n".join([chapter_title, requirement, plot]),
                 ),
                 max_repair_rounds=1 if style_contest else 2,
+                style_profile=resolved_style.profile,
             )
             if style_selection_report:
                 supervision_report["style_candidate_selection"] = style_selection_report
@@ -9652,6 +9673,7 @@ class DeepSeekChatGUI(QMainWindow):
                             resolved_style,
                             task_context="\n".join([chapter_title, req, plot]),
                         ),
+                        style_profile=resolved_style.profile,
                     )
 
                     new_version = self._novel_mgr.get_next_version(self._book_title, chapter_num)

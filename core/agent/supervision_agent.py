@@ -26,6 +26,8 @@ class SupervisionRequest:
     style_audit: str = ""
     content_lock: str = ""
     max_repair_rounds: int = 2
+    style_profile_metrics: dict = field(default_factory=dict)
+    style_profile_name: str = ""
 
 
 @dataclass
@@ -108,6 +110,8 @@ class AgentSupervisionService:
             xp_mode=request.xp_mode,
             style_audit=request.style_audit,
             content_lock=request.content_lock,
+            style_profile_metrics=request.style_profile_metrics,
+            style_profile_name=request.style_profile_name,
             max_repair_rounds=max(0, min(2, int(request.max_repair_rounds))),
             progress=progress,
             repair_change_callback=repair_change_callback,

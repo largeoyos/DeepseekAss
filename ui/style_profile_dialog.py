@@ -22,6 +22,7 @@ from PyQt6.QtWidgets import (
     QWidget,
     QLineEdit,
 )
+from core.style_evaluation import evaluate_style_text
 
 from core.style_profiles import (
     StyleAnchor,
@@ -130,6 +131,7 @@ class StyleProfileDialog(QDialog):
             ("复制", self._duplicate_selected),
             ("用当前书重新提取", self._reextract_selected),
             ("删除", self._delete_selected),
+            ("评测文本", self._evaluate_text),
         ):
             button = QPushButton(label)
             button.clicked.connect(callback)
@@ -258,6 +260,60 @@ class StyleProfileDialog(QDialog):
             profile = self.repository.duplicate(profile_id, name)
             self._refresh(profile.profile_id)
             self.profiles_changed.emit()
+
+    def _evaluate_text(self) -> None:
+        profile = self.repository.get(self._selected_id())
+        if profile is None:
+            QMessageBox.information(self, "文风评测", "请先选择一个文风档案。")
+            return
+        options = ["选择文本文件"]
+        if self.book_title:
+            options.append("当前书籍活跃路径")
+        choice, ok = QInputDialog.getItem(
+            self, "文风评测", "选择要评测的正文来源：", options, 0, False,
+        )
+        if not ok:
+            return
+        source_name = ""
+        text = ""
+        if choice == "当前书籍活跃路径":
+            documents = self._book_documents()
+            text = "\n\n".join(item.text for item in documents if item.text.strip())
+            source_name = self.book_title
+        else:
+            path, _ = QFileDialog.getOpenFileName(
+                self, "选择待评测正文", "", "文本文件 (*.txt *.md *.html *.htm)"
+            )
+            if not path:
+                return
+            text = _read_text(path)
+            source_name = os.path.basename(path)
+        if len(text.strip()) < 100:
+            QMessageBox.warning(self, "文风评测", "待评测正文过短，至少需要约 100 字。")
+            return
+
+        report = evaluate_style_text(profile, text)
+        dialog = QDialog(self)
+        dialog.setWindowTitle(f"文风评测 · {source_name}")
+        layout = QVBoxLayout(dialog)
+        summary = QLabel(
+            f"目标档案：{profile.name}　文风匹配：{report.style_match_score:.1f}/100　"
+            f"去 AI 痕迹：{report.anti_ai_score:.1f}/100"
+        )
+        summary.setWordWrap(True)
+        layout.addWidget(summary)
+        detail = QTextEdit()
+        detail.setReadOnly(True)
+        detail.setPlainText(report.render_text())
+        layout.addWidget(detail, stretch=1)
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(dialog.accept)
+        layout.addWidget(close_btn)
+        apply_responsive_dialog_size(
+            dialog, 820, 700, minimum_width=680, minimum_height=520,
+            width_ratio=0.66, height_ratio=0.76,
+        )
+        dialog.exec()
 
     def _delete_selected(self) -> None:
         profile = self.repository.get(self._selected_id())

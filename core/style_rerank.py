@@ -6,7 +6,7 @@ import re
 from dataclasses import asdict, dataclass, field
 
 from core.style_profiles import ResolvedStyle, calculate_style_match_score, render_style_audit
-from utils.supervision import collect_style_tic_counts
+from core.style_evaluation import evaluate_style_text
 
 
 @dataclass
@@ -156,8 +156,8 @@ def select_best_style_candidate(
     local_style = [calculate_style_match_score(profile_metrics, item) for item in candidates]
     local_natural: list[float] = []
     for item in candidates:
-        tic_count = sum(collect_style_tic_counts(item).values())
-        local_natural.append(max(35.0, 100.0 - min(60.0, tic_count * 4.0)))
+        evaluation = evaluate_style_text(profile_metrics, item)
+        local_natural.append(evaluation.anti_ai_score)
 
     judge_data: dict = {}
     judge_error = ""
