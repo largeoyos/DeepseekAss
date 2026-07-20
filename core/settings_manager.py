@@ -25,6 +25,9 @@ DEFAULT_SETTINGS = {
     "custom_models": [],
     "current_preset": "狂野",
     "presets": DEFAULT_PRESETS,
+    "default_genre": "none",
+    "default_style_profile_id": "",
+    "default_style_strength": "standard",
     "theme": "dark",
     # Timed snapshots are useful for long editing sessions, but are opt-in so
     # they do not add background task messages for people who do not need them.

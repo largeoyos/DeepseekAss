@@ -27,8 +27,11 @@ from PyQt6.QtWidgets import (
     QWidget,
 )
 
+from config import Config
 from core.auth_manager import AuthError, AuthManager
 from core.settings_manager import DEFAULT_PRESETS, SettingsManager
+from core.style_profiles import STYLE_STRENGTH_LABELS, StyleProfileRepository
+from utils.genre_styles import GENRES
 
 
 class _SettingsAsyncSignals(QObject):
@@ -81,7 +84,7 @@ class SettingsDialog(QDialog):
         layout = QVBoxLayout(self)
         tabs = QTabWidget()
         tabs.addTab(self._build_api_tab(), "API 与模型")
-        tabs.addTab(self._build_models_tab(), "生成参数")
+        tabs.addTab(self._build_models_tab(), "写作默认值与参数")
         tabs.addTab(self._build_account_tab(), "账号安全")
         tabs.addTab(self._build_data_tab(), "数据管理")
         tabs.addTab(self._build_appearance_tab(), "外观")
@@ -97,8 +100,69 @@ class SettingsDialog(QDialog):
         layout.addLayout(row)
 
     def _build_models_tab(self) -> QWidget:
-        page = QWidget()
-        layout = QVBoxLayout(page)
+        page = QScrollArea()
+        page.setWidgetResizable(True)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+
+        defaults_group = QGroupBox("新建小说与运行默认值")
+        defaults_layout = QVBoxLayout(defaults_group)
+        defaults_form = QFormLayout()
+
+        self._default_model_combo = QComboBox()
+        self._default_model_combo.setEditable(True)
+        self._default_model_combo.addItem("正文 Pro · 其余任务 Flash（省费）", "pro_body_flash_aux")
+        known_models = []
+        configured_model = str((self._api_config.get("text") or {}).get("model", ""))
+        for model in [
+            configured_model,
+            Config.MODEL_V4_FLASH,
+            Config.MODEL_V4_PRO,
+            *(self._settings.get("favorite_models") or []),
+            *(self._settings.get("custom_models") or []),
+            str(self._settings.get("last_model") or ""),
+        ]:
+            if model and model not in known_models:
+                known_models.append(model)
+                self._default_model_combo.addItem(model, model)
+        model_route = str(self._settings.get("model_routing_mode") or "standard")
+        model_value = "pro_body_flash_aux" if model_route == "pro_body_flash_aux" else str(self._settings.get("last_model") or configured_model)
+        model_index = self._default_model_combo.findData(model_value)
+        self._default_model_combo.setCurrentIndex(max(0, model_index))
+
+        self._default_preset_combo = QComboBox()
+        self._default_genre_combo = QComboBox()
+        for genre in GENRES:
+            self._default_genre_combo.addItem(genre.display_name, genre.key)
+        genre_index = self._default_genre_combo.findData(str(self._settings.get("default_genre") or "none"))
+        self._default_genre_combo.setCurrentIndex(max(0, genre_index))
+
+        self._default_style_combo = QComboBox()
+        self._default_style_strength_combo = QComboBox()
+        for key, label in STYLE_STRENGTH_LABELS.items():
+            self._default_style_strength_combo.addItem(label, key)
+        strength_index = self._default_style_strength_combo.findData(
+            str(self._settings.get("default_style_strength") or "standard")
+        )
+        self._default_style_strength_combo.setCurrentIndex(max(0, strength_index))
+        self._refresh_default_style_profiles()
+
+        defaults_form.addRow("默认模型", self._default_model_combo)
+        defaults_form.addRow("默认生成参数", self._default_preset_combo)
+        defaults_form.addRow("默认题材", self._default_genre_combo)
+        defaults_form.addRow("默认文风", self._default_style_combo)
+        defaults_form.addRow("默认文风强度", self._default_style_strength_combo)
+        defaults_layout.addLayout(defaults_form)
+        default_actions = QHBoxLayout()
+        edit_style_btn = QPushButton("管理 / 修改文风档案")
+        edit_style_btn.clicked.connect(self._manage_style_profiles)
+        save_defaults_btn = QPushButton("保存默认项")
+        save_defaults_btn.clicked.connect(self._save_writing_defaults)
+        default_actions.addWidget(edit_style_btn)
+        default_actions.addStretch()
+        default_actions.addWidget(save_defaults_btn)
+        defaults_layout.addLayout(default_actions)
+        layout.addWidget(defaults_group)
 
         preset_group = QGroupBox("参数预设")
         preset_layout = QVBoxLayout(preset_group)
@@ -137,8 +201,79 @@ class SettingsDialog(QDialog):
         preset_layout.addLayout(row)
         layout.addWidget(preset_group)
 
+        layout.addStretch()
+        page.setWidget(content)
         self._refresh_model_and_preset_lists()
         return page
+
+    def _refresh_default_style_profiles(self) -> None:
+        if not hasattr(self, "_default_style_combo"):
+            return
+        selected = str(self._default_style_combo.currentData() or "")
+        if not selected:
+            selected = str(self._settings.get("default_style_profile_id") or "")
+        self._default_style_combo.blockSignals(True)
+        self._default_style_combo.clear()
+        self._default_style_combo.addItem("不指定", "")
+        parent = self.parent()
+        manager = getattr(parent, "_novel_manager", None)
+        if manager is not None:
+            for profile in StyleProfileRepository(manager).list_profiles():
+                self._default_style_combo.addItem(f"{profile.name} · v{profile.revision}", profile.profile_id)
+        index = self._default_style_combo.findData(selected)
+        self._default_style_combo.setCurrentIndex(index if index >= 0 else 0)
+        self._default_style_combo.blockSignals(False)
+
+    def _manage_style_profiles(self) -> None:
+        parent = self.parent()
+        manager = getattr(parent, "_novel_manager", None)
+        client = getattr(parent, "_client", None)
+        if manager is None or client is None:
+            QMessageBox.warning(self, "无法打开", "当前窗口无法访问文风档案库。")
+            return
+        from ui.style_profile_dialog import StyleProfileDialog
+        logged_client = (
+            parent._usage_logged_client("style_profile_extract")
+            if hasattr(parent, "_usage_logged_client") else client
+        )
+        book_title = parent._get_current_book_title() if hasattr(parent, "_get_current_book_title") else ""
+        dialog = StyleProfileDialog(
+            self, manager, logged_client, client.model, book_title=book_title or ""
+        )
+        dialog.exec()
+        self._refresh_default_style_profiles()
+
+    def _save_writing_defaults(self) -> None:
+        settings = self._settings_manager.load()
+        model_text = self._default_model_combo.currentText().strip()
+        model_index = self._default_model_combo.currentIndex()
+        item_text = (
+            self._default_model_combo.itemText(model_index)
+            if model_index >= 0 else ""
+        )
+        model_value = str(self._default_model_combo.currentData() or model_text)
+        if model_text and model_text != item_text:
+            model_value = model_text
+        if model_value == "pro_body_flash_aux":
+            settings["model_routing_mode"] = "pro_body_flash_aux"
+            settings["last_model"] = Config.MODEL_V4_FLASH
+        elif model_value:
+            settings["model_routing_mode"] = "standard"
+            settings["last_model"] = model_value
+            known = list(settings.get("custom_models") or [])
+            if model_value not in known:
+                known.append(model_value)
+                settings["custom_models"] = known
+        settings["current_preset"] = str(self._default_preset_combo.currentText() or "狂野")
+        settings["default_genre"] = str(self._default_genre_combo.currentData() or "none")
+        settings["default_style_profile_id"] = str(self._default_style_combo.currentData() or "")
+        settings["default_style_strength"] = str(
+            self._default_style_strength_combo.currentData() or "standard"
+        )
+        self._settings_manager.save(settings)
+        self._settings = settings
+        self._settings_changed_callback()
+        QMessageBox.information(self, "已保存", "新建小说、模型和生成参数默认项已保存。")
 
     def _build_api_tab(self) -> QWidget:
         page = QWidget()
@@ -665,6 +800,14 @@ class SettingsDialog(QDialog):
             QMessageBox.warning(self, title, message)
     def _refresh_model_and_preset_lists(self) -> None:
         self._settings = self._settings_manager.load()
+        if hasattr(self, "_default_preset_combo"):
+            selected = str(self._settings.get("current_preset") or "狂野")
+            self._default_preset_combo.blockSignals(True)
+            self._default_preset_combo.clear()
+            self._default_preset_combo.addItems(list((self._settings.get("presets") or {}).keys()))
+            self._default_preset_combo.setCurrentText(selected)
+            self._default_preset_combo.blockSignals(False)
+        self._refresh_default_style_profiles()
         self._preset_list.clear()
         self._preset_list.addItems(list((self._settings.get("presets") or {}).keys()))
         if self._preset_list.count():

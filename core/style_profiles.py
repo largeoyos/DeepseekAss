@@ -21,6 +21,9 @@ STYLE_STRENGTH_LABELS = {
     "standard": "标准",
     "strict": "严格",
 }
+STYLE_ANCHOR_FACETS = (
+    "general", "dialogue", "action", "psychology", "environment", "ending",
+)
 
 
 def _now() -> str:
@@ -465,7 +468,7 @@ class StyleExtractionService:
             },
             avoid_rules=_string_list(data.get("avoid_rules"), limit=8),
             metrics=metrics or {},
-            anchors=anchors[:12],
+            anchors=anchors[:20],
         )
         return profile
 
@@ -493,7 +496,7 @@ class StyleExtractionService:
             for key, rules in profile.scene_facets.items():
                 facets[key] = _dedup_strings([*facets.get(key, []), *rules])[:6]
         first.scene_facets = facets
-        first.anchors = _dedup_anchors(anchor for profile in group for anchor in profile.anchors)[:12]
+        first.anchors = _dedup_anchors(anchor for profile in group for anchor in profile.anchors)[:20]
         first.created_at = first.updated_at = _now()
         return first
 
@@ -537,7 +540,9 @@ def style_profile_similarity(left: StyleProfile, right: StyleProfile) -> float:
     return round((sum(numeric_scores) / len(numeric_scores)) * 0.55 + semantic * 0.45, 4)
 
 
-def _anchor_facet(text: str) -> str:
+def _anchor_facet(text: str, *, is_ending: bool = False) -> str:
+    if is_ending:
+        return "ending"
     dialogue = len(re.findall(r"[“\"『「].+?[”\"』」]", text, re.S))
     if dialogue >= 2:
         return "dialogue"
@@ -576,28 +581,35 @@ def select_style_anchors(documents: list[StyleSourceDocument]) -> list[StyleAnch
         if buffer:
             passages.append(buffer)
         passages = [item.strip() for item in passages if len(item.strip()) >= 120]
-        if len(passages) < 6 and len(document.text) >= 720:
-            step = max(1, (len(document.text) - 500) // 5)
-            passages.extend(document.text[index * step:index * step + 500].strip() for index in range(6))
-        for passage in passages:
+        if len(passages) < 12 and len(document.text) >= 1200:
+            step = max(1, (len(document.text) - 500) // 11)
+            passages.extend(document.text[index * step:index * step + 500].strip() for index in range(12))
+        for index, passage in enumerate(passages):
             text = passage[:500]
             candidates.append(StyleAnchor(
-                facet=_anchor_facet(text), text=text, source_name=document.name,
+                facet=_anchor_facet(text, is_ending=index == len(passages) - 1),
+                text=text, source_name=document.name,
                 reason="保留句法、节奏和叙述组织方式，不复用其中事实",
             ))
     chosen: list[StyleAnchor] = []
-    for facet in ("general", "dialogue", "action", "psychology", "environment"):
+    for facet in STYLE_ANCHOR_FACETS:
         for item in (candidate for candidate in candidates if candidate.facet == facet):
-            if not any(_char_ngram_similarity(item.text, old.text) > 0.75 for old in chosen):
+            if not any(_char_ngram_similarity(item.text, old.text) > 0.78 for old in chosen):
                 chosen.append(item)
-            if sum(1 for old in chosen if old.facet == facet) >= 2:
+            if sum(1 for old in chosen if old.facet == facet) >= 3:
                 break
     for item in candidates:
-        if len(chosen) >= 12:
+        if len(chosen) >= 20:
             break
-        if not any(_char_ngram_similarity(item.text, old.text) > 0.75 for old in chosen):
+        if not any(_char_ngram_similarity(item.text, old.text) > 0.78 for old in chosen):
             chosen.append(item)
-    return chosen[:12]
+    if len(chosen) < 12:
+        for item in candidates:
+            if item not in chosen and not any(item.text == old.text for old in chosen):
+                chosen.append(item)
+                if len(chosen) >= 12:
+                    break
+    return chosen[:20]
 
 
 def resolve_style(novel_manager, title: str, *, profile_id: str = "follow_book",
@@ -619,15 +631,62 @@ def _select_runtime_anchors(profile: StyleProfile, task_context: str, count: int
         ("action", r"战斗|追逐|动作|打斗|逃跑|冲突"),
         ("psychology", r"心理|回忆|犹豫|反思|内心"),
         ("environment", r"环境|风景|场景|天气|氛围"),
+        ("ending", r"结尾|收束|尾声|悬念|章末"),
     ):
         if re.search(pattern, context):
             preferred.append(facet)
-    preferred.append("general")
-    ordered = sorted(
-        profile.anchors,
-        key=lambda item: (preferred.index(item.facet) if item.facet in preferred else len(preferred), item.source_name),
-    )
-    return ordered[:count]
+
+    buckets: dict[str, list[StyleAnchor]] = {facet: [] for facet in STYLE_ANCHOR_FACETS}
+    for item in profile.anchors:
+        facet = item.facet if item.facet in buckets else "general"
+        buckets[facet].append(item)
+    chosen: list[StyleAnchor] = []
+
+    def add(item: StyleAnchor) -> None:
+        if len(chosen) >= count:
+            return
+        if item in chosen:
+            return
+        if any(_char_ngram_similarity(item.text, old.text) > 0.88 for old in chosen):
+            return
+        chosen.append(item)
+
+    for facet in preferred:
+        for item in buckets.get(facet, []):
+            add(item)
+            if sum(1 for old in chosen if old.facet == facet) >= 2:
+                break
+
+    for item in buckets["general"]:
+        add(item)
+        if any(old.facet == "general" for old in chosen):
+            break
+
+    if count >= 7:
+        for item in buckets["ending"]:
+            add(item)
+            if any(old.facet == "ending" for old in chosen):
+                break
+
+    order = list(dict.fromkeys([*preferred, "general", *STYLE_ANCHOR_FACETS]))
+    positions = {facet: 0 for facet in order}
+    while len(chosen) < count:
+        added = False
+        for facet in order:
+            items = buckets.get(facet, [])
+            while positions[facet] < len(items):
+                item = items[positions[facet]]
+                positions[facet] += 1
+                before = len(chosen)
+                add(item)
+                if len(chosen) > before:
+                    added = True
+                    break
+            if len(chosen) >= count:
+                break
+        if not added:
+            break
+    return chosen[:count]
 
 
 def render_style_prompt(resolved: ResolvedStyle, *, task_context: str = "") -> str:
@@ -635,15 +694,23 @@ def render_style_prompt(resolved: ResolvedStyle, *, task_context: str = "") -> s
     if profile is None:
         return ""
     strength = resolved.strength if resolved.strength in STYLE_STRENGTHS else "standard"
-    anchor_count = {"reference": 1, "standard": 3, "strict": 5}[strength]
+    anchor_count = {"reference": 2, "standard": 6, "strict": 10}[strength]
     rules = profile.stable_rules[:4] if strength == "reference" else profile.stable_rules[:12]
     parts = [
         f"【指定文风档案：{profile.name}｜{STYLE_STRENGTH_LABELS[strength]}】",
-        "只模仿下列文本形式，不得复用范例中的人物、地点、剧情、设定、专名或原句。",
+        "下列核心例文是文风的首要依据；抽象规则只用于解释例文，二者冲突时以例文实际呈现的行文为准。",
+        "重点贴近例文可观察到的用词范围、虚实词比例、动词和形容词选择、句子长度、分句连接、标点停顿、段落推进、对白衔接、意象密度与段尾落点。",
+        "不得复用例文中的人物、地点、剧情、设定、专名或连续原句；模仿的是语言组织方式，不是例文事实。",
+        "不得用模型惯用套话替代例文没有的表达，也不要擅自添加例文未体现的空泛比喻、情绪总结、整齐排比或拔高式段尾。",
         "执行优先级：安全约束和用户明确要求 > 世界书与连续性 > 本文风档案 > 题材/基调 > 通用 humanizer。",
         "若与轻快、严肃、文艺等粗粒度写作基调冲突，以本文风档案为准。",
         "若通用 humanizer 与档案的具体写法冲突，以档案为准；防注水、防重复和禁止机械复述仍然有效。",
     ]
+    anchors = _select_runtime_anchors(profile, task_context, anchor_count)
+    if anchors:
+        parts.append("【核心模仿例文（首要依据；只学语言，不续接内容）】")
+        parts.extend(f"例文{i}（{item.facet}）：\n{item.text}" for i, item in enumerate(anchors, 1))
+        parts.append("先在内部归纳以上例文反复出现的词语层级、句法骨架和段落呼吸，再以同一语言习惯写新内容；不要输出归纳过程。")
     dimensions = [
         ("叙事人称与视角", "；".join(filter(None, [profile.narrative_person, profile.viewpoint_distance]))),
         ("句段节奏", profile.sentence_rhythm),
@@ -663,28 +730,63 @@ def render_style_prompt(resolved: ResolvedStyle, *, task_context: str = "") -> s
         facet_rules = _dedup_strings(item for values in profile.scene_facets.values() for item in values)
         if facet_rules:
             parts.append("【场景写法】\n" + "\n".join(f"- {item}" for item in facet_rules[:12]))
+        metrics = profile.metrics or {}
+        metric_parts = []
+        if metrics.get("sentence_length_avg"):
+            metric_parts.append(f"平均句长约 {metrics['sentence_length_avg']} 字")
+        if metrics.get("paragraph_length_avg"):
+            metric_parts.append(f"平均段长约 {metrics['paragraph_length_avg']} 字")
+        if metrics.get("dialogue_ratio") is not None:
+            metric_parts.append(f"对白字符比例约 {float(metrics.get('dialogue_ratio') or 0) * 100:.1f}%")
+        if metric_parts:
+            parts.append(
+                "【量化节奏参考】\n- " + "；".join(metric_parts)
+                + "。允许随场景自然波动，但整章不得系统性偏离。"
+            )
     if strength != "reference" and profile.avoid_rules:
         parts.append("【避免】\n" + "\n".join(f"- {item}" for item in profile.avoid_rules[:8]))
-    anchors = _select_runtime_anchors(profile, task_context, anchor_count)
-    if anchors:
-        parts.append("【形式范例（只学写法，不得续接或复用内容）】")
-        parts.extend(f"范例{i}（{item.facet}）：\n{item.text}" for i, item in enumerate(anchors, 1))
     if strength == "reference":
-        parts.append("文风是柔性参考；只在明显偏离上述核心特征时调整。")
+        parts.append("以核心例文为柔性校准，只修正明显脱离例文语言习惯的段落。")
     elif strength == "strict":
-        parts.append("严格保持上述视角、句段节奏、对白组织和情绪表达；不得自行切换成通用网文腔或模板化抒情。")
+        parts.append("严格以核心例文而非通用写作套路为最终判据，持续保持其用词、造句、停顿、段落推进和收束习惯。")
+        parts.append(
+            "写作前在内部逐篇校准例文；每写完二至三段就对照最相近的例文检查一次，改掉模板化抒情和不属于该例文语域的词句。只输出正文，不输出检查过程。"
+        )
+    else:
+        parts.append("正文应首先像核心例文本身，再满足抽象规则；出现选择时优先采用例文中已有依据的措辞和句法习惯。")
     return "\n\n".join(parts)
 
-
-def render_style_audit(resolved: ResolvedStyle) -> str:
+def render_style_audit(resolved: ResolvedStyle, *, task_context: str = "") -> str:
     if not resolved.active:
         return ""
     profile = resolved.profile
     assert profile is not None
-    return (
+    parts = [
         f"检查正文是否符合文风档案“{profile.name}”（强度：{STYLE_STRENGTH_LABELS[resolved.strength]}），重点检查"
         "叙事人称与视角距离、句段节奏、对白组织、措辞层次、描写比例、情绪表达和段尾收束。"
         "只把重复或系统性偏离列为 style_mismatch；参考强度仅报告严重偏离，标准强度报告明显系统性偏离，"
         "严格强度报告严重偏离及重复出现的轻微偏离。范例内容本身不属于必须复现的事实。"
-    )
+    ]
 
+    dimensions = [
+        profile.narrative_person, profile.viewpoint_distance, profile.sentence_rhythm,
+        profile.dialogue_habits, profile.diction, profile.description_balance,
+        profile.imagery, profile.emotion_expression, profile.transitions, profile.endings,
+    ]
+    if any(dimensions):
+        parts.append("档案核心特征：" + "；".join(item for item in dimensions if item))
+    if profile.stable_rules:
+        parts.append("必须对照的稳定规则：" + "；".join(profile.stable_rules[:12]))
+    if profile.avoid_rules:
+        parts.append("必须避免：" + "；".join(profile.avoid_rules[:8]))
+    if resolved.strength == "strict" and profile.metrics:
+        parts.append("量化统计参考：" + json.dumps(profile.metrics, ensure_ascii=False))
+    audit_count = {"reference": 1, "standard": 3, "strict": 6}.get(resolved.strength, 3)
+    anchors = _select_runtime_anchors(profile, task_context, audit_count)
+    if anchors:
+        parts.append(
+            "审查时以下列例文的实际用词、句法、停顿和段落组织为主要对照；规则只作辅助，"
+            "不得要求正文复现例文事实或原句：\n"
+            + "\n\n".join(f"对照例文{i}（{item.facet}）：\n{item.text}" for i, item in enumerate(anchors, 1))
+        )
+    return "\n".join(parts)

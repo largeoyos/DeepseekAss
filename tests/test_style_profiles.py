@@ -119,17 +119,32 @@ class StyleProfileTests(unittest.TestCase):
         self.assertEqual(meta.style_profile_id, "")
         self.assertEqual(meta.style_strength, "standard")
 
-    def test_strengths_select_one_three_and_five_anchors(self):
+    def test_strengths_select_two_six_and_ten_examples(self):
+        texts = [
+            "形式样本：雨夜里只剩檐角滴水。",
+            "形式样本：铁门骤然合拢，脚步逼近。",
+            "形式样本：她没有回答，只把茶盏推远。",
+            "形式样本：山脊被晨雾切成深浅两层。",
+            "形式样本：旧信压在抽屉底部，墨迹已经褪色。",
+            "形式样本：他冲过回廊，侧身避开迎面的刀。",
+            "形式样本：灯芯爆响一下，房间重归寂静。",
+            "形式样本：门外无人，雪地却多了一行脚印。",
+            "形式样本：潮声隔着窗纸，一阵近，一阵远。",
+            "形式样本：杯沿留着一道浅淡的口红印。",
+            "形式样本：他把钥匙放下，金属声很轻。",
+        ]
         profile = StyleProfile(
             name="样本文风",
             stable_rules=["使用动作承载情绪"],
             avoid_rules=["避免总结"],
-            anchors=[StyleAnchor(facet="general", text=f"范例正文 {index}") for index in range(6)],
+            anchors=[StyleAnchor(facet="general", text=text) for text in texts],
         )
-        for strength, count in (("reference", 1), ("standard", 3), ("strict", 5)):
+        for strength, count in (("reference", 2), ("standard", 6), ("strict", 10)):
             prompt = render_style_prompt(ResolvedStyle(profile, strength))
-            self.assertEqual(prompt.count("范例正文"), count)
+            self.assertEqual(prompt.count("形式样本"), count)
             self.assertIn("以本文风档案为准", prompt)
+            self.assertLess(prompt.index("核心模仿例文"), prompt.index("稳定写法"))
+            self.assertIn("二者冲突时以例文实际呈现的行文为准", prompt)
 
     def test_fifty_thousand_characters_are_all_analyzed(self):
         source = "\n\n".join(f"我沿着第{index}条长街往前走，风把灯影压低。" * 12 for index in range(250))
@@ -143,7 +158,32 @@ class StyleProfileTests(unittest.TestCase):
         self.assertEqual(profile.sample_chars, len(source))
         self.assertEqual(profile.chunk_count, len(split_style_text(source)))
         self.assertEqual(fake.chat.completions.calls, profile.chunk_count + 1)
-        self.assertGreaterEqual(len(profile.anchors), 6)
+        self.assertTrue(12 <= len(profile.anchors) <= 20)
+        self.assertIn("ending", {item.facet for item in profile.anchors})
+
+    def test_strict_runtime_prefers_scene_facets_and_keeps_ending(self):
+        profile = StyleProfile(
+            name="场景文风",
+            anchors=[
+                StyleAnchor(facet="action", text="动作片段甲：刀锋贴着石墙掠过。"),
+                StyleAnchor(facet="action", text="动作片段乙：他伏身冲进狭窄门洞。"),
+                StyleAnchor(facet="dialogue", text="对白片段：她问完便不再开口。"),
+                StyleAnchor(facet="psychology", text="心理片段：迟疑像细刺停在心口。"),
+                StyleAnchor(facet="environment", text="环境片段：长街的雾慢慢漫过台阶。"),
+                StyleAnchor(facet="general", text="通用片段：钟声落下，众人继续赶路。"),
+                StyleAnchor(facet="ending", text="章末片段：门后传来第二个人的呼吸。"),
+                StyleAnchor(facet="general", text="补充片段：纸页翻到一半忽然停住。"),
+                StyleAnchor(facet="dialogue", text="对白片段乙：他说到这里，忽然看向窗外。"),
+                StyleAnchor(facet="psychology", text="心理片段乙：那个念头沉下去，又浮上来。"),
+                StyleAnchor(facet="environment", text="环境片段乙：潮气沿着砖缝缓缓上升。"),
+            ],
+        )
+        prompt = render_style_prompt(
+            ResolvedStyle(profile, "strict"), task_context="战斗追逐，并在章末留下悬念"
+        )
+        self.assertEqual(prompt.count("片段"), 10)
+        self.assertIn("例文1（action）", prompt)
+        self.assertIn("（ending）", prompt)
 
     def test_mixed_documents_split_into_multiple_profiles(self):
         first = ("我沿着长街往前走。" * 700) + "\n\n" + ("“走。”我说。" * 300)

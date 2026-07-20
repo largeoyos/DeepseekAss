@@ -70,7 +70,15 @@ class StyleProfileDialog(QDialog):
         self._signals.completed.connect(self._on_extraction_completed)
         self._signals.failed.connect(self._on_extraction_failed)
         self._refresh()
-        apply_responsive_dialog_size(self, width_ratio=0.82, height_ratio=0.82, min_width=900, min_height=620)
+        apply_responsive_dialog_size(
+            self,
+            1100,
+            760,
+            minimum_width=900,
+            minimum_height=620,
+            width_ratio=0.82,
+            height_ratio=0.82,
+        )
 
     def _build_ui(self) -> None:
         root = QVBoxLayout(self)
@@ -112,7 +120,7 @@ class StyleProfileDialog(QDialog):
         form.addWidget(QLabel("应避免写法（每行一条）"))
         self._avoid = QTextEdit()
         form.addWidget(self._avoid, stretch=1)
-        form.addWidget(QLabel("代表范例（格式：类型|来源，下一行正文；用 --- 分隔）"))
+        form.addWidget(QLabel("核心模仿例文（最多20段；类型可用通用/对白/动作/心理/环境/章末；用 --- 分隔）"))
         self._anchors = QTextEdit()
         form.addWidget(self._anchors, stretch=2)
 
@@ -199,19 +207,29 @@ class StyleProfileDialog(QDialog):
         return result
 
     def _parse_anchors(self) -> list[StyleAnchor]:
+        facet_aliases = {
+            "通用": "general",
+            "对白": "dialogue",
+            "动作": "action",
+            "心理": "psychology",
+            "环境": "environment",
+            "章末": "ending",
+        }
         result: list[StyleAnchor] = []
         for block in self._anchors.toPlainText().split("\n---\n"):
             lines = block.strip().splitlines()
             if len(lines) < 2:
                 continue
             head = lines[0].split("|", 1)
+            raw_facet = head[0].strip() or "general"
+            facet = facet_aliases.get(raw_facet, raw_facet)
             result.append(StyleAnchor(
-                facet=head[0].strip() or "general",
+                facet=facet if facet in set(facet_aliases.values()) else "general",
                 source_name=head[1].strip() if len(head) > 1 else "手动",
                 text="\n".join(lines[1:]).strip()[:700],
                 reason="用户确认的形式范例",
             ))
-        return result[:12]
+        return result[:20]
 
     def _save_selected(self) -> None:
         profile = self.repository.get(self._selected_id())

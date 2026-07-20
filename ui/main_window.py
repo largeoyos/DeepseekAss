@@ -862,7 +862,9 @@ class DeepSeekChatGUI(QMainWindow):
 
         Config.API_KEY = text_api.get("api_key", "")
         Config.BASE_URL = text_api.get("base_url") or Config.BASE_URL
-        self._settings["last_model"] = text_api.get("model") or Config.MODEL_V4_FLASH
+        self._settings["last_model"] = (
+            self._settings.get("last_model") or text_api.get("model") or Config.MODEL_V4_FLASH
+        )
         self._model_options = self._build_model_options()
         image_api = self._api_config["image"]
         Config.IMAGE_API_KEY = image_api.get("api_key", "")
@@ -1197,7 +1199,9 @@ class DeepSeekChatGUI(QMainWindow):
     def _init_client(self) -> None:
         """创建初始聊天客户端（默认角色扮演模式）"""
         strategy = RolePlayStrategy()
-        model = (getattr(self, "_api_config", {}).get("text", {}) or {}).get("model")
+        model = self._settings.get("last_model") or (
+            getattr(self, "_api_config", {}).get("text", {}) or {}
+        ).get("model")
         if self._is_pro_body_flash_aux_mode():
             model = Config.MODEL_V4_FLASH
         self._client = DeepSeekChatClient(strategy=strategy, model=model or strategy.recommended_model)
@@ -1277,6 +1281,27 @@ class DeepSeekChatGUI(QMainWindow):
             self._preset_combo.blockSignals(False)
             self._on_preset_changed(self._preset_combo.currentText())
             self._settings_applying = False
+        if hasattr(self, "_novel_genre_combo"):
+            self._refresh_style_profile_controls()
+            default_genre = get_genre_display(str(self._settings.get("default_genre") or "none")) or "无特定风格"
+            default_style = str(self._settings.get("default_style_profile_id") or "")
+            default_strength = str(self._settings.get("default_style_strength") or "standard")
+            novel_title = ""
+            if hasattr(self, "_bookshelf_combo"):
+                value = self._bookshelf_combo.currentText().strip()
+                novel_title = value if value and not value.startswith("（暂无小说") else ""
+            if not novel_title:
+                self._novel_genre_combo.setCurrentText(default_genre)
+                self._set_combo_data(self._novel_style_profile_combo, default_style)
+                self._set_combo_data(self._novel_style_strength_combo, default_strength)
+            cont_title = ""
+            if hasattr(self, "_cont_bookshelf_combo"):
+                value = self._cont_bookshelf_combo.currentText().strip()
+                cont_title = value if value and not value.startswith("（暂无小说") else ""
+            if not cont_title and hasattr(self, "_cont_genre_combo"):
+                self._cont_genre_combo.setCurrentText(default_genre)
+                self._set_combo_data(self._cont_style_profile_combo, default_style)
+                self._set_combo_data(self._cont_style_strength_combo, default_strength)
         if hasattr(self, "_display"):
             self._apply_theme()
             has_messages = any(
@@ -1604,6 +1629,33 @@ class DeepSeekChatGUI(QMainWindow):
                 return
         event.accept()
 
+    @staticmethod
+    def _set_group_collapsible(group: QGroupBox, *, expanded: bool = False) -> None:
+        """Turn an existing group into a true space-saving foldout."""
+        base_title = group.title()
+
+        def set_layout_visible(layout, visible: bool) -> None:
+            for index in range(layout.count()):
+                item = layout.itemAt(index)
+                widget = item.widget()
+                child_layout = item.layout()
+                if widget is not None:
+                    widget.setVisible(visible)
+                elif child_layout is not None:
+                    set_layout_visible(child_layout, visible)
+
+        def toggle(checked: bool) -> None:
+            layout = group.layout()
+            if layout is not None:
+                set_layout_visible(layout, checked)
+            group.setTitle(("▼ " if checked else "▶ ") + base_title)
+            group.setMaximumHeight(16777215 if checked else 34)
+
+        group.setCheckable(True)
+        group.toggled.connect(toggle)
+        group.setChecked(expanded)
+        toggle(expanded)
+
     def _build_left_panel(self) -> QWidget:
         """构建左侧控制面板（含小说专属区域）"""
         scroll = QScrollArea()
@@ -1633,6 +1685,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._model_combo.currentTextChanged.connect(self._on_model_changed)
         self._model_combo.setToolTip("选择“正文 Pro”时，章节正文使用 Pro，摘要、世界书、监督等辅助任务使用 Flash。")
         model_layout.addWidget(self._model_combo)
+        self._set_group_collapsible(model_group)
         layout.addWidget(model_group)
 
         # ── 生成参数 ──
@@ -1725,6 +1778,7 @@ class DeepSeekChatGUI(QMainWindow):
         mt_row.addWidget(self._mt_spin, stretch=1)
         param_layout.addLayout(mt_row)
 
+        self._set_group_collapsible(param_group)
         layout.addWidget(param_group)
 
         # ── 操作按钮 ──
@@ -2058,6 +2112,9 @@ class DeepSeekChatGUI(QMainWindow):
         genre_row.addWidget(QLabel("题材"))
         self._novel_genre_combo = QComboBox()
         self._novel_genre_combo.addItems(GENRE_DISPLAY_NAMES)
+        default_genre = get_genre_display(str(self._settings.get("default_genre") or "none"))
+        if default_genre:
+            self._novel_genre_combo.setCurrentText(default_genre)
         self._novel_genre_combo.currentTextChanged.connect(self._on_novel_genre_changed)
         genre_row.addWidget(self._novel_genre_combo, stretch=1)
         style_layout.addLayout(genre_row)
@@ -2078,12 +2135,19 @@ class DeepSeekChatGUI(QMainWindow):
         self._novel_style_strength_combo = QComboBox()
         for key, label in STYLE_STRENGTH_LABELS.items():
             self._novel_style_strength_combo.addItem(label, userData=key)
+        self._set_combo_data(
+            self._novel_style_strength_combo,
+            str(self._settings.get("default_style_strength") or "standard"),
+        )
         profile_row.addWidget(self._novel_style_strength_combo)
         manage_style_btn = QPushButton("管理")
         manage_style_btn.clicked.connect(self._open_style_profile_manager)
         profile_row.addWidget(manage_style_btn)
         style_layout.addLayout(profile_row)
+        self._novel_style_profile_combo.currentIndexChanged.connect(self._on_novel_style_default_changed)
+        self._novel_style_strength_combo.currentIndexChanged.connect(self._on_novel_style_default_changed)
 
+        self._set_group_collapsible(style_group)
         layout.addWidget(style_group)
 
         self._xp_mode_check = QCheckBox("XP 模式（成人向创作提示词）")
@@ -2474,6 +2538,9 @@ class DeepSeekChatGUI(QMainWindow):
         cont_genre_row.addWidget(QLabel("题材"))
         self._cont_genre_combo = QComboBox()
         self._cont_genre_combo.addItems(GENRE_DISPLAY_NAMES)
+        default_genre = get_genre_display(str(self._settings.get("default_genre") or "none"))
+        if default_genre:
+            self._cont_genre_combo.setCurrentText(default_genre)
         self._cont_genre_combo.currentTextChanged.connect(self._on_cont_genre_changed)
         cont_genre_row.addWidget(self._cont_genre_combo, stretch=1)
         cont_style_layout.addLayout(cont_genre_row)
@@ -2494,12 +2561,19 @@ class DeepSeekChatGUI(QMainWindow):
         self._cont_style_strength_combo = QComboBox()
         for key, label in STYLE_STRENGTH_LABELS.items():
             self._cont_style_strength_combo.addItem(label, userData=key)
+        self._set_combo_data(
+            self._cont_style_strength_combo,
+            str(self._settings.get("default_style_strength") or "standard"),
+        )
         cont_profile_row.addWidget(self._cont_style_strength_combo)
         cont_manage_style_btn = QPushButton("管理")
         cont_manage_style_btn.clicked.connect(self._open_style_profile_manager)
         cont_profile_row.addWidget(cont_manage_style_btn)
         cont_style_layout.addLayout(cont_profile_row)
+        self._cont_style_profile_combo.currentIndexChanged.connect(self._on_cont_style_default_changed)
+        self._cont_style_strength_combo.currentIndexChanged.connect(self._on_cont_style_default_changed)
 
+        self._set_group_collapsible(cont_style_group)
         layout.addWidget(cont_style_group)
 
         self._cont_xp_mode_check = QCheckBox("XP 模式（成人向创作提示词）")
@@ -3907,6 +3981,7 @@ class DeepSeekChatGUI(QMainWindow):
         messages: list[dict],
         prompt_text: str,
         max_tokens: int,
+        temperature: float | None = None,
         emit_tokens: bool = True,
     ) -> tuple[str, dict, bool]:
         self._last_generation_stats = None
@@ -3922,7 +3997,7 @@ class DeepSeekChatGUI(QMainWindow):
         kwargs = {
             "model": body_model,
             "messages": messages,
-            "temperature": self._client.temperature,
+            "temperature": self._client.temperature if temperature is None else float(temperature),
             "top_p": self._client.top_p,
             "max_tokens": max_tokens,
             "frequency_penalty": self._client.frequency_penalty,
@@ -4745,7 +4820,11 @@ class DeepSeekChatGUI(QMainWindow):
             ) if combo is not None
         ]
         for combo in default_combos:
-            selected = combo.currentData() if combo.count() else ""
+            selected = (
+                combo.currentData()
+                if combo.count()
+                else self._settings.get("default_style_profile_id", "")
+            )
             combo.blockSignals(True)
             combo.clear()
             combo.addItem("未指定", userData="")
@@ -4763,6 +4842,31 @@ class DeepSeekChatGUI(QMainWindow):
                 combo.addItem(profile.name, userData=profile.profile_id)
             self._set_combo_data(combo, str(selected or "follow_book"))
             combo.blockSignals(False)
+
+    def _on_novel_style_default_changed(self, _index: int = -1) -> None:
+        if not hasattr(self, "_bookshelf_combo"):
+            return
+        title = self._bookshelf_combo.currentText().strip()
+        title = title if title and not title.startswith("（暂无小说") else ""
+        if not title or not hasattr(self, "_novel_style_profile_combo"):
+            return
+        self._novel_manager.save_meta(
+            title,
+            style_profile_id=str(self._novel_style_profile_combo.currentData() or ""),
+            style_strength=str(self._novel_style_strength_combo.currentData() or "standard"),
+        )
+
+    def _on_cont_style_default_changed(self, _index: int = -1) -> None:
+        if not hasattr(self, "_cont_bookshelf_combo"):
+            return
+        title = self._cont_bookshelf_combo.currentText().strip()
+        if not title or title.startswith("（暂无小说"):
+            return
+        self._novel_manager.save_meta(
+            title,
+            style_profile_id=str(self._cont_style_profile_combo.currentData() or ""),
+            style_strength=str(self._cont_style_strength_combo.currentData() or "standard"),
+        )
 
     def _open_style_profile_manager(self) -> None:
         title = self._get_current_book_title() or ""
@@ -4821,6 +4925,20 @@ class DeepSeekChatGUI(QMainWindow):
             self._cont_bookshelf_combo.addItem("（暂无小说，请新建）")
         self._cont_bookshelf_combo.blockSignals(False)
 
+    def _create_book_with_defaults(self, title: str) -> str:
+        """Create a book once and seed user-level writing defaults."""
+        normalized = str(title or "").strip()
+        existed = normalized in self._novel_manager.list_books()
+        path = self._novel_manager.create_book(normalized)
+        if not existed:
+            settings = self._settings_manager.load()
+            self._novel_manager.save_meta(
+                normalized,
+                genre=str(settings.get("default_genre") or "none"),
+                style_profile_id=str(settings.get("default_style_profile_id") or ""),
+                style_strength=str(settings.get("default_style_strength") or "standard"),
+            )
+        return path
     def _on_create_book(self) -> None:
         """新建小说"""
         title, ok = QInputDialog.getText(
@@ -4831,7 +4949,7 @@ class DeepSeekChatGUI(QMainWindow):
             if title.strip() in existing:
                 QMessageBox.warning(self, "警告", f"小说「{title.strip()}」已存在。")
                 return
-            self._novel_manager.create_book(title.strip())
+            self._create_book_with_defaults(title.strip())
             self._refresh_novel_bookshelf()
             self._bookshelf_combo.setCurrentText(title.strip())
 
@@ -5239,7 +5357,7 @@ class DeepSeekChatGUI(QMainWindow):
             if title.strip() in existing:
                 QMessageBox.warning(self, "警告", f"小说「{title.strip()}」已存在。")
                 return
-            self._novel_manager.create_book(title.strip())
+            self._create_book_with_defaults(title.strip())
             self._refresh_novel_bookshelf()
             self._cont_bookshelf_combo.setCurrentText(title.strip())
 
@@ -5419,7 +5537,7 @@ class DeepSeekChatGUI(QMainWindow):
             return
         genre_cfg = get_genre_by_display(self._novel_genre_combo.currentText())
         tone_cfg = get_tone_by_display(self._novel_tone_combo.currentText())
-        self._novel_manager.create_book(title)
+        self._create_book_with_defaults(title)
         self._novel_manager.save_meta(
             title,
             protagonist_bio=self._protagonist_edit.toPlainText().strip(),
@@ -5654,7 +5772,7 @@ class DeepSeekChatGUI(QMainWindow):
         if not title:
             QMessageBox.warning(self, "Agent 顾问", "请先选择或创建一本小说。")
             return
-        self._novel_manager.create_book(title)
+        self._create_book_with_defaults(title)
         self._agent_advisor_running = True
         self._agent_advisor_status.setText("顾问正在读取章节、世界书和作者规划……")
         if hasattr(self, "_agent_ask_advisor_btn"):
@@ -5876,7 +5994,7 @@ class DeepSeekChatGUI(QMainWindow):
         if not title:
             QMessageBox.warning(self, "提示", "请先设置小说标题。")
             return
-        self._novel_manager.create_book(title)
+        self._create_book_with_defaults(title)
         generation_target = self._novel_manager.get_active_generation_target(title)
         chapter_num = int(generation_target["chapter_num"])
         chapter_title = self._chapter_title_edit.text().strip() or f"第{chapter_num}章"
@@ -6067,7 +6185,7 @@ class DeepSeekChatGUI(QMainWindow):
         if not title:
             QMessageBox.warning(self, "提示", "请先设置小说标题。")
             return
-        self._novel_manager.create_book(title)
+        self._create_book_with_defaults(title)
         generation_target = self._novel_manager.get_active_generation_target(title)
         chapter_num = int(generation_target["chapter_num"])
         if not chapter_title:
@@ -6442,6 +6560,10 @@ class DeepSeekChatGUI(QMainWindow):
                 messages=messages,
                 prompt_text=user_prompt,
                 max_tokens=max(target_words * 2, self._client.max_tokens),
+                temperature=(
+                    min(self._client.temperature, 0.55)
+                    if resolved_style.active and resolved_style.strength == "strict" else None
+                ),
             )
             if cancelled:
                 self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
@@ -6799,7 +6921,7 @@ class DeepSeekChatGUI(QMainWindow):
                 book_title = os.path.basename(source_folder)
             if not book_title:
                 book_title = "续写作品"
-            self._novel_manager.create_book(book_title)
+            self._create_book_with_defaults(book_title)
             # 保存当前编辑器的设定内容到新书的 meta（防止 setCurrentText 触发信号清空）
             genre_cfg_cont = get_genre_by_display(self._cont_genre_combo.currentText())
             tone_cfg_cont = get_tone_by_display(self._cont_tone_combo.currentText())
@@ -7017,6 +7139,10 @@ class DeepSeekChatGUI(QMainWindow):
                 messages=messages,
                 prompt_text=user_prompt,
                 max_tokens=max(word_count * 2, self._client.max_tokens),
+                temperature=(
+                    min(self._client.temperature, 0.55)
+                    if resolved_style.active and resolved_style.strength == "strict" else None
+                ),
             )
             if cancelled:
                 self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
@@ -8327,7 +8453,7 @@ class DeepSeekChatGUI(QMainWindow):
 
                 si.token.emit(f"\n✅ 已确认 {len(sections)} 个段落\n")
                 si.token.emit("\n⏳ 第一步：创建小说，并按确认分段保存为章节节点…\n")
-                self._novel_manager.create_book(title)
+                self._create_book_with_defaults(title)
                 world_bible = WorldBible()
                 meta = self._novel_manager.load_meta(title)
                 for idx, (section_title, content) in enumerate(sections, 1):
@@ -8561,7 +8687,7 @@ class DeepSeekChatGUI(QMainWindow):
                 return
 
             # 创建小说
-            self._novel_manager.create_book(title)
+            self._create_book_with_defaults(title)
             world_bible = WorldBible()
 
             for idx, (chapter_num, fname, content) in enumerate(chapter_files, 1):
@@ -9340,6 +9466,10 @@ class DeepSeekChatGUI(QMainWindow):
                         messages=messages,
                         prompt_text=prompt_text,
                         max_tokens=max(target_words * 2, self._client.max_tokens),
+                        temperature=(
+                            min(parent._client.temperature, 0.55)
+                            if resolved_style.active and resolved_style.strength == "strict" else None
+                        ),
                     )
                     if cancelled:
                         parent._stream_signals.token.emit("\n\n⏹️ 已取消\n")
