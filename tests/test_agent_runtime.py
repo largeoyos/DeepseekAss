@@ -86,6 +86,46 @@ class AgentRuntimeTests(unittest.TestCase):
             self.assertIsNotNone(restored)
             self.assertEqual(run.run_id, restored.run_id)
 
+    def test_runtime_reuses_user_message_already_saved_by_failed_backend(self):
+        with tempfile.TemporaryDirectory() as root:
+            manager = NovelManager(bookshelf_root=root)
+            manager.create_book("book")
+            manifest = manager.ensure_workspace("book")
+            completions = FakeCompletions([response("fallback completed")])
+            runtime = AgentRuntime(
+                novel_manager=manager,
+                client=FakeClient(completions),
+                tool_registry=build_domain_tool_registry(manager),
+            )
+            session = runtime.create_session("book", "writing_orchestrator")
+            request = AgentRunRequest(
+                manifest.book_id,
+                session.session_id,
+                "writing_orchestrator",
+                "same request",
+                model="fake",
+                book_title="book",
+            )
+
+            # Simulate LangGraph persisting the request before automatic fallback.
+            repository = AgentRepository(manager.get_workspace("book"))
+            saved = repository.load_session(session.session_id)
+            saved.messages.append({
+                "role": "user",
+                "content": request.user_message,
+                "request_id": request.request_id,
+                "at": "2026-07-20T00:00:00",
+            })
+            repository.save_session(saved)
+
+            run = runtime.run(request)
+
+            self.assertEqual("completed", run.status)
+            reloaded = repository.load_session(session.session_id)
+            user_messages = [item for item in reloaded.messages if item.get("role") == "user"]
+            self.assertEqual(1, len(user_messages))
+            self.assertEqual(request.request_id, user_messages[0].get("request_id"))
+
     def test_change_set_requires_fresh_checksum_and_creates_snapshot(self):
         with tempfile.TemporaryDirectory() as root:
             manager = NovelManager(bookshelf_root=root)

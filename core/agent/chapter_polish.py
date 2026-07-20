@@ -231,7 +231,10 @@ class AgentChapterPolishService:
     def _audit(self, request, plan, original, candidate) -> dict:
         resolved_style = resolve_style(self.manager, request.book_title)
         payload = {"requirement": request.requirement, "preserved_facts": plan.preserved_facts, "preserved_dialogue_intents": plan.preserved_dialogue_intents, "skills": plan.context_report.get("skills_text", ""), "original": original, "polished": candidate}
-        payload["style_audit"] = render_style_audit(resolved_style)
+        payload["style_audit"] = render_style_audit(
+            resolved_style,
+            task_context="\n".join([request.chapter_title, request.requirement]),
+        )
         prompt = "你是小说润色保真审稿器。比较原文和润色稿，只返回严格 JSON：passed:boolean, plot_drift:[string], fact_drift:[string], character_drift:[string], dialogue_intent_drift:[string], new_facts:[string], requirement_issues:[string], format_issues:[string], style_issues:[string], repair_instruction:string。任何剧情事件、事实、人物行为/动机、时间线、关系或对白意图改变都必须令 passed=false；若出现明显 AI 腔、否定式排比或描写重复，写入 style_issues。\n\n" + json.dumps(payload, ensure_ascii=False)
         data = self._call_json(prompt, request.model, max_tokens=8192)
         fields = ("plot_drift", "fact_drift", "character_drift", "dialogue_intent_drift", "new_facts", "requirement_issues", "format_issues", "style_issues")

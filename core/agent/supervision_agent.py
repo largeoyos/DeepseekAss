@@ -23,6 +23,9 @@ class SupervisionRequest:
     model: str
     global_prompt: str = ""
     xp_mode: bool = False
+    style_audit: str = ""
+    content_lock: str = ""
+    max_repair_rounds: int = 2
 
 
 @dataclass
@@ -103,7 +106,9 @@ class AgentSupervisionService:
             temperature=0.5,
             global_user_prompt=request.global_prompt,
             xp_mode=request.xp_mode,
-            max_repair_rounds=2,
+            style_audit=request.style_audit,
+            content_lock=request.content_lock,
+            max_repair_rounds=max(0, min(2, int(request.max_repair_rounds))),
             progress=progress,
             repair_change_callback=repair_change_callback,
         )

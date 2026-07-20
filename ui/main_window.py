@@ -6412,9 +6412,17 @@ class DeepSeekChatGUI(QMainWindow):
         target_words: int, xp_mode: bool, operation_prefix: str,
         style_audit: str = "",
         agent_mode: bool = False,
+        max_repair_rounds: int = 2,
     ) -> tuple[str, dict]:
         """Use the Agent supervisor only for Agent writing mode; keep classic behavior unchanged."""
-        effective_requirements = "\n".join(filter(None, [requirements, style_audit]))
+        from core.style_rerank import build_content_lock, render_content_lock
+        content_lock = render_content_lock(build_content_lock(
+            chapter_title=chapter_title,
+            outline=chapter_outline,
+            requirements=requirements,
+            continuity_context=context,
+        ))
+
         if not content.strip():
             return content, {"status": "warning", "audit_failed": True, "error": "empty chapter"}
 
@@ -6445,12 +6453,15 @@ class DeepSeekChatGUI(QMainWindow):
                     chapter_title=chapter_title,
                     chapter_content=content,
                     chapter_outline=chapter_outline,
-                    requirements=effective_requirements,
+                    requirements=requirements,
                     continuity_context=context,
                     target_words=target_words,
                     model=self._client.model,
                     global_prompt=self._client.global_user_prompt,
                     xp_mode=xp_mode,
+                    style_audit=style_audit,
+                    content_lock=content_lock,
+                    max_repair_rounds=max_repair_rounds,
                 ),
                     progress=progress,
                     repair_change_callback=show_repair_changes,
@@ -6468,7 +6479,7 @@ class DeepSeekChatGUI(QMainWindow):
                 chapter_content=content,
                 chapter_title=f"Chapter {chapter_num}: {chapter_title}",
                 chapter_outline=chapter_outline,
-                requirements=effective_requirements,
+                requirements=requirements,
                 continuity_context=context,
                 target_words=target_words,
                 model=self._client.model,
@@ -6476,7 +6487,8 @@ class DeepSeekChatGUI(QMainWindow):
                 global_user_prompt=self._client.global_user_prompt,
                 xp_mode=xp_mode,
                 style_audit=style_audit,
-                max_repair_rounds=2,
+                content_lock=content_lock,
+                max_repair_rounds=max_repair_rounds,
                 progress=progress,
                 repair_change_callback=show_repair_changes,
             )
@@ -6500,6 +6512,90 @@ class DeepSeekChatGUI(QMainWindow):
                 "outline_items": [], "hard_constraint_issues": [],
                 "continuity_issues": [], "style_issues": [], "repair_rounds": 0,
             }
+
+    def _style_candidate_contest_enabled(self, resolved_style) -> bool:
+        return bool(
+            resolved_style.active
+            and resolved_style.strength == "strict"
+            and self._settings.get("style_candidate_rerank_enabled", False)
+        )
+
+    def _run_style_candidate_contest(
+        self, *, operation: str, messages: list[dict], prompt_text: str,
+        max_tokens: int, temperature: float | None, resolved_style,
+        first_content: str, first_stats: dict, chapter_title: str,
+        outline: str, requirements: str, continuity_context: str,
+    ) -> tuple[str, dict, bool, dict]:
+        """Generate candidate B silently and emit only the selected final chapter."""
+        self._stream_signals.token.emit(
+            "\n[高保真文风] 候选 A 已完成，正在生成候选 B；完成后将按内容锁、文风和自然度盲选。\n"
+        )
+        try:
+            second_content, second_stats, cancelled = self._stream_chapter_completion(
+                operation=f"{operation}_style_candidate_b",
+                messages=messages,
+                prompt_text=prompt_text,
+                max_tokens=max_tokens,
+                temperature=temperature,
+                emit_tokens=False,
+            )
+        except Exception as exc:
+            self._last_generation_stats = first_stats
+            self._stream_signals.token.emit(
+                f"[高保真文风] 候选 B 生成失败，采用候选 A：{exc}\n\n{first_content}"
+            )
+            return first_content, first_stats, False, {
+                "selected_index": 0, "judge_used": False, "error": str(exc), "scores": [],
+            }
+        if cancelled:
+            return first_content, first_stats, True, {}
+        if not second_content.strip():
+            self._last_generation_stats = first_stats
+            self._stream_signals.token.emit(
+                "[高保真文风] 候选 B 为空，采用候选 A。\n\n" + first_content
+            )
+            return first_content, first_stats, False, {
+                "selected_index": 0, "judge_used": False, "error": "empty candidate B", "scores": [],
+            }
+
+        from core.style_rerank import build_content_lock, select_best_style_candidate
+        manifest = build_content_lock(
+            chapter_title=chapter_title,
+            outline=outline,
+            requirements=requirements,
+            continuity_context=continuity_context,
+        )
+        try:
+            selection = select_best_style_candidate(
+                self._usage_logged_client(f"{operation}_style_rerank"),
+                candidates=[first_content, second_content],
+                resolved_style=resolved_style,
+                content_lock=manifest,
+                model=self._body_generation_model(),
+                task_context="\n".join([chapter_title, outline, requirements]),
+            )
+            selected_stats = first_stats if selection.index == 0 else second_stats
+            self._last_generation_stats = selected_stats
+            report = selection.to_dict()
+            score_text = "；".join(
+                f"{item.candidate_id}={item.total_score:.1f}"
+                for item in selection.scores
+            )
+            fallback = "（本地指纹回退）" if not selection.judge_used else ""
+            self._stream_signals.token.emit(
+                f"[高保真文风] 候选 {chr(65 + selection.index)} 获胜{fallback}"
+                f"{f'：{score_text}' if score_text else ''}。以下为最终正文：\n\n{selection.content}"
+            )
+            return selection.content, selected_stats, False, report
+        except Exception as exc:
+            self._last_generation_stats = first_stats
+            self._stream_signals.token.emit(
+                f"[高保真文风] 竞稿评审异常，采用候选 A：{exc}\n\n{first_content}"
+            )
+            return first_content, first_stats, False, {
+                "selected_index": 0, "judge_used": False, "error": str(exc), "scores": [],
+            }
+
 
     def _run_chapter_generation(
         self,
@@ -6555,20 +6651,48 @@ class DeepSeekChatGUI(QMainWindow):
 
             self._stream_signals.token.emit(f"\n\n📝 正在创作第 {chapter_num} 章「{chapter_title}」...\n\n")
 
+            style_contest = self._style_candidate_contest_enabled(resolved_style)
+            generation_max_tokens = max(target_words * 2, self._client.max_tokens)
+            generation_temperature = (
+                min(self._client.temperature, 0.55)
+                if resolved_style.active and resolved_style.strength == "strict" else None
+            )
+            chapter_requirements = "\n".join(filter(None, [
+                getattr(strategy, "writing_demand", ""), getattr(agent_request, "requirement", "") if agent_request else "",
+            ]))
             content, generation_stats, cancelled = self._stream_chapter_completion(
                 operation=operation_prefix,
                 messages=messages,
                 prompt_text=user_prompt,
-                max_tokens=max(target_words * 2, self._client.max_tokens),
-                temperature=(
-                    min(self._client.temperature, 0.55)
-                    if resolved_style.active and resolved_style.strength == "strict" else None
-                ),
+                max_tokens=generation_max_tokens,
+                temperature=generation_temperature,
+                emit_tokens=not style_contest,
             )
             if cancelled:
                 self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
                 self._stream_signals.finished.emit()
                 return
+
+            style_selection_report: dict = {}
+            if style_contest:
+                content, generation_stats, cancelled, style_selection_report = self._run_style_candidate_contest(
+                    operation=operation_prefix,
+                    messages=messages,
+                    prompt_text=user_prompt,
+                    max_tokens=generation_max_tokens,
+                    temperature=generation_temperature,
+                    resolved_style=resolved_style,
+                    first_content=content,
+                    first_stats=generation_stats,
+                    chapter_title=chapter_title,
+                    outline=plot_content,
+                    requirements=chapter_requirements,
+                    continuity_context=user_prompt,
+                )
+                if cancelled:
+                    self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
+                    self._stream_signals.finished.emit()
+                    return
 
             content, supervision_report = self._supervise_chapter_content(
                 chapter_num=chapter_num,
@@ -6576,13 +6700,19 @@ class DeepSeekChatGUI(QMainWindow):
                 content=content,
                 context=user_prompt,
                 chapter_outline=plot_content,
-                requirements=getattr(strategy, "writing_demand", ""),
+                requirements=chapter_requirements,
                 target_words=target_words,
                 xp_mode=xp_mode,
                 operation_prefix=operation_prefix,
-                style_audit=render_style_audit(resolved_style),
+                style_audit=render_style_audit(
+                    resolved_style,
+                    task_context="\n".join([chapter_title, plot_content]),
+                ),
                 agent_mode=agent_plan is not None,
+                max_repair_rounds=1 if style_contest else 2,
             )
+            if style_selection_report:
+                supervision_report["style_candidate_selection"] = style_selection_report
             if self._client._cancel_requested:
                 self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
                 self._stream_signals.finished.emit()
@@ -7134,20 +7264,45 @@ class DeepSeekChatGUI(QMainWindow):
                 f"\n\n📝 正在续写第 {chapter_num} 章「{chapter_title}」...\n\n"
             )
 
+            style_contest = self._style_candidate_contest_enabled(resolved_style)
+            generation_max_tokens = max(word_count * 2, self._client.max_tokens)
+            generation_temperature = (
+                min(self._client.temperature, 0.55)
+                if resolved_style.active and resolved_style.strength == "strict" else None
+            )
             content, generation_stats, cancelled = self._stream_chapter_completion(
                 operation="continuation",
                 messages=messages,
                 prompt_text=user_prompt,
-                max_tokens=max(word_count * 2, self._client.max_tokens),
-                temperature=(
-                    min(self._client.temperature, 0.55)
-                    if resolved_style.active and resolved_style.strength == "strict" else None
-                ),
+                max_tokens=generation_max_tokens,
+                temperature=generation_temperature,
+                emit_tokens=not style_contest,
             )
             if cancelled:
                 self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
                 self._stream_signals.finished.emit()
                 return
+
+            style_selection_report: dict = {}
+            if style_contest:
+                content, generation_stats, cancelled, style_selection_report = self._run_style_candidate_contest(
+                    operation="continuation",
+                    messages=messages,
+                    prompt_text=user_prompt,
+                    max_tokens=generation_max_tokens,
+                    temperature=generation_temperature,
+                    resolved_style=resolved_style,
+                    first_content=content,
+                    first_stats=generation_stats,
+                    chapter_title=chapter_title,
+                    outline=plot,
+                    requirements=requirement,
+                    continuity_context=user_prompt,
+                )
+                if cancelled:
+                    self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
+                    self._stream_signals.finished.emit()
+                    return
 
             content, supervision_report = self._supervise_chapter_content(
                 chapter_num=chapter_num,
@@ -7159,8 +7314,14 @@ class DeepSeekChatGUI(QMainWindow):
                 target_words=word_count,
                 xp_mode=xp_mode,
                 operation_prefix="continuation",
-                style_audit=render_style_audit(resolved_style),
+                style_audit=render_style_audit(
+                    resolved_style,
+                    task_context="\n".join([chapter_title, requirement, plot]),
+                ),
+                max_repair_rounds=1 if style_contest else 2,
             )
+            if style_selection_report:
+                supervision_report["style_candidate_selection"] = style_selection_report
 
             if self._client._cancel_requested:
                 self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
@@ -9487,7 +9648,10 @@ class DeepSeekChatGUI(QMainWindow):
                         context=prompt_text,
                         xp_mode=xp_mode,
                         operation_prefix="chapter_regenerate",
-                        style_audit=render_style_audit(resolved_style),
+                        style_audit=render_style_audit(
+                            resolved_style,
+                            task_context="\n".join([chapter_title, req, plot]),
+                        ),
                     )
 
                     new_version = self._novel_mgr.get_next_version(self._book_title, chapter_num)

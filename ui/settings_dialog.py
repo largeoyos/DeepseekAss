@@ -471,6 +471,18 @@ class SettingsDialog(QDialog):
         fill_layout.addWidget(self._auto_fill_first_chapter_writing_demand)
         layout.addWidget(fill_group)
 
+        style_group = QGroupBox("高保真文风")
+        style_layout = QVBoxLayout(style_group)
+        self._style_candidate_rerank = QCheckBox("严格文风启用双候选竞稿")
+        self._style_candidate_rerank.setToolTip(
+            "仅在绑定文风档案且强度为“严格”时生效；生成两份正文并按文风、内容锁和自然度选优，约增加一倍正文生成成本。"
+        )
+        self._style_candidate_rerank.setChecked(
+            bool(self._settings.get("style_candidate_rerank_enabled", False))
+        )
+        style_layout.addWidget(self._style_candidate_rerank)
+        layout.addWidget(style_group)
+
         snapshot_group = QGroupBox("项目快照")
         snapshot_form = QFormLayout(snapshot_group)
         self._snapshot_timed_enabled = QCheckBox("定时创建项目快照")
@@ -505,6 +517,7 @@ class SettingsDialog(QDialog):
         settings["auto_fill_first_chapter_writing_demand"] = (
             self._auto_fill_first_chapter_writing_demand.isChecked()
         )
+        settings["style_candidate_rerank_enabled"] = self._style_candidate_rerank.isChecked()
         settings["snapshot_timed_enabled"] = self._snapshot_timed_enabled.isChecked()
         settings["snapshot_timed_user_configured"] = True
         settings["snapshot_interval_minutes"] = self._snapshot_interval_minutes.value()

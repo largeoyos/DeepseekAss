@@ -28,6 +28,7 @@ DEFAULT_SETTINGS = {
     "default_genre": "none",
     "default_style_profile_id": "",
     "default_style_strength": "standard",
+    "style_candidate_rerank_enabled": False,
     "theme": "dark",
     # Timed snapshots are useful for long editing sessions, but are opt-in so
     # they do not add background task messages for people who do not need them.

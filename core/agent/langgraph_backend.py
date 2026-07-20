@@ -14,7 +14,15 @@ from core.agent.profiles import build_system_prompt, get_agent_profile
 from core.agent.repository import AgentRepository
 from core.agent.skills import SkillService
 from core.agent.tools import ToolContext
-from core.agent.types import AgentEvent, AgentRun, AgentRunRequest, ToolCallRequest, ToolResult, now_iso
+from core.agent.types import (
+    AgentEvent,
+    AgentRun,
+    AgentRunRequest,
+    ToolCallRequest,
+    ToolResult,
+    append_request_user_message,
+    now_iso,
+)
 
 
 class EncryptedAgentCheckpointer:
@@ -218,7 +226,7 @@ class LangGraphAgentBackend:
         )
         session.active_run_id = run.run_id
         session.run_ids.append(run.run_id)
-        session.messages.append({"role": "user", "content": request.user_message, "at": now_iso()})
+        append_request_user_message(session, request)
         skills = SkillService(repository).render_for_agent(request.agent_kind) if self.skills_enabled else ""
         context = self.contexts.assemble(request.book_title, request.manual_references)
         run.messages = [

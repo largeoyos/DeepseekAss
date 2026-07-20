@@ -14,7 +14,7 @@ from datetime import datetime
 from typing import Callable, Iterable
 
 
-STYLE_PROFILE_SCHEMA_VERSION = 1
+STYLE_PROFILE_SCHEMA_VERSION = 2
 STYLE_STRENGTHS = ("reference", "standard", "strict")
 STYLE_STRENGTH_LABELS = {
     "reference": "参考",
@@ -24,6 +24,28 @@ STYLE_STRENGTH_LABELS = {
 STYLE_ANCHOR_FACETS = (
     "general", "dialogue", "action", "psychology", "environment", "ending",
 )
+
+
+_LEXICAL_MARKERS = (
+    "的", "地", "得", "了", "着", "过", "把", "被", "将", "让",
+    "却", "倒", "便", "就", "才", "又", "仍", "还", "只", "也",
+    "很", "更", "最", "太", "几乎", "仿佛", "似乎", "忽然", "突然",
+    "于是", "然后", "不过", "但是", "然而", "因此", "所以",
+    "呢", "吧", "啊", "吗", "么", "罢了",
+)
+_LEXICAL_CATEGORIES = {
+    "结构助词": ("的", "地", "得"),
+    "时体助词": ("了", "着", "过"),
+    "处置被动": ("把", "被", "将", "让"),
+    "转折连接": ("却", "不过", "但是", "然而", "可是"),
+    "递进因果": ("于是", "然后", "因此", "所以", "而且", "甚至"),
+    "程度副词": ("很", "更", "最", "太", "极", "颇", "十分"),
+    "推测比拟": ("仿佛", "似乎", "好像", "宛如", "犹如"),
+    "突发时间": ("忽然", "突然", "猛然", "骤然", "旋即"),
+    "语气词": ("呢", "吧", "啊", "呀", "吗", "么", "罢了"),
+    "第一人称": ("我", "我们", "咱", "咱们"),
+    "第三人称": ("他", "她", "它", "他们", "她们", "它们"),
+}
 
 
 def _now() -> str:
@@ -162,6 +184,7 @@ class StyleProfileRepository:
         }
 
     def _save(self, data: dict) -> None:
+        data["schema_version"] = STYLE_PROFILE_SCHEMA_VERSION
         self.manager._write_encrypted_json_atomic(self.path, data)
 
     def list_profiles(self) -> list[StyleProfile]:
@@ -255,28 +278,116 @@ def split_style_text(text: str, *, target: int = 5000, minimum: int = 4000, maxi
     return chunks
 
 
+def _per_thousand(count: int | float, total: int) -> float:
+    return round(float(count) * 1000 / max(1, total), 3)
+
+
 def calculate_style_metrics(text: str) -> dict[str, float | int | dict]:
     source = str(text or "")
     sentences = [item.strip() for item in re.split(r"[。！？!?]+", source) if item.strip()]
     paragraphs = [item.strip() for item in re.split(r"\n\s*\n|\n", source) if item.strip()]
-    sentence_lengths = [len(item) for item in sentences]
-    paragraph_lengths = [len(item) for item in paragraphs]
+    hanzi_count = len(re.findall(r"[\u3400-\u9fff]", source))
+    sentence_lengths = [len(re.findall(r"[\u3400-\u9fffA-Za-z0-9]", item)) for item in sentences]
+    paragraph_lengths = [len(re.findall(r"[\u3400-\u9fffA-Za-z0-9]", item)) for item in paragraphs]
     dialogue_chars = sum(len(item) for item in re.findall(r"[“\"『「](.*?)[”\"』」]", source, re.S))
+    dialogue_paragraphs = sum(
+        1 for item in paragraphs if re.search(r"[“\"『「].+?[”\"』」]", item, re.S)
+    )
     first_person = len(re.findall(r"我们|咱们|我", source))
     third_person = len(re.findall(r"他们|她们|他|她", source))
     punctuation = Counter(char for char in source if char in "，。！？；：、……—,.!?;:")
+    marker_counts = {marker: source.count(marker) for marker in _LEXICAL_MARKERS}
+    category_counts = {
+        name: sum(source.count(marker) for marker in markers)
+        for name, markers in _LEXICAL_CATEGORIES.items()
+    }
+    clauses = [
+        re.sub(r"[^\u3400-\u9fff]", "", item)
+        for item in re.split(r"[，。！？；：、,.!?;:]", source)
+    ]
+    clauses = [item for item in clauses if item]
+    four_char_clauses = sum(1 for item in clauses if len(item) == 4)
+    opener_counts = Counter()
+    for sentence in sentences:
+        cleaned = sentence.lstrip(" \t\r\n“\"『「（(")
+        if re.match(r"(?:我|我们|咱们)", cleaned):
+            opener_counts["第一人称"] += 1
+        elif re.match(r"(?:他|她|它|他们|她们|它们)", cleaned):
+            opener_counts["第三人称"] += 1
+        elif re.match(r"(?:这时|此时|随后|接着|然后|忽然|突然|片刻后|第二天|次日)", cleaned):
+            opener_counts["时间转场"] += 1
+        elif sentence.startswith(("“", "\"", "『", "「")):
+            opener_counts["对白起句"] += 1
     return {
         "total_chars": len(source),
+        "hanzi_count": hanzi_count,
         "sentence_count": len(sentences),
         "sentence_length_avg": round(statistics.mean(sentence_lengths), 2) if sentence_lengths else 0,
+        "sentence_length_median": round(statistics.median(sentence_lengths), 2) if sentence_lengths else 0,
         "sentence_length_std": round(statistics.pstdev(sentence_lengths), 2) if len(sentence_lengths) > 1 else 0,
+        "short_sentence_ratio": round(sum(1 for item in sentence_lengths if item <= 12) / max(1, len(sentence_lengths)), 4),
+        "long_sentence_ratio": round(sum(1 for item in sentence_lengths if item >= 35) / max(1, len(sentence_lengths)), 4),
         "paragraph_count": len(paragraphs),
         "paragraph_length_avg": round(statistics.mean(paragraph_lengths), 2) if paragraph_lengths else 0,
+        "paragraph_length_median": round(statistics.median(paragraph_lengths), 2) if paragraph_lengths else 0,
         "dialogue_ratio": round(dialogue_chars / max(1, len(source)), 4),
+        "dialogue_paragraph_ratio": round(dialogue_paragraphs / max(1, len(paragraphs)), 4),
         "first_person_hits": first_person,
         "third_person_hits": third_person,
         "punctuation": dict(punctuation.most_common(12)),
+        "punctuation_per_1000": {
+            mark: _per_thousand(count, hanzi_count)
+            for mark, count in punctuation.most_common(16)
+        },
+        "lexical_markers_per_1000": {
+            marker: _per_thousand(count, hanzi_count)
+            for marker, count in marker_counts.items() if count
+        },
+        "lexical_categories_per_1000": {
+            name: _per_thousand(count, hanzi_count)
+            for name, count in category_counts.items()
+        },
+        "four_char_clause_ratio": round(four_char_clauses / max(1, len(clauses)), 4),
+        "sentence_openers": {
+            name: round(count / max(1, len(sentences)), 4)
+            for name, count in opener_counts.items()
+        },
     }
+
+
+def render_lexical_fingerprint(metrics: dict) -> str:
+    """Render a compact, observable Chinese style definition for prompting."""
+    if not metrics:
+        return ""
+    parts: list[str] = []
+    if metrics.get("sentence_length_median") or metrics.get("sentence_length_avg"):
+        parts.append(
+            f"句长均值/中位数 {float(metrics.get('sentence_length_avg') or 0):.1f}/"
+            f"{float(metrics.get('sentence_length_median') or 0):.1f} 字，"
+            f"短句 {float(metrics.get('short_sentence_ratio') or 0) * 100:.1f}%，"
+            f"长句 {float(metrics.get('long_sentence_ratio') or 0) * 100:.1f}%"
+        )
+    if metrics.get("paragraph_length_median") or metrics.get("paragraph_length_avg"):
+        parts.append(
+            f"段长均值/中位数 {float(metrics.get('paragraph_length_avg') or 0):.1f}/"
+            f"{float(metrics.get('paragraph_length_median') or 0):.1f} 字，对白字符约 "
+            f"{float(metrics.get('dialogue_ratio') or 0) * 100:.1f}%"
+        )
+    categories = dict(metrics.get("lexical_categories_per_1000") or {})
+    if categories:
+        ordered = sorted(categories.items(), key=lambda item: float(item[1]), reverse=True)
+        parts.append("每千汉字词类频率：" + "、".join(f"{key}{float(value):.1f}" for key, value in ordered))
+    markers = dict(metrics.get("lexical_markers_per_1000") or {})
+    if markers:
+        ordered = sorted(markers.items(), key=lambda item: float(item[1]), reverse=True)[:14]
+        parts.append("高辨识虚词/连接词（每千字）：" + "、".join(f"{key}{float(value):.1f}" for key, value in ordered))
+    punctuation_rates = dict(metrics.get("punctuation_per_1000") or {})
+    if punctuation_rates:
+        ordered = sorted(punctuation_rates.items(), key=lambda item: float(item[1]), reverse=True)[:10]
+        parts.append("标点频率（每千字）：" + "、".join(f"{key}{float(value):.1f}" for key, value in ordered))
+    if metrics.get("four_char_clause_ratio") is not None:
+        parts.append(f"四字分句约 {float(metrics.get('four_char_clause_ratio') or 0) * 100:.1f}%")
+    return "\n".join(f"- {item}" for item in parts)
 
 
 def _parse_json_response(raw: str) -> dict:
@@ -497,6 +608,7 @@ class StyleExtractionService:
                 facets[key] = _dedup_strings([*facets.get(key, []), *rules])[:6]
         first.scene_facets = facets
         first.anchors = _dedup_anchors(anchor for profile in group for anchor in profile.anchors)[:20]
+        first.metrics = _merge_profile_metrics(group)
         first.created_at = first.updated_at = _now()
         return first
 
@@ -528,16 +640,91 @@ def _char_ngram_similarity(left: str, right: str, size: int = 2) -> float:
     return len(a & b) / len(a | b)
 
 
+def _merge_profile_metrics(profiles: list[StyleProfile]) -> dict:
+    """Merge whole-corpus metrics instead of inheriting the first document."""
+    weighted = [(item.metrics or {}, max(1, int(item.sample_chars or 0))) for item in profiles]
+    additive = {
+        "total_chars", "hanzi_count", "sentence_count", "paragraph_count",
+        "first_person_hits", "third_person_hits",
+    }
+    zero_filled_maps = {
+        "punctuation_per_1000", "lexical_markers_per_1000",
+        "lexical_categories_per_1000", "sentence_openers",
+    }
+
+    def merge_maps(items: list[tuple[dict, int]], path: tuple[str, ...] = ()) -> dict:
+        result: dict = {}
+        keys = {key for mapping, _weight in items for key in mapping}
+        for key in keys:
+            if path and path[-1] in zero_filled_maps:
+                values = [(mapping.get(key, 0), weight) for mapping, weight in items]
+            else:
+                values = [(mapping[key], weight) for mapping, weight in items if key in mapping]
+            if not values:
+                continue
+            if all(isinstance(value, dict) for value, _weight in values):
+                result[key] = merge_maps([(value, weight) for value, weight in values], (*path, key))
+                continue
+            numeric = [(float(value), weight) for value, weight in values if isinstance(value, (int, float))]
+            if len(numeric) != len(values):
+                continue
+            if key in additive or (path and path[-1] == "punctuation"):
+                result[key] = round(sum(value for value, _weight in numeric), 3)
+            else:
+                total_weight = sum(weight for _value, weight in numeric)
+                result[key] = round(sum(value * weight for value, weight in numeric) / max(1, total_weight), 4)
+        return result
+
+    return merge_maps(weighted)
+
+
+def calculate_style_match_score(profile_metrics: dict, text_or_metrics: str | dict) -> float:
+    """Return a deterministic 0-100 style-fingerprint similarity score."""
+    target = profile_metrics or {}
+    actual = calculate_style_metrics(text_or_metrics) if isinstance(text_or_metrics, str) else (text_or_metrics or {})
+    scores: list[tuple[float, float]] = []
+
+    def add_scalar(key: str, scale: float, weight: float = 1.0) -> None:
+        if key not in target or key not in actual:
+            return
+        left = float(target.get(key) or 0)
+        right = float(actual.get(key) or 0)
+        scores.append((max(0.0, 1.0 - abs(left - right) / max(scale, 0.0001)), weight))
+
+    for key, scale, weight in (
+        ("sentence_length_avg", 24, 1.2), ("sentence_length_median", 20, 1.2),
+        ("sentence_length_std", 20, 0.8), ("short_sentence_ratio", 0.45, 1.0),
+        ("long_sentence_ratio", 0.35, 1.0), ("paragraph_length_avg", 180, 0.8),
+        ("paragraph_length_median", 150, 0.8), ("dialogue_ratio", 0.45, 1.1),
+        ("dialogue_paragraph_ratio", 0.55, 0.8), ("four_char_clause_ratio", 0.22, 0.7),
+    ):
+        add_scalar(key, scale, weight)
+
+    def add_vector(key: str, base_scale: float, weight: float) -> None:
+        left_map = dict(target.get(key) or {})
+        right_map = dict(actual.get(key) or {})
+        for marker, left_value in left_map.items():
+            left = float(left_value or 0)
+            right = float(right_map.get(marker, 0) or 0)
+            scale = max(base_scale, abs(left) * 1.5)
+            scores.append((max(0.0, 1.0 - abs(left - right) / scale), weight))
+
+    add_vector("lexical_categories_per_1000", 3.0, 0.42)
+    add_vector("lexical_markers_per_1000", 1.5, 0.18)
+    add_vector("punctuation_per_1000", 4.0, 0.2)
+    add_vector("sentence_openers", 0.08, 0.28)
+    if not scores:
+        return 50.0
+    weighted_score = sum(score * weight for score, weight in scores) / sum(weight for _score, weight in scores)
+    return round(weighted_score * 100, 2)
+
+
 def style_profile_similarity(left: StyleProfile, right: StyleProfile) -> float:
-    metrics_left, metrics_right = left.metrics or {}, right.metrics or {}
-    numeric_scores: list[float] = []
-    for key, scale in (("sentence_length_avg", 30), ("paragraph_length_avg", 160), ("dialogue_ratio", 0.5)):
-        a, b = float(metrics_left.get(key, 0) or 0), float(metrics_right.get(key, 0) or 0)
-        numeric_scores.append(max(0.0, 1.0 - abs(a - b) / scale))
+    fingerprint = calculate_style_match_score(left.metrics or {}, right.metrics or {}) / 100
     form_left = "\n".join([left.narrative_person, left.viewpoint_distance, left.sentence_rhythm, left.dialogue_habits, left.diction])
     form_right = "\n".join([right.narrative_person, right.viewpoint_distance, right.sentence_rhythm, right.dialogue_habits, right.diction])
     semantic = _char_ngram_similarity(form_left, form_right)
-    return round((sum(numeric_scores) / len(numeric_scores)) * 0.55 + semantic * 0.45, 4)
+    return round(fingerprint * 0.6 + semantic * 0.4, 4)
 
 
 def _anchor_facet(text: str, *, is_ending: bool = False) -> str:
@@ -623,7 +810,7 @@ def resolve_style(novel_manager, title: str, *, profile_id: str = "follow_book",
     return ResolvedStyle(profile=profile, strength=selected_strength)
 
 
-def _select_runtime_anchors(profile: StyleProfile, task_context: str, count: int) -> list[StyleAnchor]:
+def _select_runtime_anchors_legacy(profile: StyleProfile, task_context: str, count: int) -> list[StyleAnchor]:
     context = str(task_context or "")
     preferred: list[str] = []
     for facet, pattern in (
@@ -689,16 +876,76 @@ def _select_runtime_anchors(profile: StyleProfile, task_context: str, count: int
     return chosen[:count]
 
 
+def _select_runtime_anchors(profile: StyleProfile, task_context: str, count: int) -> list[StyleAnchor]:
+    """Select a small, facet-diverse set; topical similarity must not collapse style coverage."""
+    context = str(task_context or "")
+    preferred: list[str] = []
+    for facet, pattern in (
+        ("dialogue", r"对话|交谈|争吵|谈判|聊天"),
+        ("action", r"战斗|追逐|动作|打斗|逃跑|冲突"),
+        ("psychology", r"心理|回忆|犹豫|反思|内心"),
+        ("environment", r"环境|风景|场景|天气|氛围"),
+        ("ending", r"结尾|收束|尾声|悬念|章末"),
+    ):
+        if re.search(pattern, context):
+            preferred.append(facet)
+
+    buckets: dict[str, list[StyleAnchor]] = {facet: [] for facet in STYLE_ANCHOR_FACETS}
+    for item in profile.anchors:
+        buckets[item.facet if item.facet in buckets else "general"].append(item)
+    chosen: list[StyleAnchor] = []
+
+    def add(item: StyleAnchor) -> bool:
+        if len(chosen) >= count or item in chosen:
+            return False
+        if any(_char_ngram_similarity(item.text, old.text) > 0.88 for old in chosen):
+            return False
+        chosen.append(item)
+        return True
+
+    # First pass: cover task-relevant facets, then general/ending, then every
+    # remaining prose facet once. This deliberately resists topic-only retrieval.
+    coverage_order = list(dict.fromkeys([
+        *preferred, "general", "ending", "dialogue", "action", "psychology", "environment",
+    ]))
+    for facet in coverage_order:
+        for item in buckets.get(facet, []):
+            if add(item):
+                break
+        if len(chosen) >= count:
+            return chosen
+
+    # Second pass may add another task-relevant example, but only after broad
+    # style coverage has been attempted.
+    fill_order = list(dict.fromkeys([*preferred, *STYLE_ANCHOR_FACETS]))
+    positions = {facet: 0 for facet in fill_order}
+    while len(chosen) < count:
+        changed = False
+        for facet in fill_order:
+            items = buckets.get(facet, [])
+            while positions[facet] < len(items):
+                item = items[positions[facet]]
+                positions[facet] += 1
+                if add(item):
+                    changed = True
+                    break
+            if len(chosen) >= count:
+                break
+        if not changed:
+            break
+    return chosen[:count]
+
+
 def render_style_prompt(resolved: ResolvedStyle, *, task_context: str = "") -> str:
     profile = resolved.profile
     if profile is None:
         return ""
     strength = resolved.strength if resolved.strength in STYLE_STRENGTHS else "standard"
-    anchor_count = {"reference": 2, "standard": 6, "strict": 10}[strength]
+    anchor_count = {"reference": 3, "standard": 5, "strict": 6}[strength]
     rules = profile.stable_rules[:4] if strength == "reference" else profile.stable_rules[:12]
     parts = [
         f"【指定文风档案：{profile.name}｜{STYLE_STRENGTH_LABELS[strength]}】",
-        "下列核心例文是文风的首要依据；抽象规则只用于解释例文，二者冲突时以例文实际呈现的行文为准。",
+        "中文词法指纹与下列核心例文共同构成文风的首要依据；抽象规则只用于解释可观察写法。",
         "重点贴近例文可观察到的用词范围、虚实词比例、动词和形容词选择、句子长度、分句连接、标点停顿、段落推进、对白衔接、意象密度与段尾落点。",
         "不得复用例文中的人物、地点、剧情、设定、专名或连续原句；模仿的是语言组织方式，不是例文事实。",
         "不得用模型惯用套话替代例文没有的表达，也不要擅自添加例文未体现的空泛比喻、情绪总结、整齐排比或拔高式段尾。",
@@ -706,6 +953,10 @@ def render_style_prompt(resolved: ResolvedStyle, *, task_context: str = "") -> s
         "若与轻快、严肃、文艺等粗粒度写作基调冲突，以本文风档案为准。",
         "若通用 humanizer 与档案的具体写法冲突，以档案为准；防注水、防重复和禁止机械复述仍然有效。",
     ]
+    fingerprint = render_lexical_fingerprint(profile.metrics or {})
+    if fingerprint:
+        parts.append("【中文词法指纹（先校准用词、虚词和停顿）】\n" + fingerprint)
+        parts.append("这些数值是整章分布目标，不要求逐句机械凑数；明显偏离时优先校准高频虚词、连接词和标点习惯。")
     anchors = _select_runtime_anchors(profile, task_context, anchor_count)
     if anchors:
         parts.append("【核心模仿例文（首要依据；只学语言，不续接内容）】")
@@ -730,19 +981,6 @@ def render_style_prompt(resolved: ResolvedStyle, *, task_context: str = "") -> s
         facet_rules = _dedup_strings(item for values in profile.scene_facets.values() for item in values)
         if facet_rules:
             parts.append("【场景写法】\n" + "\n".join(f"- {item}" for item in facet_rules[:12]))
-        metrics = profile.metrics or {}
-        metric_parts = []
-        if metrics.get("sentence_length_avg"):
-            metric_parts.append(f"平均句长约 {metrics['sentence_length_avg']} 字")
-        if metrics.get("paragraph_length_avg"):
-            metric_parts.append(f"平均段长约 {metrics['paragraph_length_avg']} 字")
-        if metrics.get("dialogue_ratio") is not None:
-            metric_parts.append(f"对白字符比例约 {float(metrics.get('dialogue_ratio') or 0) * 100:.1f}%")
-        if metric_parts:
-            parts.append(
-                "【量化节奏参考】\n- " + "；".join(metric_parts)
-                + "。允许随场景自然波动，但整章不得系统性偏离。"
-            )
     if strength != "reference" and profile.avoid_rules:
         parts.append("【避免】\n" + "\n".join(f"- {item}" for item in profile.avoid_rules[:8]))
     if strength == "reference":
@@ -780,7 +1018,9 @@ def render_style_audit(resolved: ResolvedStyle, *, task_context: str = "") -> st
     if profile.avoid_rules:
         parts.append("必须避免：" + "；".join(profile.avoid_rules[:8]))
     if resolved.strength == "strict" and profile.metrics:
-        parts.append("量化统计参考：" + json.dumps(profile.metrics, ensure_ascii=False))
+        fingerprint = render_lexical_fingerprint(profile.metrics)
+        if fingerprint:
+            parts.append("中文词法指纹对照：\n" + fingerprint)
     audit_count = {"reference": 1, "standard": 3, "strict": 6}.get(resolved.strength, 3)
     anchors = _select_runtime_anchors(profile, task_context, audit_count)
     if anchors:

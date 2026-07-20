@@ -88,6 +88,12 @@ class StyleProfileTests(unittest.TestCase):
 
     def test_local_metrics_detect_chinese_person_and_dialogue(self):
         metrics = calculate_style_metrics("我看见他。\n\n“我们走。”她说。")
+        self.assertIn("lexical_markers_per_1000", metrics)
+        self.assertIn("lexical_categories_per_1000", metrics)
+        self.assertIn("punctuation_per_1000", metrics)
+        self.assertIn("sentence_length_median", metrics)
+        self.assertIn("short_sentence_ratio", metrics)
+        self.assertIn("dialogue_paragraph_ratio", metrics)
         self.assertGreaterEqual(metrics["first_person_hits"], 2)
         self.assertGreaterEqual(metrics["third_person_hits"], 2)
         self.assertGreater(metrics["dialogue_ratio"], 0)
@@ -119,7 +125,7 @@ class StyleProfileTests(unittest.TestCase):
         self.assertEqual(meta.style_profile_id, "")
         self.assertEqual(meta.style_strength, "standard")
 
-    def test_strengths_select_two_six_and_ten_examples(self):
+    def test_strengths_select_three_five_and_six_diverse_examples(self):
         texts = [
             "形式样本：雨夜里只剩檐角滴水。",
             "形式样本：铁门骤然合拢，脚步逼近。",
@@ -139,12 +145,12 @@ class StyleProfileTests(unittest.TestCase):
             avoid_rules=["避免总结"],
             anchors=[StyleAnchor(facet="general", text=text) for text in texts],
         )
-        for strength, count in (("reference", 2), ("standard", 6), ("strict", 10)):
+        for strength, count in (("reference", 3), ("standard", 5), ("strict", 6)):
             prompt = render_style_prompt(ResolvedStyle(profile, strength))
             self.assertEqual(prompt.count("形式样本"), count)
             self.assertIn("以本文风档案为准", prompt)
             self.assertLess(prompt.index("核心模仿例文"), prompt.index("稳定写法"))
-            self.assertIn("二者冲突时以例文实际呈现的行文为准", prompt)
+            self.assertIn("共同构成文风的首要依据", prompt)
 
     def test_fifty_thousand_characters_are_all_analyzed(self):
         source = "\n\n".join(f"我沿着第{index}条长街往前走，风把灯影压低。" * 12 for index in range(250))
@@ -181,7 +187,7 @@ class StyleProfileTests(unittest.TestCase):
         prompt = render_style_prompt(
             ResolvedStyle(profile, "strict"), task_context="战斗追逐，并在章末留下悬念"
         )
-        self.assertEqual(prompt.count("片段"), 10)
+        self.assertEqual(prompt.count("片段"), 6)
         self.assertIn("例文1（action）", prompt)
         self.assertIn("（ending）", prompt)
 
@@ -249,6 +255,20 @@ class StyleProfileTests(unittest.TestCase):
         self.assertTrue(original.content.endswith("终"))
         self.assertNotIn("开", original.content)
 
+
+    def test_same_style_documents_merge_whole_corpus_metrics(self):
+        sample = "我沿着长街往前走，却没有回头。\n\n“走吧。”我说。" * 220
+        profiles = StyleExtractionService(_FakeClient()).extract_documents(
+            [
+                StyleSourceDocument("上卷.txt", sample),
+                StyleSourceDocument("下卷.txt", sample),
+            ],
+            "fake-model",
+            base_name="合并文风",
+            source_kind="folder",
+        )
+        self.assertEqual(len(profiles), 1)
+        self.assertEqual(profiles[0].metrics["total_chars"], len(sample) * 2)
 
 if __name__ == "__main__":
     unittest.main()

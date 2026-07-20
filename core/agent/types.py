@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from typing import Literal
@@ -44,6 +45,7 @@ class AgentRunRequest:
     model: str = ""
     mode: str = "agent"
     book_title: str = ""
+    request_id: str = field(default_factory=lambda: f"request_{uuid.uuid4().hex}")
 
 
 @dataclass
@@ -111,6 +113,23 @@ class AgentSession:
     messages: list[dict] = field(default_factory=list)
     epochs: list[dict] = field(default_factory=list)
     schema_version: int = AGENT_SCHEMA_VERSION
+
+
+def append_request_user_message(session: AgentSession, request: AgentRunRequest) -> bool:
+    """Append a request's user message once, including across backend fallback."""
+    if any(
+        item.get("role") == "user"
+        and item.get("request_id") == request.request_id
+        for item in session.messages
+    ):
+        return False
+    session.messages.append({
+        "role": "user",
+        "content": request.user_message,
+        "request_id": request.request_id,
+        "at": now_iso(),
+    })
+    return True
 
 
 @dataclass

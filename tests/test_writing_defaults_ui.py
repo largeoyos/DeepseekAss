@@ -146,11 +146,11 @@ class WritingDefaultsUiTests(unittest.TestCase):
         resolved = ResolvedStyle(profile, "strict")
         prompt = render_style_prompt(resolved)
         audit = render_style_audit(resolved)
-        self.assertIn("量化节奏参考", prompt)
+        self.assertIn("中文词法指纹", prompt)
         self.assertIn("内部逐篇校准例文", prompt)
         self.assertIn("对白后必须跟随人物动作", audit)
         self.assertIn("避免直接总结情绪", audit)
-        self.assertIn("sentence_length_avg", audit)
+        self.assertIn("句长均值/中位数", audit)
         self.assertIn("审查时以下列例文", audit)
 
 
