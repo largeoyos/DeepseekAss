@@ -13,7 +13,7 @@ from typing import Callable
 
 from config import Config
 from core.app_services import ChapterGenerationService
-from core.auth_manager import AuthManager
+from core.auth_manager import AuthError, AuthManager
 from core.character_book import CharacterBookManager
 from core.chat_client import DeepSeekChatClient
 from core.chat_domain import ScenePresetManager, SenderProfileManager
@@ -271,6 +271,14 @@ class WebRuntime:
             raise WebAuthError("用户名或密码错误")
         token = self.tokens.issue(username, enc_key)
         return {"token": token, "user": {"username": username}}
+
+    def register(self, username: str, password: str) -> dict:
+        try:
+            enc_key = AuthManager.register(username.strip(), password)
+        except AuthError as exc:
+            raise WebAuthError(str(exc)) from exc
+        token = self.tokens.issue(username.strip(), enc_key)
+        return {"token": token, "user": {"username": username.strip()}}
 
     def logout(self, token: str) -> None:
         self.tokens.revoke(token)

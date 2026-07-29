@@ -94,6 +94,32 @@ class WebMvpTestCase(unittest.TestCase):
         missing = self.client.get("/api/books")
         self.assertEqual(missing.status_code, 401)
 
+    def test_register_creates_user_and_returns_authenticated_session(self):
+        registered = self.client.post(
+            "/api/auth/register",
+            json={"username": "bob", "password": "secure123"},
+        )
+        self.assertEqual(registered.status_code, 200, registered.text)
+        token = registered.json()["token"]
+        session = self.client.get(
+            "/api/session",
+            headers=self.auth_headers(token),
+        )
+        self.assertEqual(session.status_code, 200, session.text)
+        self.assertEqual(session.json()["user"]["username"], "bob")
+
+        duplicate = self.client.post(
+            "/api/auth/register",
+            json={"username": "bob", "password": "secure123"},
+        )
+        self.assertEqual(duplicate.status_code, 400)
+
+        weak = self.client.post(
+            "/api/auth/register",
+            json={"username": "charlie", "password": "123"},
+        )
+        self.assertEqual(weak.status_code, 400)
+
     def test_token_expiry_rejects_access(self):
         runtime = WebRuntime(token_ttl_seconds=-1)
         client = TestClient(create_app(runtime))

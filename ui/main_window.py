@@ -6656,6 +6656,7 @@ class DeepSeekChatGUI(QMainWindow):
                     skills_enabled=bool(self._settings.get("agent_skills_enabled", True)),
                 ).generate(agent_request, agent_plan)
                 user_prompt = agent_result.prompt
+                messages.append({"role": "system", "content": agent_result.priority_prompt})
                 operation_prefix = "agent_novel_chapter"
             else:
                 agent_result = None

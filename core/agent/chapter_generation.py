@@ -142,6 +142,7 @@ class AgentChapterResult:
     plan_id: str
     prompt: str
     context_report: dict
+    priority_prompt: str = ""
 
 
 class AgentPlanError(RuntimeError):
@@ -265,7 +266,9 @@ class AgentChapterGenerationService:
         meta = self.manager.load_meta(request.book_title)
         resolved_style = resolve_style(self.manager, request.book_title, profile_id=request.style_profile_id, strength=request.style_strength)
         style_prompt = render_style_prompt(resolved_style, task_context="\n".join([request.chapter_title, request.plot, request.requirement]))
+        priority_prompt = self._build_generation_priority_prompt(request, approved_plan)
         prompt = "\n\n".join(filter(None, [
+            priority_prompt,
             f"【Agent 已确认章节计划】\n{approved_plan.render()}",
             f"【Agent 精选上下文】\n{approved_plan.context_report.get('content', '')}",
             f"【本次启用 Skills】\n{approved_plan.context_report.get('skills_text', '')}" if approved_plan.context_report.get("skills_text") else "",
@@ -277,6 +280,11 @@ class AgentChapterGenerationService:
             f"【本章用户剧情】\n{request.plot}" if request.plot else "",
             f"【本章写作要求】\n{request.requirement}" if request.requirement else "",
             f"请严格依据以上计划创作第{request.chapter_num}章「{request.chapter_title}」，正文不少于{request.target_words}字。只输出小说正文。",
+            (
+                f"【最终执行令】创作第{request.chapter_num}章「{request.chapter_title}」。"
+                "输出前须自行核对：本章情节是否完整落实、每个场景是否按规划充分展开、"
+                f"正文总字数是否达到不少于{request.target_words}字。只输出小说正文。"
+            ),
         ]))
         workspace = self.manager.get_workspace(request.book_title)
         path = f"{workspace.agent_root}/chapter_runs/{approved_plan.plan_id}.json"
@@ -288,10 +296,58 @@ class AgentChapterGenerationService:
             "request": asdict(request),
             "plan": approved_plan.to_dict(),
             "prompt_chars": len(prompt),
+            "priority_prompt_chars": len(priority_prompt),
             "updated_at": now_iso(),
         })
         workspace.storage.write_json(path, record)
-        return AgentChapterResult(approved_plan.plan_id, prompt, approved_plan.context_report)
+        return AgentChapterResult(
+            approved_plan.plan_id, prompt, approved_plan.context_report, priority_prompt
+        )
+
+    @staticmethod
+    def _build_generation_priority_prompt(
+        request: AgentChapterRequest, approved_plan: AgentChapterPlan,
+    ) -> str:
+        """Render the non-negotiable plot and word-budget contract for prose generation."""
+        plot = str(request.plot or "").strip()
+        if not plot:
+            plot = "用户未另行填写本章情节；必须以已确认章节计划中的章节目标和场景契约为准。"
+
+        scene_lines = []
+        planned_total = 0
+        for index, scene in enumerate(approved_plan.scenes, 1):
+            try:
+                target = max(0, int(scene.get("target_words", 0) or 0))
+            except (TypeError, ValueError):
+                target = 0
+            planned_total += target
+            scene_lines.append(
+                f"{index}. {scene.get('title', f'场景{index}')}：目标 {target} 字；"
+                "必须完成该场景的关键行动、转折、选择、代价和离场状态，不得压缩成提要。"
+            )
+        if not scene_lines:
+            scene_lines.append("- 未拆分场景；必须按已确认章节计划完整展开正文。")
+
+        target_words = max(0, int(request.target_words or 0))
+        return "\n".join([
+            "【最高优先级：本章正文生成强制契约】",
+            (
+                "这是本次正文生成必须优先遵循的任务契约。若背景资料、作者规划、风格要求、"
+                "Skills、历史上下文或其他提示与本契约冲突，以本契约为准；不得改写、弱化或遗漏。"
+            ),
+            "",
+            "一、本章情节（最高优先级，必须作为正文主线完整落实）",
+            plot,
+            "",
+            "二、总字数（最高优先级硬要求）",
+            f"正文不得少于 {target_words} 字；章节标题、分隔符和任何写作说明不计入正文总字数。",
+            "不得以总结、提要、跳过行动过程或合并必要场景的方式缩短正文。",
+            "",
+            "三、分场景字数规划（最高优先级硬要求）",
+            *scene_lines,
+            f"场景规划目标合计：{planned_total} 字；整章最终正文仍必须达到不少于 {target_words} 字。",
+            "不得擅自删除、合并或明显压缩任何已规划场景；超出目标字数时也不得用重复内容凑字数。",
+        ])
 
     def _build_plan(
         self, request: AgentChapterRequest, data: dict, index: list[dict], history: list[dict],

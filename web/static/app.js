@@ -73,13 +73,30 @@ function toast(msg){ const el=$("toast"); el.textContent=msg; el.classList.remov
 async function api(path, options={}){ const headers={...(options.headers||{})}; if(!(options.body instanceof FormData)) headers["Content-Type"]="application/json"; if(state.token) headers.Authorization=`Bearer ${state.token}`; const res=await fetch(path,{...options,headers}); const text=await res.text(); let data={}; try{ data=text?JSON.parse(text):{}; }catch{ data={raw:text}; } if(!res.ok) throw new Error(data.detail||"请求失败"); return data; }
 function setAuthed(v){ $("loginView").classList.toggle("hidden",v); $("mainView").classList.toggle("hidden",!v); }
 function requireBook(){ if(!state.currentBook) throw new Error("请先选择或创建一本书"); }
-function setCurrentBook(title){ state.currentBook=title||""; if(title) sessionStorage.setItem("deepseekass_book",title); $("currentBookTitle").textContent=title||"书架"; const contSelect=$("contBookSelect"); if(contSelect) contSelect.value=title||""; const contTitle=$("contAnalysisTitle"); if(title && contTitle && !contTitle.value.trim()) contTitle.value=title; }
+function setCurrentBook(title){ state.currentBook=title||""; if(title) sessionStorage.setItem("deepseekass_book",title); else sessionStorage.removeItem("deepseekass_book"); $("currentBookTitle").textContent=title||"-"; const contSelect=$("contBookSelect"); if(contSelect) contSelect.value=title||""; const contTitle=$("contAnalysisTitle"); if(title && contTitle && !contTitle.value.trim()) contTitle.value=title; }
 function renderCards(el, items, renderer){ el.innerHTML=""; if(!items.length){ el.innerHTML='<div class="notice small">暂无数据</div>'; return; } for(const item of items) el.appendChild(renderer(item)); }
 function buttonCard(title, sub, action, active=false){ const b=document.createElement("button"); b.type="button"; b.className=`item-card${active?" active":""}`; b.innerHTML=`<span><strong>${escapeHtml(title)}</strong><small>${escapeHtml(sub||"")}</small></span><span>${escapeHtml(action||"")}</span>`; return b; }
 function escapeHtml(v){ return String(v??"").replace(/[&<>"]/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c])); }
-function selectSection(section){ state.section=section; for(const name of ["write","continuation","chat","notes","settings","tokens","tasks"]){ $(`${name}Panel`).classList.toggle("hidden", name!==section); } document.querySelectorAll(".rail-nav button").forEach(b=>b.classList.toggle("active",b.dataset.section===section)); if(section==="continuation"){ loadContinuationProject().catch(e=>toast(e.message)); loadContinuationRuns().catch(()=>{}); } if(section==="chat") loadRoles().catch(e=>toast(e.message)); if(section==="notes") loadNoteTree().catch(e=>toast(e.message)); if(section==="settings") loadSettings().catch(e=>toast(e.message)); if(section==="tokens") loadTokens().catch(e=>toast(e.message)); if(section==="tasks") loadTasks().catch(e=>toast(e.message)); }
+function applyTheme(theme){ document.documentElement.dataset.theme=theme==="light"?"light":"dark"; }
+function selectSection(section){
+  state.section=section;
+  const panelSection=section==="diagnostics"?"tasks":section;
+  for(const name of ["write","continuation","chat","notes","settings","tokens","tasks"]){
+    $(`${name}Panel`).classList.toggle("hidden", name!==panelSection);
+  }
+  document.querySelectorAll(".rail-nav button").forEach(b=>b.classList.toggle("active",b.dataset.section===section));
+  const labels={write:"小说写作",continuation:"续写小说",chat:"角色扮演",notes:"Markdown 笔记",settings:"设置中心",tokens:"Token 日志",tasks:"任务中心",diagnostics:"诊断中心"};
+  $("modeStatus").textContent=`模式: ${labels[section]||"小说写作"}`;
+  if(section==="continuation"){ loadContinuationProject().catch(e=>toast(e.message)); loadContinuationRuns().catch(()=>{}); }
+  if(section==="chat") loadRoles().catch(e=>toast(e.message));
+  if(section==="notes") loadNoteTree().catch(e=>toast(e.message));
+  if(section==="settings") loadSettings().catch(e=>toast(e.message));
+  if(section==="tokens") loadTokens().catch(e=>toast(e.message));
+  if(section==="tasks") loadTasks().catch(e=>toast(e.message));
+  if(section==="diagnostics"){ loadTasks().catch(()=>{}); loadDiagnostics().catch(e=>toast(e.message)); }
+}
 function selectWorkspace(name){ state.workspace=name; for(const n of ["books","chapters","world","agent","snapshots"]){ $(`${n}Workspace`).classList.toggle("hidden", n!==name); } document.querySelectorAll(".workspace-tabs button").forEach(b=>b.classList.toggle("active",b.dataset.workspace===name)); if(name==="chapters") loadChapters().catch(e=>toast(e.message)); if(name==="world") loadWorld().catch(e=>toast(e.message)); if(name==="agent") loadAgentState().catch(e=>toast(e.message)); if(name==="snapshots") loadSnapshots().catch(e=>toast(e.message)); }
-async function bootstrap(){ if(!state.token){ setAuthed(false); return; } try{ const s=await api("/api/session"); $("railUser").textContent=(s.user||{}).username||"Web"; $("apiNotice").classList.toggle("hidden",s.api_configured); setAuthed(true); await loadBooks(); if(state.currentBook) await loadMeta(); }catch{ state.token=""; sessionStorage.removeItem("deepseekass_token"); setAuthed(false); } }
+async function bootstrap(){ if(!state.token){ setAuthed(false); return; } try{ const s=await api("/api/session"); $("railUser").textContent=(s.user||{}).username||"Web"; $("apiNotice").classList.toggle("hidden",s.api_configured); applyTheme((s.settings||{}).theme||"dark"); setAuthed(true); selectSection(state.section); await loadBooks(); if(state.currentBook) await loadMeta(); }catch{ state.token=""; sessionStorage.removeItem("deepseekass_token"); setAuthed(false); } }
 async function loadBooks(){ const data=await api("/api/books"); state.books=data.books||[]; if(state.currentBook && !state.books.some(book=>book.title===state.currentBook)){ setCurrentBook(""); } renderBooks(); if(!state.currentBook && state.books[0]){ setCurrentBook(state.books[0].title); await loadMeta(); } }
 function renderBooks(){ renderCards($("bookList"), state.books, book=>{ const b=buttonCard(book.title, book.title===state.currentBook?"当前书籍":"点击切换", "打开", book.title===state.currentBook); b.onclick=async()=>{ setCurrentBook(book.title); renderBooks(); await loadMeta(); };
 return b; }); }
@@ -737,7 +754,7 @@ async function savePreset(){ const name=$("presetName").value.trim(); if(!name) 
 async function setCurrentPreset(){ const name=$("presetSelect").value||$("presetName").value.trim(); if(!name) throw new Error("请选择预设"); const data=await api("/api/settings/presets/current",{method:"PUT",body:JSON.stringify({name})}); renderPresetSelect(data.current_preset||name); toast("已设为当前生成预设"); }
 async function deletePreset(){ const name=$("presetName").value.trim()||$("presetSelect").value; if(!name) throw new Error("请选择预设"); await api(`/api/settings/presets/${enc(name)}`,{method:"DELETE"}); toast("预设已删除"); await loadSettings(); }
 async function resetPresets(){ await api("/api/settings/presets/reset",{method:"POST",body:"{}"}); toast("预设已恢复默认"); await loadSettings(); }
-async function saveTheme(){ await api("/api/settings/theme",{method:"PUT",body:JSON.stringify({theme:$("themeSelect").value})}); toast("主题已保存，桌面端下次加载时生效"); }
+async function saveTheme(){ const theme=$("themeSelect").value; await api("/api/settings/theme",{method:"PUT",body:JSON.stringify({theme})}); applyTheme(theme); toast("主题已保存并应用"); }
 async function saveGlobalPrompt(){ const data=await api("/api/settings",{method:"PUT",body:JSON.stringify({settings:{global_user_prompt:$("globalUserPrompt").value}})}); $("globalUserPrompt").value=(data.settings||{}).global_user_prompt||""; toast("全局偏好已保存"); }
 async function confirmSensitive(){ const data=await api("/api/auth/confirm",{method:"POST",body:JSON.stringify({password:$("confirmPassword").value})}); state.sensitiveTicket=data.sensitive_ticket; toast("敏感操作已确认"); }
 async function saveApi(){ const body={text:{api_key:$("apiKey").value,base_url:$("baseUrl").value,model:$("apiModel").value},image:{api_key:$("imageApiKey").value,base_url:$("imageBaseUrl").value,model:$("imageModel").value}}; await api("/api/settings/api",{method:"PUT",headers:{"X-Sensitive-Ticket":state.sensitiveTicket},body:JSON.stringify(body)}); $("apiKey").value=""; $("imageApiKey").value=""; toast("API 设置已保存"); }
@@ -855,7 +872,17 @@ function connectTask(id, onPayload){ if(state.eventSource) state.eventSource.clo
 
 function updateTask(p){ const d=p.data||{}; const percent=Number(d.progress||(p.type==="completed"?100:0)); $("taskStage").textContent=d.stage||p.type; $("taskPercent").textContent=`${percent}%`; $("taskBar").style.width=`${percent}%`; $("taskMessage").textContent=p.message||""; if(d.text){ state.streamBuffer=(state.streamBuffer+d.text).slice(-10000); $("streamText").textContent=state.streamBuffer; } if(d.result){ $("streamText").textContent=typeof d.result==="string"?d.result:JSON.stringify(d.result,null,2); } if(["completed","failed","cancelled"].includes(p.type)&&state.eventSource){ state.eventSource.close(); state.activeTaskId=""; syncActiveTaskControl(); loadTasks().catch(()=>{}); } }
 function bind(id, fn, event="click"){ const el=$(id); if(el) el.addEventListener(event, ev=>Promise.resolve(fn(ev)).catch(e=>toast(e.message))); }
-$("loginForm").onsubmit=async e=>{ e.preventDefault(); try{ const data=await api("/api/auth/login",{method:"POST",body:JSON.stringify({username:$("loginUsername").value,password:$("loginPassword").value})}); state.token=data.token; sessionStorage.setItem("deepseekass_token",state.token); await bootstrap(); }catch(err){ $("loginError").textContent=err.message; } };
+let registerMode=false;
+function setRegisterMode(enabled){
+  registerMode=enabled;
+  $("registerConfirmField").classList.toggle("hidden",!enabled);
+  $("registerConfirmPassword").required=enabled;
+  $("loginSubmitBtn").textContent=enabled?"注 册":"登 录";
+  $("toggleRegisterBtn").textContent=enabled?"返回登录":"注册新用户";
+  $("loginError").textContent="";
+}
+$("toggleRegisterBtn").onclick=()=>setRegisterMode(!registerMode);
+$("loginForm").onsubmit=async e=>{ e.preventDefault(); try{ const username=$("loginUsername").value.trim(); const password=$("loginPassword").value; if(registerMode && password!==$("registerConfirmPassword").value) throw new Error("两次输入的密码不一致"); const endpoint=registerMode?"/api/auth/register":"/api/auth/login"; const data=await api(endpoint,{method:"POST",body:JSON.stringify({username,password})}); state.token=data.token; sessionStorage.setItem("deepseekass_token",state.token); setRegisterMode(false); await bootstrap(); }catch(err){ $("loginError").textContent=err.message; } };
 bind("logoutBtn", async()=>{ try{ await api("/api/auth/logout",{method:"POST",body:"{}"}); }catch{} state.token=""; sessionStorage.removeItem("deepseekass_token"); setAuthed(false); });
 document.querySelectorAll(".rail-nav button").forEach(btn=>btn.onclick=()=>selectSection(btn.dataset.section));
 document.querySelectorAll(".workspace-tabs button").forEach(btn=>{ if(!btn.dataset.cont) btn.onclick=()=>selectWorkspace(btn.dataset.workspace); });

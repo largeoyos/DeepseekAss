@@ -375,6 +375,15 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
         except WebAuthError as exc:
             raise HTTPException(status_code=401, detail=str(exc)) from exc
 
+    @app.post("/api/auth/register", tags=["auth"])
+    def register(payload: LoginRequest):
+        if len(payload.password) < 6:
+            raise HTTPException(status_code=400, detail="密码至少需要 6 个字符")
+        try:
+            return runtime.register(payload.username, payload.password)
+        except WebAuthError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
     @app.post("/api/auth/logout", tags=["auth"])
     def logout(token: str = Depends(token_from_header)):
         runtime.logout(token)

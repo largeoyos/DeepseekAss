@@ -123,6 +123,11 @@ class AgentChapterGenerationTests(unittest.TestCase):
             self.assertIn("世界观", result.prompt)
             self.assertIn("作者规划", result.prompt)
             self.assertIn("本次启用 Skills", result.prompt)
+            self.assertTrue(result.prompt.startswith("【最高优先级：本章正文生成强制契约】"))
+            self.assertIn("剧情", result.priority_prompt)
+            self.assertIn("正文不得少于 1000 字", result.priority_prompt)
+            self.assertIn("进入钟楼：目标 1000 字", result.priority_prompt)
+            self.assertIn("场景规划目标合计：1000 字", result.priority_prompt)
 
     def test_skills_can_be_disabled_for_deterministic_flow(self):
         with tempfile.TemporaryDirectory() as root:
