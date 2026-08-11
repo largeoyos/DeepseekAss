@@ -646,9 +646,11 @@ class _UsageLoggingCompletionsProxy:
         )
         choices = getattr(response, "choices", []) or []
         content = ""
+        reasoning = ""
         if choices:
             message = getattr(choices[0], "message", None)
             content = getattr(message, "content", "") or ""
+            reasoning = getattr(message, "reasoning_content", "") or ""
         usage = getattr(response, "usage", None)
         self._owner._log_token_usage(
             operation=self._operation,
@@ -661,6 +663,7 @@ class _UsageLoggingCompletionsProxy:
             operation=self._operation,
             direction="receive",
             content=content,
+            reasoning_content=reasoning,
             usage=usage,
             model=kwargs.get("model"),
         )
@@ -3910,6 +3913,8 @@ class DeepSeekChatGUI(QMainWindow):
         direction: str,
         content: str,
         usage,
+        reasoning_content: str = "",
+        reasoning_tokens: int | None = None,
         model: str | None = None,
         strategy: str | None = None,
         started_at: str | None = None,
@@ -3920,12 +3925,17 @@ class DeepSeekChatGUI(QMainWindow):
     ) -> None:
         try:
             usage_dict = DeepSeekChatClient._usage_to_dict(usage)
+            if direction == "receive" and reasoning_tokens is None:
+                details = (usage_dict or {}).get("completion_tokens_details") or {}
+                reasoning_tokens = details.get("reasoning_tokens")
             self._token_log_manager.add_entry(
                 operation=operation,
                 direction=direction,
                 strategy=strategy or self._client.strategy.get_name(),
                 model=model or self._client.model,
                 content=content,
+                reasoning_content=reasoning_content,
+                reasoning_tokens=reasoning_tokens,
                 usage=usage_dict,
                 started_at=started_at,
                 finished_at=finished_at,
@@ -3963,16 +3973,21 @@ class DeepSeekChatGUI(QMainWindow):
         def token_text(value) -> str:
             return str(value) if value is not None else "未返回"
 
-        return (
-            "\n\n---\n"
-            "📊 生成统计\n"
-            f"- 发送时间：{stats['started_at']}\n"
-            f"- 返回完成：{stats['finished_at']}\n"
-            f"- 耗时：{stats['duration_ms'] / 1000:.1f} 秒\n"
-            f"- 发送 token：{token_text(prompt_tokens)} / 返回 token：{token_text(completion_tokens)} / 总 token：{token_text(total_tokens)}\n"
-            f"- 返回字符数：{stats['char_count']} / 汉字数：{stats['hanzi_count']}\n"
-            "---\n"
-        )
+        lines = [
+            "\n\n---\n📊 生成统计",
+            f"- 发送时间：{stats['started_at']}",
+            f"- 返回完成：{stats['finished_at']}",
+            f"- 耗时：{stats['duration_ms'] / 1000:.1f} 秒",
+            f"- 发送 token：{token_text(prompt_tokens)} / 返回 token：{token_text(completion_tokens)} / 总 token：{token_text(total_tokens)}",
+            f"- 返回字符数：{stats['char_count']} / 汉字数：{stats['hanzi_count']}",
+        ]
+        reasoning_tokens = stats.get("reasoning_tokens")
+        if reasoning_tokens is not None:
+            lines.append(f"- 推理 token：{token_text(reasoning_tokens)} / 正文字符：{stats['char_count']}")
+        if not stats.get("char_count") and (stats.get("usage") or {}).get("completion_tokens"):
+            lines.append("⚠️ 本次返回正文为空：completion token 全部为推理内容（Token 日志可查看推理预览）")
+        lines.append("---\n")
+        return "\n".join(lines)
 
     def _stream_chapter_completion(
         self,
@@ -3990,6 +4005,7 @@ class DeepSeekChatGUI(QMainWindow):
         start_time = time.time()
         usage_dict: dict | None = None
         chunks: list[str] = []
+        reasoning_chunks: list[str] = []
         stream = None
         task_id = self._begin_api_task(self._api_operation_label(operation))
 
@@ -4030,12 +4046,24 @@ class DeepSeekChatGUI(QMainWindow):
                     chunks.append(token)
                     if emit_tokens:
                         self._stream_signals.token.emit(token)
+                reasoning_token = ""
+                if delta:
+                    reasoning_token = getattr(delta, "reasoning_content", "") or getattr(delta, "reasoning", "") or ""
+                if isinstance(reasoning_token, list):
+                    reasoning_token = "".join(str(item) for item in reasoning_token)
+                if reasoning_token:
+                    reasoning_chunks.append(str(reasoning_token))
         finally:
             finished_at = time.strftime("%Y-%m-%d %H:%M:%S")
             self._finish_api_task(task_id)
 
         content = "".join(chunks)
+        reasoning = "".join(reasoning_chunks)
         duration_ms = int((time.time() - start_time) * 1000)
+        reasoning_tokens = None
+        if usage_dict:
+            details = usage_dict.get("completion_tokens_details") or {}
+            reasoning_tokens = details.get("reasoning_tokens")
         stats = {
             "started_at": started_at,
             "finished_at": finished_at,
@@ -4044,6 +4072,7 @@ class DeepSeekChatGUI(QMainWindow):
             "hanzi_count": self._count_hanzi(content),
             "usage": usage_dict,
             "model": body_model,
+            "reasoning_tokens": reasoning_tokens,
         }
         # 供主线程在流结束后保留最终统计；实时标签不应在完成时直接消失。
         self._last_generation_stats = stats
@@ -4079,6 +4108,8 @@ class DeepSeekChatGUI(QMainWindow):
             operation=operation,
             direction="receive",
             content=content,
+            reasoning_content=reasoning,
+            reasoning_tokens=reasoning_tokens,
             usage=self._usage_for_direction(usage_dict, "receive"),
             started_at=started_at,
             finished_at=finished_at,

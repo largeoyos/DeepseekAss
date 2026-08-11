@@ -60,6 +60,22 @@ def valid_plan():
 
 
 class AgentChapterGenerationTests(unittest.TestCase):
+    def test_v4_json_options_forward_thinking_via_extra_body(self):
+        options = AgentChapterGenerationService._json_completion_options("deepseek-v4-pro")
+
+        self.assertEqual({"type": "json_object"}, options["response_format"])
+        self.assertEqual(
+            {"thinking": {"type": "disabled"}},
+            options["extra_body"],
+        )
+        self.assertNotIn("thinking", options)
+
+    def test_json_options_leave_custom_models_unchanged(self):
+        self.assertEqual(
+            {},
+            AgentChapterGenerationService._json_completion_options("custom-model"),
+        )
+
     def test_prepare_reads_settings_selects_world_and_saves_ledger(self):
         with tempfile.TemporaryDirectory() as root:
             manager = NovelManager(bookshelf_root=root)

@@ -20,6 +20,10 @@ class TokenLogEntry:
     strategy: str
     model: str
     content_preview: str
+    content_full: str = ""
+    reasoning_content_preview: str = ""
+    reasoning_content_full: str = ""
+    reasoning_tokens: int | None = None
     prompt_tokens: int | None = None
     completion_tokens: int | None = None
     total_tokens: int | None = None
@@ -102,6 +106,8 @@ class TokenLogManager:
         model: str,
         content: str,
         usage: dict | None,
+        reasoning_content: str = "",
+        reasoning_tokens: int | None = None,
         started_at: str | None = None,
         finished_at: str | None = None,
         duration_ms: int | None = None,
@@ -111,6 +117,9 @@ class TokenLogManager:
         preview = (content or "").strip().replace("\n", " ")
         if len(preview) > 60:
             preview = preview[:60] + "..."
+        reasoning_preview = (reasoning_content or "").strip().replace("\n", " ")
+        if len(reasoning_preview) > 60:
+            reasoning_preview = reasoning_preview[:60] + "..."
         status = "ok" if usage else "unavailable"
         entry = TokenLogEntry(
             id=uuid.uuid4().hex,
@@ -120,6 +129,10 @@ class TokenLogManager:
             strategy=strategy,
             model=model,
             content_preview=preview,
+            content_full=content or "",
+            reasoning_content_preview=reasoning_preview,
+            reasoning_content_full=reasoning_content or "",
+            reasoning_tokens=reasoning_tokens,
             prompt_tokens=usage.get("prompt_tokens") if usage else None,
             completion_tokens=usage.get("completion_tokens") if usage else None,
             total_tokens=usage.get("total_tokens") if usage else None,

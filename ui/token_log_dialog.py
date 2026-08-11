@@ -6,12 +6,69 @@ from PyQt6.QtWidgets import (
     QLineEdit,
     QMessageBox,
     QPushButton,
+    QPlainTextEdit,
     QTableWidget,
     QTableWidgetItem,
+    QTabWidget,
     QVBoxLayout,
 )
 
 from core.token_log_manager import TokenLogManager, TokenLogEntry
+
+
+class ContentViewerDialog(QDialog):
+    """Read-only viewer for a token log entry's full content."""
+
+    def __init__(self, parent, entry: TokenLogEntry):
+        super().__init__(parent)
+        self.setWindowTitle("内容全文")
+        self.resize(780, 560)
+
+        layout = QVBoxLayout(self)
+        direction = "发送" if entry.direction == "send" else "接收"
+        meta = QLabel(
+            f"{entry.timestamp} · {direction} · {entry.operation} · {entry.strategy} · {entry.model}"
+        )
+        meta.setWordWrap(True)
+        meta.setStyleSheet("color: #888;")
+        layout.addWidget(meta)
+
+        meta_text = f"{entry.timestamp} · {direction} · {entry.operation} · {entry.strategy} · {entry.model}"
+        if entry.reasoning_tokens is not None:
+            meta_text += f" · 推理 {entry.reasoning_tokens} token"
+        meta.setText(meta_text)
+
+        tabs = QTabWidget()
+        self._text = QPlainTextEdit()
+        self._text.setReadOnly(True)
+        self._text.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        full = (entry.content_full or "").strip()
+        self._text.setPlainText(full if full else (entry.content_preview or "(无内容)"))
+        tabs.addTab(self._text, "正文")
+        self._reasoning = QPlainTextEdit()
+        self._reasoning.setReadOnly(True)
+        self._reasoning.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
+        rfull = (entry.reasoning_content_full or "").strip()
+        self._reasoning.setPlainText(rfull if rfull else (entry.reasoning_content_preview or "(无推理内容)"))
+        tabs.addTab(self._reasoning, "推理内容")
+        layout.addWidget(tabs, stretch=1)
+
+        notes = []
+        if not full:
+            notes.append("旧日志未保存正文全文，仅能显示保存时的预览。")
+        if not rfull and (entry.reasoning_tokens or 0) > 0:
+            notes.append("本次返回了推理 token，但旧日志未保存推理内容。")
+        if notes:
+            note = QLabel("；".join(notes))
+            note.setStyleSheet("color: #b58900;")
+            layout.addWidget(note)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        close_btn = QPushButton("关闭")
+        close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
 
 
 class TokenLogDialog(QDialog):
@@ -21,6 +78,7 @@ class TokenLogDialog(QDialog):
         super().__init__(parent)
         self._manager = manager
         self._entries: list[TokenLogEntry] = []
+        self._rows: list[TokenLogEntry] = []
         self.setWindowTitle("Token 消耗日志")
         self.resize(760, 520)
         self._init_ui()
@@ -44,17 +102,27 @@ class TokenLogDialog(QDialog):
         tools.addWidget(clear_btn)
         layout.addLayout(tools)
 
-        self._table = QTableWidget(0, 11)
+        self._table = QTableWidget(0, 12)
         self._table.setHorizontalHeaderLabels([
-            "时间", "方向", "操作", "模式", "模型", "内容预览", "Prompt", "Completion / Total",
+            "时间", "方向", "操作", "模式", "模型", "内容预览", "推理预览", "Prompt", "Completion / Total",
             "耗时", "字符", "汉字"
         ])
         self._table.horizontalHeader().setStretchLastSection(True)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self._table.cellDoubleClicked.connect(self._on_cell_double_clicked)
+        preview_header = self._table.horizontalHeaderItem(5)
+        if preview_header is not None:
+            preview_header.setToolTip("双击查看正文全文")
+        reasoning_header = self._table.horizontalHeaderItem(6)
+        if reasoning_header is not None:
+            reasoning_header.setToolTip("模型思考/推理内容预览，双击正文或推理单元格查看全文")
         layout.addWidget(self._table, stretch=1)
 
         close_row = QHBoxLayout()
+        hint = QLabel("双击「内容预览」可查看全文")
+        hint.setStyleSheet("color: #888;")
+        close_row.addWidget(hint)
         close_row.addStretch()
         close_btn = QPushButton("关闭")
         close_btn.clicked.connect(self.accept)
@@ -76,13 +144,14 @@ class TokenLogDialog(QDialog):
         for entry in self._entries:
             haystack = " ".join([
                 entry.timestamp, entry.operation, entry.direction, entry.strategy,
-                entry.model, entry.content_preview,
+                entry.model, entry.content_preview, entry.reasoning_content_preview,
             ]).lower()
             if keyword and keyword not in haystack:
                 continue
             rows.append(entry)
 
         self._table.setRowCount(len(rows))
+        self._rows = rows
         for row, entry in enumerate(rows):
             prompt = "未返回" if entry.usage_status != "ok" else str(entry.prompt_tokens or 0)
             comp_total = (
@@ -93,13 +162,25 @@ class TokenLogDialog(QDialog):
             duration = "" if entry.duration_ms is None else f"{entry.duration_ms / 1000:.1f}s"
             char_count = "" if entry.char_count is None else str(entry.char_count)
             hanzi_count = "" if entry.hanzi_count is None else str(entry.hanzi_count)
+            content_preview = entry.content_preview
+            if not (content_preview or "").strip() and (entry.completion_tokens or 0) > 0:
+                if entry.reasoning_tokens is not None:
+                    content_preview = f"（正文为空：本次返回 {entry.reasoning_tokens} 个推理 token、0 个正文字符）"
+                else:
+                    content_preview = "（正文为空：本次返回全为推理内容、0 个正文字符）"
+            reasoning_preview = entry.reasoning_content_preview
+            if not reasoning_preview and (entry.reasoning_tokens or 0) > 0:
+                reasoning_preview = "（有推理 token，未保存推理内容）"
+            if not reasoning_preview:
+                reasoning_preview = "—"
             values = [
                 entry.timestamp,
                 "发送" if entry.direction == "send" else "接收",
                 entry.operation,
                 entry.strategy,
                 entry.model,
-                entry.content_preview,
+                content_preview,
+                reasoning_preview,
                 prompt,
                 comp_total,
                 duration,
@@ -108,10 +189,15 @@ class TokenLogDialog(QDialog):
             ]
             for col, value in enumerate(values):
                 item = QTableWidgetItem(value)
-                if col in (6, 7, 8, 9, 10):
+                if col in (7, 8, 9, 10, 11):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self._table.setItem(row, col, item)
         self._table.resizeColumnsToContents()
+
+    def _on_cell_double_clicked(self, row: int, column: int) -> None:
+        if column != 5 or row < 0 or row >= len(self._rows):
+            return
+        ContentViewerDialog(self, self._rows[row]).exec()
 
     def _clear(self) -> None:
         reply = QMessageBox.question(

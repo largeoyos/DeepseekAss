@@ -207,11 +207,13 @@ class WorldBibleAgentService:
         last_error = None
         for _attempt in range(2):
             try:
+                from core.agent.chapter_generation import AgentChapterGenerationService
                 response = self.client.chat.completions.create(
                     model=model,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.1,
                     max_tokens=8192,
+                    **AgentChapterGenerationService._json_completion_options(model),
                 )
                 return self._parse_json(response.choices[0].message.content or "")
             except Exception as exc:

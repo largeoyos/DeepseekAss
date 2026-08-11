@@ -161,6 +161,25 @@ class AgentChapterGenerationService:
         self.skills_enabled = skills_enabled
         self.multi_plan_enabled = multi_plan_enabled
 
+    @staticmethod
+    def _json_completion_options(model: str) -> dict:
+        """Use DeepSeek V4 structured output for Agent JSON turns.
+
+        V4 enables thinking by default. For planning/director turns that can
+        exhaust the reasoning budget before ``message.content`` contains JSON.
+        Keep this scoped to known V4 IDs so custom endpoints retain old behavior.
+        """
+        model_name = str(model or "").strip().lower()
+        if model_name not in {"deepseek-v4-flash", "deepseek-v4-pro"}:
+            return {}
+        return {
+            "response_format": {"type": "json_object"},
+            # ``thinking`` is a DeepSeek extension, not a named parameter in
+            # the OpenAI Python SDK.  ``extra_body`` forwards it in the JSON
+            # request body without the SDK rejecting the call first.
+            "extra_body": {"thinking": {"type": "disabled"}},
+        }
+
     def prepare(self, request: AgentChapterRequest) -> AgentChapterPlan:
         meta = self.manager.load_meta(request.book_title)
         bible = self.manager.load_world_bible(request.book_title)
@@ -416,14 +435,26 @@ class AgentChapterGenerationService:
             "constraints:[string],planning_notes:string}}]}.\n\n输入："
         )
         prompt = schema + json.dumps(payload, ensure_ascii=False)
+        messages = [{"role": "user", "content": prompt}]
+        max_tokens = 12000
         last_error = None
+        finish_reason = ""
+        content = ""
         for _attempt in range(max(1, attempts)):
             try:
                 response = self.client.chat.completions.create(
-                    model=model, messages=[{"role": "user", "content": prompt}],
-                    temperature=0.35, max_tokens=12000,
+                    model=model, messages=messages,
+                    temperature=0.35, max_tokens=max_tokens,
+                    **self._json_completion_options(model),
                 )
-                raw = self._parse_json(response.choices[0].message.content or "")
+                content = response.choices[0].message.content or ""
+                finish_reason = str(getattr(response.choices[0], "finish_reason", "") or "")
+                if not content.strip():
+                    raise AgentPlanError(
+                        "模型返回了空回复" + (f"（finish_reason={finish_reason}）" if finish_reason else "")
+                        + "，未生成任何方案。请检查 API 地址/Key/模型是否可用，或稍后重试"
+                    )
+                raw = self._parse_json(content)
                 options = raw.get("options") if isinstance(raw, dict) else None
                 if not isinstance(options, list):
                     return [{"option_id": "option_1", "strategy": "单方案兼容模式", "summary": "", "plan": raw}]
@@ -441,7 +472,18 @@ class AgentChapterGenerationService:
                 raise AgentPlanError("候选方案为空")
             except Exception as exc:
                 last_error = exc
-                prompt += "\n\n上一次输出无效。仅返回含三个 options 的完整合法 JSON。"
+                if finish_reason == "length" and max_tokens < 24000:
+                    max_tokens = 24000
+                    hint = "上一次输出被 max_tokens 截断。已调大输出上限，请仅返回含三个 options 的完整合法 JSON。"
+                elif not str(content).strip():
+                    hint = "上一次输出为空。请直接输出含三个 options 的完整合法 JSON，不要任何解释或 Markdown。"
+                else:
+                    preview = re.sub(r"\s+", " ", str(content))[:120]
+                    hint = (
+                        f"上一次输出无效：{preview}。请直接输出 JSON 对象本身："
+                        "不要解释、问候语、前言后语、Markdown 代码块或列表符号。"
+                    )
+                messages.append({"role": "user", "content": hint})
         raise AgentPlanError(f"Agent 多方案章节规划失败: {last_error}")
 
     def _compare_candidates(self, request: AgentChapterRequest, candidates: list[AgentChapterPlan]) -> dict:
@@ -470,6 +512,7 @@ class AgentChapterGenerationService:
         try:
             response = self.client.chat.completions.create(
                 model=request.model, messages=[{"role": "user", "content": prompt}],
+                **self._json_completion_options(request.model),
                 temperature=0.15, max_tokens=3000,
             )
             result = self._parse_json(response.choices[0].message.content or "")
@@ -595,11 +638,34 @@ class AgentChapterGenerationService:
             "foreshadowing_density_risks:[string],chapters_without_main_progress:integer。\n\n"
             + json.dumps(payload, ensure_ascii=False)
         )
-        response = self.client.chat.completions.create(
-            model=model, messages=[{"role": "user", "content": prompt}],
-            temperature=0.15, max_tokens=2500,
-        )
-        raw = self._parse_json(response.choices[0].message.content or "")
+        messages = [{"role": "user", "content": prompt}]
+        last_error = None
+        raw = None
+        for attempt in range(2):
+            try:
+                response = self.client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=0.15,
+                    max_tokens=2500,
+                    **self._json_completion_options(model),
+                )
+                content = response.choices[0].message.content or ""
+                finish_reason = str(getattr(response.choices[0], "finish_reason", "") or "")
+                if not content.strip():
+                    detail = f"\uff08finish_reason={finish_reason}\uff09" if finish_reason else ""
+                    raise AgentPlanError(f"\u5377\u7ea7\u5bfc\u6f14\u8fd4\u56de\u7a7a JSON{detail}")
+                raw = self._parse_json(content)
+                break
+            except Exception as exc:
+                last_error = exc
+                if attempt == 0:
+                    messages.append({
+                        "role": "user",
+                        "content": "\u4e0a\u4e00\u6b21\u5377\u7ea7\u5bfc\u6f14\u8f93\u51fa\u65e0\u6548\u3002\u8bf7\u76f4\u63a5\u8fd4\u56de\u5b8c\u6574 JSON \u5bf9\u8c61\uff0c\u4e0d\u8981\u89e3\u91ca\u3001Markdown \u6216\u4ee3\u7801\u5757\u3002",
+                    })
+        if raw is None:
+            raise AgentPlanError(f"\u5377\u7ea7\u5bfc\u6f14 JSON \u590d\u76d8\u5931\uff1a{last_error}")
         defaults = self._director_defaults()
         result = {}
         for key, fallback in defaults.items():
@@ -658,6 +724,7 @@ class AgentChapterGenerationService:
                     model=request.model,
                     messages=[{"role": "user", "content": prompt}],
                     temperature=0.15,
+                    **self._json_completion_options(request.model),
                     max_tokens=8192,
                 )
                 raw = self._parse_json(response.choices[0].message.content or "")
@@ -775,29 +842,69 @@ class AgentChapterGenerationService:
             "每个场景必须产生至少一种可验证变化并写入 irreversible_change；角色变化必须有触发、选择和代价；must_happen 与结束状态不得空泛；不得用无功能场景凑字数。\n\n输入："
         )
         prompt = schema + json.dumps(payload, ensure_ascii=False)
+        messages = [{"role": "user", "content": prompt}]
+        max_tokens = 8192
         last_error = None
+        finish_reason = ""
+        content = ""
         for _attempt in range(max(1, attempts)):
             try:
-                response = self.client.chat.completions.create(model=model, messages=[{"role": "user", "content": prompt}], temperature=0.2, max_tokens=8192)
-                return self._parse_json(response.choices[0].message.content or "")
+                response = self.client.chat.completions.create(
+                    model=model, messages=messages, temperature=0.2, max_tokens=max_tokens,
+                    **self._json_completion_options(model),
+                )
+                content = response.choices[0].message.content or ""
+                finish_reason = str(getattr(response.choices[0], "finish_reason", "") or "")
+                if not content.strip():
+                    raise AgentPlanError(
+                        "模型返回了空回复" + (f"（finish_reason={finish_reason}）" if finish_reason else "")
+                        + "，未生成规划 JSON。请检查 API 地址/Key/模型是否可用，或稍后重试"
+                    )
+                return self._parse_json(content)
             except Exception as exc:
                 last_error = exc
-                prompt += "\n\n上一次输出无效。只输出完整合法 JSON，字段和类型必须严格匹配。"
+                if finish_reason == "length" and max_tokens < 16000:
+                    max_tokens = 16000
+                    hint = "上一次输出被 max_tokens 截断。已调大输出上限，请只输出完整合法 JSON。"
+                elif not str(content).strip():
+                    hint = "上一次输出为空。请直接输出完整合法 JSON，字段和类型必须严格匹配，不要任何解释或 Markdown。"
+                else:
+                    preview = re.sub(r"\s+", " ", str(content))[:120]
+                    hint = (
+                        f"上一次输出无效：{preview}。请直接输出 JSON 对象本身："
+                        "不要解释、问候语、前言后语、Markdown 代码块或列表符号。"
+                    )
+                messages.append({"role": "user", "content": hint})
         raise AgentPlanError(f"Agent 章节规划失败: {last_error}")
 
     @staticmethod
     def _parse_json(text: str) -> dict:
-        value = str(text or "").strip()
+        value = str(text or "").strip().lstrip("\ufeff\u200b\u200c\u200d")
         blocks = re.findall(r"```(?:json)?\s*(.*?)```", value, re.DOTALL | re.IGNORECASE)
         if blocks:
             value = blocks[0].strip()
         start, end = value.find("{"), value.rfind("}")
         if start >= 0 and end >= start:
             value = value[start:end + 1]
-        data = json.loads(value)
-        if not isinstance(data, dict):
-            raise AgentPlanError("章节规划不是 JSON 对象")
-        return data
+        if not value.strip():
+            raise AgentPlanError("模型没有返回任何 JSON 内容（空回复）。")
+        candidates = [value]
+        repaired = re.sub(r",\s*([}\]])", r"\1", value)
+        if repaired != value:
+            candidates.append(repaired)
+        last_error = None
+        for candidate in candidates:
+            try:
+                data = json.loads(candidate)
+                if isinstance(data, dict):
+                    return data
+                last_error = AgentPlanError("章节规划不是 JSON 对象")
+            except json.JSONDecodeError as exc:
+                last_error = exc
+        preview = re.sub(r"\s+", " ", value)[:160]
+        raise AgentPlanError(
+            f"模型返回的内容不是合法 JSON（前 160 字：{preview}）：{last_error or '解析失败'}"
+        )
 
     @staticmethod
     def _validate_plan(data: dict, index: list[dict], history: list[dict], target_words: int = 0) -> dict:
