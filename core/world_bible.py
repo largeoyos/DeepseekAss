@@ -2709,6 +2709,17 @@ def _parse_extraction_response(raw: str) -> dict:
     raise last_error or ValueError("Extraction response is not a JSON object")
 
 
+def _world_extraction_completion_options(model: str) -> dict:
+    """Keep DeepSeek V4 JSON turns from spending the response on reasoning."""
+    model_name = str(model or "").strip().lower()
+    if model_name not in {"deepseek-v4-flash", "deepseek-v4-pro"}:
+        return {}
+    return {
+        "response_format": {"type": "json_object"},
+        "extra_body": {"thinking": {"type": "disabled"}},
+    }
+
+
 def _world_bible_to_extracted_data(bible: WorldBible) -> dict:
     return {
         "characters": [asdict(item) for item in bible.characters],
@@ -2779,8 +2790,21 @@ def extract_and_merge_world_bible(
                     messages=[{"role": "user", "content": user_content}],
                     max_tokens=max_tokens,
                     temperature=0.1,
+                    **_world_extraction_completion_options(model),
                 )
-                data = _parse_extraction_response(response.choices[0].message.content or "")
+                choice = response.choices[0]
+                content = choice.message.content or ""
+                if not content.strip():
+                    finish_reason = str(getattr(choice, "finish_reason", "") or "")
+                    reasoning = str(getattr(choice.message, "reasoning_content", "") or "")
+                    details = []
+                    if finish_reason:
+                        details.append(f"finish_reason={finish_reason}")
+                    if reasoning.strip():
+                        details.append("仅返回了思考内容")
+                    suffix = f"（{', '.join(details)}）" if details else ""
+                    raise RuntimeError(f"模型返回空回复{suffix}，未生成世界书 JSON")
+                data = _parse_extraction_response(content)
                 break
             except Exception as exc:
                 last_error = exc

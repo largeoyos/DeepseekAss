@@ -14,6 +14,7 @@ from core.world_bible import (
     WorldRule,
     _flat_view_dict,
     _split_chapter_for_world_extraction,
+    _world_extraction_completion_options,
     apply_manual_overrides,
     audit_world_bible_consistency,
     confirm_duplicate_candidate,
@@ -27,6 +28,12 @@ from core.world_bible import (
 
 
 class WorldBibleV2Tests(unittest.TestCase):
+    def test_v4_world_extraction_requests_json_without_thinking(self):
+        options = _world_extraction_completion_options("deepseek-v4-flash")
+        self.assertEqual({"type": "json_object"}, options["response_format"])
+        self.assertEqual({"thinking": {"type": "disabled"}}, options["extra_body"])
+        self.assertEqual({}, _world_extraction_completion_options("custom-model"))
+
     def test_legacy_migration_adds_ids_rules_and_snapshot_mirror(self):
         legacy = {
             "characters": [{"name": "林青", "traits": "剑客", "relationships": []}],
