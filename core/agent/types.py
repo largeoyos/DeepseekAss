@@ -14,6 +14,7 @@ AgentKind = Literal[
     "continuity_editor",
     "roleplay_director",
     "project_maintainer",
+    "external_controller",
 ]
 AgentRunStatus = Literal["queued", "running", "waiting_approval", "paused", "completed", "failed", "cancelled"]
 PermissionLevel = Literal["read_only", "draft_write", "confirmed_write"]

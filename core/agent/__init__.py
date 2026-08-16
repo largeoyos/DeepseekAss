@@ -1,15 +1,12 @@
-"""Controlled, encrypted Agent runtime for DeepseekAss."""
+"""Controlled, encrypted Agent runtime for DeepseekAss.
 
-from core.agent.profiles import AGENT_PROFILES, get_agent_profile
-from core.agent.runtime import AgentRuntime
-from core.agent.chapter_generation import AgentChapterGenerationService, AgentChapterPlan, AgentChapterRequest, AgentChapterResult
-from core.agent.extra_generation import AgentExtraGenerationService, AgentExtraPlan, AgentExtraRequest, AgentExtraResult
-from core.agent.continuation import AgentContinuationService
-from core.agent.world_maintenance import WorldBibleMaintenanceService, WorldMaintenanceResult
-from core.agent.advisor import AdvisorRequest, AdvisorResult, WritingAdvisorService
-from core.agent.supervision_agent import AgentSupervisionService, SupervisionRequest, SupervisionResult
-from core.agent.world_bible_agent import WorldBibleAgentService, WorldChangePlan, WorldDetailRequest
-from core.agent.types import AgentEvent, AgentProfile, AgentRunRequest, ChangeOperation, ChangeSet, ToolCallRequest, ToolResult
+The package exports remain source compatible, while loading each implementation
+only when requested.  This keeps the standalone control process independent from
+the model/GUI stacks that it never uses.
+"""
+
+from importlib import import_module
+from typing import Any
 
 __all__ = [
     "AGENT_PROFILES", "AgentEvent", "AgentProfile", "AgentRunRequest", "AgentRuntime",
@@ -22,3 +19,45 @@ __all__ = [
     "WorldBibleAgentService", "WorldChangePlan", "WorldDetailRequest",
     "ChangeOperation", "ChangeSet", "ToolCallRequest", "ToolResult", "get_agent_profile",
 ]
+
+_EXPORT_MODULES = {
+    "AGENT_PROFILES": "core.agent.profiles",
+    "get_agent_profile": "core.agent.profiles",
+    "AgentRuntime": "core.agent.runtime",
+    "AgentChapterGenerationService": "core.agent.chapter_generation",
+    "AgentChapterPlan": "core.agent.chapter_generation",
+    "AgentChapterRequest": "core.agent.chapter_generation",
+    "AgentChapterResult": "core.agent.chapter_generation",
+    "AgentExtraGenerationService": "core.agent.extra_generation",
+    "AgentExtraPlan": "core.agent.extra_generation",
+    "AgentExtraRequest": "core.agent.extra_generation",
+    "AgentExtraResult": "core.agent.extra_generation",
+    "AgentContinuationService": "core.agent.continuation",
+    "WorldBibleMaintenanceService": "core.agent.world_maintenance",
+    "WorldMaintenanceResult": "core.agent.world_maintenance",
+    "AdvisorRequest": "core.agent.advisor",
+    "AdvisorResult": "core.agent.advisor",
+    "WritingAdvisorService": "core.agent.advisor",
+    "AgentSupervisionService": "core.agent.supervision_agent",
+    "SupervisionRequest": "core.agent.supervision_agent",
+    "SupervisionResult": "core.agent.supervision_agent",
+    "WorldBibleAgentService": "core.agent.world_bible_agent",
+    "WorldChangePlan": "core.agent.world_bible_agent",
+    "WorldDetailRequest": "core.agent.world_bible_agent",
+    "AgentEvent": "core.agent.types",
+    "AgentProfile": "core.agent.types",
+    "AgentRunRequest": "core.agent.types",
+    "ChangeOperation": "core.agent.types",
+    "ChangeSet": "core.agent.types",
+    "ToolCallRequest": "core.agent.types",
+    "ToolResult": "core.agent.types",
+}
+
+
+def __getattr__(name: str) -> Any:
+    module_name = _EXPORT_MODULES.get(name)
+    if module_name is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    value = getattr(import_module(module_name), name)
+    globals()[name] = value
+    return value

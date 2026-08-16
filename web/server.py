@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import difflib
 import html
 import json
 import os
@@ -25,12 +26,15 @@ from core.auth_manager import AuthManager
 from core.character_book import CharacterProfile, character_book_to_dict, dict_to_character_book
 from core.chat_domain import ScenePreset, SceneState, SenderProfile, TurnPolicy, filter_fields, change_set_from_dict, apply_memory_change_set, revert_memory_change_set
 from core.novel_manager import NovelMeta
+from core.model_config import ModelConfig, sanitize_extra_body, stage_for_operation, validate_provider
+from core.model_gateway import ModelGateway
+from core.model_types import RoutePolicy, TaskStage
 from core.settings_manager import DEFAULT_PRESETS
 from core.world_bible import audit_world_bible_consistency, dict_to_world_bible, world_bible_to_dict
 from core.world_bible_diff import diff_world_bibles, summarize_world_bible_diff
 from utils.export import export_book, export_chapter, export_conversation
 from utils.summarize import detect_sections, split_text_locally
-from web.services import WebApiConfigError, WebAuthError, WebRuntime, WebSensitiveError, WebUserContext, auxiliary_generation_model, body_generation_model, generation_params, masked_api_config, task_event_to_sse
+from web.services import WebApiConfigError, WebAuthError, WebRuntime, WebSensitiveError, WebUserContext, auxiliary_generation_model, body_generation_model, generation_params, masked_api_config, masked_model_config, task_event_to_sse
 
 class LoginRequest(BaseModel):
     username: str
@@ -45,6 +49,12 @@ class ApiConfigRequest(BaseModel):
 
 class ModelRequest(BaseModel):
     model: str = Field(min_length=1, max_length=120)
+
+class ModelCenterRequest(BaseModel):
+    config: dict = Field(default_factory=dict)
+
+class BookRoutesRequest(BaseModel):
+    routes: dict = Field(default_factory=dict)
 
 class SettingsUpdateRequest(BaseModel):
     settings: dict = Field(default_factory=dict)
@@ -257,6 +267,7 @@ class SnapshotRequest(BaseModel):
 class AgentChapterGenerateRequest(BaseModel):
     plan_id: str
     candidate_id: str = ""
+    reuse_current_plan: bool = False
 
 class AgentChapterPlanCancelRequest(BaseModel):
     plan_id: str
@@ -362,9 +373,9 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
             runtime.require_sensitive(ctx.username, ticket)
         except WebSensitiveError as exc:
             raise HTTPException(status_code=403, detail=str(exc)) from exc
-    def text_client_and_model(ctx: WebUserContext):
-        api_config = ctx.require_text_api()
-        client = runtime.client_factory(api_config)
+    def text_client_and_model(ctx: WebUserContext, operation: str = "chat", book_title: str = ""):
+        api_config = ctx.require_model(stage_for_operation(operation), book_title)
+        client = runtime.model_client(ctx, operation, book_title=book_title)
         model = (api_config.get("text") or {}).get("model") or ctx.settings.get("last_model") or "deepseek-v4-flash"
         return api_config, client, model
 
@@ -400,7 +411,12 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
     @app.get("/api/session", tags=["auth"])
     def session(ctx: WebUserContext = Depends(current_context)):
         api_config = ctx.load_api_config()
-        return {"user": {"username": ctx.username}, "api_configured": bool((api_config.get("text") or {}).get("api_key")), "settings": ctx.settings, "api": masked_api_config(api_config)}
+        try:
+            ctx.require_text_api()
+            configured = True
+        except WebApiConfigError:
+            configured = False
+        return {"user": {"username": ctx.username}, "api_configured": configured, "settings": ctx.settings, "api": masked_api_config(api_config)}
 
     @app.get("/api/settings", tags=["settings"])
     def get_settings(ctx: WebUserContext = Depends(current_context)):
@@ -412,6 +428,100 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
         settings.update(payload.settings or {})
         ctx.save_settings(settings)
         return {"settings": ctx.settings}
+
+    @app.get("/api/model-center", tags=["model-center"])
+    def get_model_center(ctx: WebUserContext = Depends(current_context)):
+        return {"config": masked_model_config(ctx.load_model_config())}
+
+    @app.put("/api/model-center", tags=["model-center"])
+    def save_model_center(
+        payload: ModelCenterRequest,
+        sensitive_ticket: str = Header(default="", alias="X-Sensitive-Ticket"),
+        ctx: WebUserContext = Depends(current_context),
+    ):
+        require_sensitive(ctx, sensitive_ticket)
+        existing = ctx.load_model_config().to_dict()
+        draft = dict(payload.config or {})
+        draft["schema_version"] = 2
+        for provider_id, raw_provider in dict(draft.get("providers") or {}).items():
+            provider = dict(raw_provider or {})
+            old = dict((existing.get("providers") or {}).get(provider_id) or {})
+            if str(provider.get("api_key") or "") in {"", "***"} or "..." in str(provider.get("api_key") or ""):
+                provider["api_key"] = str(old.get("api_key") or "")
+            old_headers = dict(old.get("headers") or {})
+            headers = dict(provider.get("headers") or {})
+            provider["headers"] = {
+                name: old_headers.get(name, "") if value == "***" else value
+                for name, value in headers.items()
+            }
+            draft.setdefault("providers", {})[provider_id] = provider
+        for model_id, raw_model in dict(draft.get("models") or {}).items():
+            profile = dict(raw_model or {})
+            old = dict((existing.get("models") or {}).get(model_id) or {})
+            if profile.get("extra_body_configured") and not profile.get("extra_body"):
+                profile["extra_body"] = dict(old.get("extra_body") or {})
+            profile["extra_body"] = sanitize_extra_body(profile.get("extra_body"))
+            draft.setdefault("models", {})[model_id] = profile
+        config = ModelConfig.from_dict(draft, ctx.settings)
+        errors = []
+        for provider in config.providers.values():
+            errors.extend(f"{provider.name}: {item}" for item in validate_provider(provider))
+        for stage in TaskStage:
+            route = config.routes.get(stage.value)
+            if not route or route.primary_model_id not in config.models:
+                errors.append(f"{stage.value}: 未选择有效主模型")
+                continue
+            profile = config.models[route.primary_model_id]
+            reasoning = route.overrides.reasoning_level
+            supported = set(profile.capabilities.supported_reasoning_levels or ["off"])
+            if reasoning and reasoning not in supported:
+                errors.append(f"{stage.value}: {profile.name} 不支持推理等级 {reasoning}")
+        if errors:
+            raise HTTPException(status_code=400, detail="；".join(errors))
+        ctx.save_model_config(config)
+        return {"config": masked_model_config(config)}
+
+    @app.post("/api/model-center/models/{model_id}/test", tags=["model-center"])
+    def test_model_profile(model_id: str, ctx: WebUserContext = Depends(current_context)):
+        try:
+            report = ctx.build_model_gateway().test_capabilities(model_id)
+            return {"ok": True, **report}
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.post("/api/model-center/models/{model_id}/discover", tags=["model-center"])
+    def discover_provider_models(model_id: str, ctx: WebUserContext = Depends(current_context)):
+        try:
+            return {"models": ctx.build_model_gateway().list_models(model_id)}
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    @app.get("/api/books/{title}/model-routes", tags=["model-center"])
+    def get_book_model_routes(title: str, ctx: WebUserContext = Depends(current_context)):
+        return {"routes": ctx.load_book_model_routes(title)}
+
+    @app.put("/api/books/{title}/model-routes", tags=["model-center"])
+    def save_book_model_routes(
+        title: str,
+        payload: BookRoutesRequest,
+        ctx: WebUserContext = Depends(current_context),
+    ):
+        config = ctx.load_model_config()
+        routes = {}
+        for stage in TaskStage:
+            raw = dict((payload.routes or {}).get(stage.value) or {})
+            route = RoutePolicy.from_dict(raw)
+            if not route.inherit and route.primary_model_id not in config.models:
+                raise HTTPException(status_code=400, detail=f"{stage.value}: 书籍路由主模型无效")
+            if not route.inherit:
+                profile = config.models[route.primary_model_id]
+                reasoning = route.overrides.reasoning_level
+                if reasoning and reasoning not in set(profile.capabilities.supported_reasoning_levels or ["off"]):
+                    raise HTTPException(status_code=400, detail=f"{stage.value}: {profile.name} 不支持推理等级 {reasoning}")
+            routes[stage.value] = route.to_dict()
+        workspace = ctx.novel_manager.get_workspace(title)
+        workspace.storage.write_json(".deepseekass/model_routes.json", {"schema_version": 1, "routes": routes})
+        return {"routes": routes}
 
 
     @app.put("/api/settings/model", tags=["settings"])
@@ -691,6 +801,11 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
     @app.post("/api/settings/test-connection", tags=["settings"])
     def test_connection(ctx: WebUserContext = Depends(current_context)):
         try:
+            if runtime._uses_default_client_factory:
+                config = ctx.load_model_config()
+                route = config.routes[TaskStage.INTERACTIVE.value]
+                result = ctx.build_model_gateway().test_model(route.primary_model_id)
+                return {"ok": True, "reply": result.content, "protocol": result.protocol, "model": result.model}
             api_config = ctx.require_text_api()
             client = runtime.client_factory(api_config)
             model = (api_config.get("text") or {}).get("model") or "deepseek-v4-flash"
@@ -846,7 +961,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
 
     @app.post("/api/books/{title}/nodes/{node_id}/variant", tags=["chapters"])
     def chapter_node_variant(title: str, node_id: str, payload: ChapterVariantRequest, ctx: WebUserContext = Depends(current_context)):
-        api_config, client, model = text_client_and_model(ctx)
+        api_config, client, model = text_client_and_model(ctx, "chapter_tree_rewrite", title)
 
         def target(handle):
             from core.app_services import ChapterGenerationService
@@ -1082,7 +1197,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
 
     @app.post("/api/books/{title}/chapters/rebuild-summary", tags=["chapters"])
     def rebuild_summary(title: str, ctx: WebUserContext = Depends(current_context)):
-        api_config, client, model = text_client_and_model(ctx)
+        api_config, client, model = text_client_and_model(ctx, "chapter_tree_summary", title)
         def target(handle):
             handle.progress("重建活跃路径摘要", percent=10, stage="摘要")
             ctx.novel_manager.rebuild_summary_from_active(client, title, model=model, global_user_prompt=str(ctx.settings.get("global_user_prompt") or ""), xp_mode=bool(ctx.novel_manager.load_meta(title).xp_mode))
@@ -1095,7 +1210,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
         client = None
         model = str(ctx.settings.get("last_model") or "deepseek-v4-flash")
         if payload.requirement in {"extract_missing", "force_extract"}:
-            _api, client, model = text_client_and_model(ctx)
+            _api, client, model = text_client_and_model(ctx, "chapter_tree_world_bible", title)
         def target(handle):
             handle.progress("重建活跃路径世界书", percent=10, stage="世界书")
             report = ctx.novel_manager.rebuild_world_bible_from_active(client, title, model=model, global_user_prompt=str(ctx.settings.get("global_user_prompt") or ""), xp_mode=bool(ctx.novel_manager.load_meta(title).xp_mode), force_extract=payload.requirement == "force_extract", extract_missing=payload.requirement == "extract_missing")
@@ -1105,7 +1220,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
 
     @app.post("/api/books/{title}/world/extract-node", tags=["world"])
     def extract_world_node(title: str, payload: ChapterActionRequest, ctx: WebUserContext = Depends(current_context)):
-        _api, client, model = text_client_and_model(ctx)
+        _api, client, model = text_client_and_model(ctx, "chapter_tree_world_bible", title)
         node_id = payload.node_id.strip()
         if not node_id:
             raise HTTPException(status_code=400, detail="请选择章节树节点")
@@ -1547,10 +1662,10 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
         return {"ok": True, "merged": removed_names, "world": world_bible_to_dict(bible)}
     @app.post("/api/books/{title}/agent/advisor", tags=["agent"])
     def ask_advisor(title: str, payload: AgentAdvisorRequest, ctx: WebUserContext = Depends(current_context)):
-        api_config = ctx.require_text_api()
+        api_config = ctx.require_model(TaskStage.AGENT, title)
         def target(handle):
             from core.agent.advisor import AdvisorRequest, WritingAdvisorService
-            client = runtime.client_factory(api_config)
+            client = runtime.model_client(ctx, "agent_advisor", book_title=title)
             model = (api_config.get("text") or {}).get("model") or "deepseek-v4-flash"
             handle.progress("Agent 顾问思考中", percent=20, stage="Agent")
             result = WritingAdvisorService(ctx.novel_manager, client, ctx.conversation_manager).ask(AdvisorRequest(title, payload.message, model, ctx.settings, payload.manual_references, payload.fiction_context))
@@ -1560,10 +1675,10 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
 
     @app.post("/api/books/{title}/agent/chapter/plan", tags=["agent"])
     def agent_chapter_plan(title: str, payload: AgentChapterPlanRequest, ctx: WebUserContext = Depends(current_context)):
-        api_config = ctx.require_text_api()
+        api_config = ctx.require_model(TaskStage.PLANNING, title)
         def target(handle):
             from core.agent.chapter_generation import AgentChapterGenerationService, AgentChapterPlan, AgentChapterRequest
-            client = runtime.client_factory(api_config)
+            client = runtime.model_client(ctx, "agent_chapter_plan", book_title=title)
             model = (api_config.get("text") or {}).get("model") or "deepseek-v4-flash"
             planning_model = auxiliary_generation_model(ctx.settings, model)
             target_info = ctx.novel_manager.get_active_generation_target(title)
@@ -1590,7 +1705,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
         return {"ok": True, "plan_id": payload.plan_id, "status": "cancelled"}
     @app.post("/api/books/{title}/agent/chapter/revise", tags=["agent"])
     def agent_chapter_revise(title: str, payload: AgentChapterPlanRevisionRequest, ctx: WebUserContext = Depends(current_context)):
-        api_config, client, model = text_client_and_model(ctx)
+        api_config, client, model = text_client_and_model(ctx, "agent_chapter_plan_revision", title)
 
         def target(handle):
             from core.agent.chapter_generation import AgentChapterGenerationService, AgentChapterPlan, AgentChapterRequest
@@ -1660,7 +1775,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
 
     @app.post("/api/books/{title}/agent/sessions/{session_id}/run", tags=["agent"])
     def run_agent_session(title: str, session_id: str, payload: AgentWorkbenchRunRequest, ctx: WebUserContext = Depends(current_context)):
-        api_config, client, model = text_client_and_model(ctx)
+        api_config, client, model = text_client_and_model(ctx, "agent_runtime", title)
         def target(handle):
             from core.agent.backends import build_agent_backend
             from core.agent.domain_tools import build_domain_tool_registry
@@ -1750,7 +1865,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
         from core.agent.repository import AgentRepository
         from core.agent.world_maintenance import WorldBibleMaintenanceService
         repo = AgentRepository(ctx.novel_manager.get_workspace(title))
-        pending = [asdict(item) for item in repo.list_pending_change_sets()]
+        pending = [serialize_change_for_review(item, ctx.novel_manager, title) for item in repo.list_pending_change_sets()]
         sessions = [asdict(item) for item in repo.list_sessions()]
         artifacts = repo.list_artifacts()
         advice = []
@@ -1777,7 +1892,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
 
     @app.post("/api/books/{title}/agent/world/maintenance/{maintenance_task_id}/retry", tags=["agent"])
     def retry_world_maintenance(title: str, maintenance_task_id: str, ctx: WebUserContext = Depends(current_context)):
-        _api, client, _model = text_client_and_model(ctx)
+        _api, client, _model = text_client_and_model(ctx, "agent_world_maintenance_retry", title)
         def target(handle):
             from core.agent.world_maintenance import WorldBibleMaintenanceService
             handle.progress("重试世界书维护", percent=10, stage="准备")
@@ -1795,7 +1910,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
         return {"task_id": runtime.start_task(ctx.username, f"重试世界书维护《{title}》", target, metadata={"kind": "agent_world_maintenance_retry", "book": title, "maintenance_task_id": maintenance_task_id}, retryable=True)}
     @app.post("/api/books/{title}/agent/chapter/generate", tags=["agent"])
     def agent_chapter_generate(title: str, payload: AgentChapterGenerateRequest, ctx: WebUserContext = Depends(current_context)):
-        api_config, client, model = text_client_and_model(ctx)
+        api_config, client, model = text_client_and_model(ctx, "agent_chapter_generation", title)
 
         def target(handle):
             from core.agent.chapter_generation import AgentChapterGenerationService, AgentChapterPlan, AgentChapterRequest
@@ -1835,6 +1950,37 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
                 client,
                 skills_enabled=bool(ctx.settings.get("agent_skills_enabled", True)),
             )
+            original_target = dict(record.get("generation_target") or {})
+            if payload.reuse_current_plan:
+                if (
+                    int(record.get("chapter_num", 0) or 0) != request.chapter_num
+                    or int(record.get("version", 0) or 0) <= 0
+                ):
+                    raise RuntimeError("当前草案尚未完成过正文生成，不能执行重新生成")
+                if not original_target:
+                    previous_node = manager.load_meta(title).chapter_nodes.get(
+                        str(record.get("chapter_node_id") or ""), {}
+                    )
+                    original_target = {
+                        "chapter_num": request.chapter_num,
+                        "version": int(record.get("version") or 0),
+                        "parent_id": previous_node.get("parent_id") or "",
+                    }
+                target_info = service.build_regeneration_target(
+                    request, original_target
+                )
+            else:
+                target_info = manager.get_active_generation_target(title)
+                if int(target_info.get("chapter_num") or 0) != request.chapter_num:
+                    raise RuntimeError(
+                        "章节计划已过期；如需沿用该草案，请使用“按当前草案重新生成”"
+                    )
+                original_parent = str(original_target.get("parent_id") or "")
+                if (
+                    original_parent
+                    and str(target_info.get("parent_id") or "") != original_parent
+                ):
+                    raise RuntimeError("章节计划的上游路径已变化，请重新规划")
             result = service.generate(request, plan)
             meta = manager.load_meta(title)
             strategy = NovelStrategy()
@@ -1912,9 +2058,22 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
                     f"章节监督跳过，保留当前正文：{exc}", percent=60, stage="章节监督"
                 )
             app_service = ChapterGenerationService(manager)
-            target_info = manager.get_active_generation_target(title)
-            if int(target_info.get("chapter_num") or 0) != request.chapter_num:
-                raise RuntimeError("章节计划已过期：活跃路径已变化，请重新规划")
+            if payload.reuse_current_plan:
+                target_info = service.build_regeneration_target(
+                    request, original_target
+                )
+            else:
+                latest_target = manager.get_active_generation_target(title)
+                if (
+                    int(latest_target.get("chapter_num") or 0) != request.chapter_num
+                    or (
+                        str(original_target.get("parent_id") or "")
+                        and str(latest_target.get("parent_id") or "")
+                        != str(original_target.get("parent_id") or "")
+                    )
+                ):
+                    raise RuntimeError("生成期间活跃路径已变化，本次正文未写入")
+                target_info = latest_target
             _path, saved_version = app_service.persist_chapter(
                 title=title,
                 chapter_num=request.chapter_num,
@@ -1984,11 +2143,20 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
             run_record = workspace.storage.read_json(
                 f"{workspace.agent_root}/chapter_runs/{payload.plan_id}.json", default={}
             ) or {}
+            generation_attempts = list(run_record.get("generation_attempts") or [])
+            generation_attempts.append({
+                "chapter_num": request.chapter_num,
+                "version": saved_version,
+                "regenerated_from_current_plan": bool(payload.reuse_current_plan),
+                "created_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
+            })
             run_record.update({
                 "status": "completed_with_pending_maintenance" if maintenance.status != "completed" else "completed",
                 "chapter_num": request.chapter_num,
                 "version": saved_version,
                 "chapter_node_id": manager._node_id(request.chapter_num, saved_version),
+                "generation_target": original_target or target_info,
+                "generation_attempts": generation_attempts,
                 "world_maintenance_task_id": maintenance.task_id,
                 "world_maintenance_status": maintenance.status,
                 "updated_at": time.strftime("%Y-%m-%dT%H:%M:%S"),
@@ -2006,7 +2174,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
         return {"task_id": runtime.start_task(ctx.username, f"Agent 生成《{title}》章节", target, metadata={"kind": "agent_chapter_generate", "book": title, "plan_id": payload.plan_id}, retryable=True)}
     @app.post("/api/books/{title}/agent/polish/plan", tags=["agent"])
     def agent_polish_plan(title: str, payload: AgentPolishPlanRequest, ctx: WebUserContext = Depends(current_context)):
-        _api, client, model = text_client_and_model(ctx)
+        _api, client, model = text_client_and_model(ctx, "agent_chapter_polish_plan", title)
         def target(handle):
             from core.agent.chapter_polish import AgentChapterPolishService, AgentPolishRequest
             meta = ctx.novel_manager.ensure_chapter_tree(title)
@@ -2021,7 +2189,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
 
     @app.post("/api/books/{title}/agent/polish/generate", tags=["agent"])
     def agent_polish_generate(title: str, payload: AgentPolishGenerateRequest, ctx: WebUserContext = Depends(current_context)):
-        api_config, client, model = text_client_and_model(ctx)
+        api_config, client, model = text_client_and_model(ctx, "agent_chapter_polish", title)
         def target(handle):
             from core.agent.chapter_polish import AgentChapterPolishService, AgentPolishPlan, AgentPolishRequest
             workspace = ctx.novel_manager.get_workspace(title)
@@ -2052,7 +2220,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
 
     @app.post("/api/books/{title}/agent/extra/plan", tags=["agent"])
     def agent_extra_plan(title: str, payload: AgentExtraPlanRequest, ctx: WebUserContext = Depends(current_context)):
-        _api, client, model = text_client_and_model(ctx)
+        _api, client, model = text_client_and_model(ctx, "agent_extra_plan", title)
         def target(handle):
             from core.agent.extra_generation import AgentExtraGenerationService, AgentExtraRequest
             request = AgentExtraRequest(title, payload.extra_type, payload.start_node_id, payload.end_node_id, payload.reference_node_id, payload.title, payload.plot, payload.requirement, payload.target_words, model, payload.manual_entity_ids, str(ctx.settings.get("global_user_prompt") or ""))
@@ -2063,7 +2231,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
 
     @app.post("/api/books/{title}/agent/extra/generate", tags=["agent"])
     def agent_extra_generate(title: str, payload: AgentExtraGenerateRequest, ctx: WebUserContext = Depends(current_context)):
-        api_config, client, model = text_client_and_model(ctx)
+        api_config, client, model = text_client_and_model(ctx, "agent_extra_generation", title)
         def target(handle):
             from core.agent.extra_generation import AgentExtraGenerationService, AgentExtraPlan, AgentExtraRequest
             workspace = ctx.novel_manager.get_workspace(title)
@@ -2089,7 +2257,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
 
     @app.post("/api/books/{title}/agent/world/analyze", tags=["agent"])
     def agent_world_analyze(title: str, payload: WorldDetailAnalyzeRequest, ctx: WebUserContext = Depends(current_context)):
-        _api, client, model = text_client_and_model(ctx)
+        _api, client, model = text_client_and_model(ctx, "world_bible_agent_detail", title)
         def target(handle):
             from core.agent.world_bible_agent import WorldBibleAgentService, WorldDetailRequest
             request = WorldDetailRequest(title, payload.text, model, payload.source_run_id, str(ctx.settings.get("global_user_prompt") or ""))
@@ -2154,7 +2322,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
         if not source:
             return {"sections": []}
         try:
-            _api, client, model = text_client_and_model(ctx)
+            _api, client, model = text_client_and_model(ctx, "agent_continuation_segment", payload.title)
         except WebApiConfigError:
             sections = split_text_locally(source, max_chars=6000)
             return {"sections": section_dicts(sections), "fallback": True, "error": "未配置文字 API，已使用本地分段"}
@@ -2204,7 +2372,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
     @app.post("/api/continuation/analyze", tags=["continuation"])
     def continuation_analyze(payload: ContinuationAnalyzeRequest, ctx: WebUserContext = Depends(current_context)):
         try:
-            _api_config, client, model = text_client_and_model(ctx)
+            _api_config, client, model = text_client_and_model(ctx, "continuation_import_analysis", payload.title)
         except WebApiConfigError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -2277,7 +2445,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
     @app.post("/api/continuation/suggest", tags=["continuation"])
     def continuation_suggest(payload: ContinuationSuggestRequest, ctx: WebUserContext = Depends(current_context)):
         try:
-            _api, client, model = text_client_and_model(ctx)
+            _api, client, model = text_client_and_model(ctx, "continuation_suggest", payload.title)
         except WebApiConfigError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -2319,7 +2487,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
     @app.post("/api/continuation/generate", tags=["continuation"])
     def continuation_generate(payload: ContinuationGenerateRequest, ctx: WebUserContext = Depends(current_context)):
         try:
-            api_config, client, model = text_client_and_model(ctx)
+            api_config, client, model = text_client_and_model(ctx, "continuation", payload.title)
         except WebApiConfigError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -2940,7 +3108,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
     @app.post("/api/roleplay/conversations/{conversation_id}/messages/{message_id}/regenerate", tags=["roleplay"])
     def regenerate_conversation_message(conversation_id: str, message_id: str, payload: ConversationMessageRequest, ctx: WebUserContext = Depends(current_context)):
         try:
-            api_config, client, model = text_client_and_model(ctx)
+            api_config, client, model = text_client_and_model(ctx, "roleplay_regenerate")
         except WebApiConfigError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -3021,7 +3189,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
     @app.post("/api/roleplay/chat", tags=["roleplay"])
     def roleplay_chat(payload: RoleChatRequest, ctx: WebUserContext = Depends(current_context)):
         try:
-            api_config, client, model = text_client_and_model(ctx)
+            api_config, client, model = text_client_and_model(ctx, "roleplay_chat")
         except WebApiConfigError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -3280,6 +3448,36 @@ async def read_single_upload(request: Request) -> dict:
 
 def serialize_meta(meta: NovelMeta) -> dict:
     return {"title": meta.title, "author": meta.author, "protagonist_bio": meta.protagonist_bio, "background_story": meta.background_story, "writing_demand": meta.writing_demand, "author_plan": meta.author_plan, "genre": meta.genre, "style_tone": meta.style_tone, "xp_mode": bool(meta.xp_mode), "total_chapters": meta.total_chapters, "created_at": meta.created_at, "updated_at": meta.updated_at}
+
+
+def serialize_change_for_review(change, manager, title: str) -> dict:
+    data = asdict(change)
+    origin = str((data.get("validation_result") or {}).get("origin") or "internal_agent")
+    review = {"origin": origin, "origin_label": "外部 AI 控制接口" if origin == "external_control" else "内置 Agent", "operations": []}
+    for operation in change.operations:
+        item = {"operation_id": operation.operation_id, "operation": operation.operation, "target_id": operation.target_id}
+        if operation.operation in {"chapter.save_version", "chapter.create_revision"}:
+            if operation.operation == "chapter.create_revision":
+                before = manager.read_chapter_node(title, operation.target_id) or ""
+            else:
+                before = manager.read_active_chapter(title, int(operation.target_id)) or ""
+            after = str(operation.payload.get("content") or "")
+            item.update({
+                "kind": "chapter",
+                "before_chars": len(before),
+                "after_chars": len(after),
+                "diff": "".join(difflib.unified_diff(before.splitlines(True), after.splitlines(True), fromfile="当前章节", tofile="AI 提议"))[:30000],
+                "chapter_title": operation.payload.get("chapter_title", ""),
+                "base_node_id": operation.payload.get("base_node_id", ""),
+                "will_activate": bool(operation.payload.get("activate", operation.operation == "chapter.save_version")),
+            })
+        elif operation.operation == "world_bible.patch":
+            item.update({"kind": "world_bible", "patches": list(operation.payload.get("operations") or [])})
+        else:
+            item.update({"kind": "other", "payload": operation.payload})
+        review["operations"].append(item)
+    data["review"] = review
+    return data
 
 
 def normalize_chapter(item: dict) -> dict:

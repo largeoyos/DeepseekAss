@@ -6,6 +6,7 @@ DeepseekAss 是一个面向长篇小说创作和角色对话的本地客户端�
 
 - 桌面端：基于 PyQt6，功能入口最完整，使用 `python gui_main.py` 启动。
 - Web 端：基于 FastAPI 和原生 Web 界面，适合浏览器或局域网设备访问，使用 `python web_main.py` 启动。
+- AI 控制端：本地 MCP stdio 服务与 JSON CLI，使用 `python control_main.py`，只开放受控的小说读取与待审批变更提案。
 
 项目当前提供四个工作区：
 
@@ -146,6 +147,43 @@ DEEPSEEK_BASE_URL=https://api.deepseek.com
 GUI 中保存的用户级 API 配置优先用于实际运行。
 
 ## 常用工作流
+
+### 连接本地 AI / MCP 客户端
+
+控制接口不要求桌面端或 Web 端常驻，也不会监听网络端口。首次连接先创建一个有范围、可撤销、默认 90 天有效的授权令牌：
+
+```powershell
+python control_main.py --username alice auth grant --name codex
+```
+
+命令会交互读取 DeepseekAss 密码，并且只显示一次原始令牌。将令牌放入 MCP 客户端专用环境变量，不要写入命令参数：
+
+```json
+{
+  "mcpServers": {
+    "deepseekass": {
+      "command": "python",
+      "args": ["E:\\Projects\\DeepseekAss\\control_main.py", "--username", "alice", "mcp"],
+      "env": {"DEEPSEEKASS_CONTROL_TOKEN": "dsa_..."}
+    }
+  }
+}
+```
+
+打包版把 `command` 换成 `DeepseekAssControl.exe`，参数保持为 `--username alice mcp`。只读授权使用 `auth grant --read-only`；查看和撤销授权使用 `auth list`、`auth revoke <grant_id>`。
+
+CLI 默认输出稳定 JSON，可用 `--pretty` 美化；只有 `tree show --output tree` 输出人类可读树形文本。例如：
+
+```powershell
+$env:DEEPSEEKASS_CONTROL_TOKEN = "dsa_..."
+python control_main.py --username alice --pretty books list
+python control_main.py --username alice tree show --book "我的小说" --output tree
+python control_main.py --username alice chapter read --book "我的小说" --node-id ch0001_v001
+python control_main.py --username alice world search --book "我的小说" --query "主角"
+python control_main.py --username alice changes list --book "我的小说"
+```
+
+AI 不能直接应用正式变更。章节修订会成为不激活的新版本，世界书修改会成为字段级待审批补丁；可在桌面 Agent 工作台、Web 待审批区，或交互式 `changes approve/reject` 命令中审核。
 
 ### 从零开始写小说
 

@@ -33,7 +33,9 @@ class ChangeApprovalDialog(QDialog):
         self.approved_ids: list[str] = []
         self.setWindowTitle("审批 Agent 变更")
         layout = QVBoxLayout(self)
-        layout.addWidget(QLabel(f"原因：{change_set.reason or '未提供'}\n批准前会自动创建项目快照。"))
+        origin = (change_set.validation_result or {}).get("origin", "internal_agent")
+        origin_label = "外部 AI 控制接口" if origin == "external_control" else "内置 Agent"
+        layout.addWidget(QLabel(f"来源：{origin_label}\n原因：{change_set.reason or '未提供'}\n批准前会自动创建项目快照。"))
         self.operations = QListWidget()
         for operation in change_set.operations:
             from PyQt6.QtCore import Qt
@@ -61,8 +63,11 @@ class ChangeApprovalDialog(QDialog):
         if row < 0:
             return
         operation = self.change_set.operations[row]
-        if operation.operation == "chapter.save_version":
-            before = manager.read_active_chapter(title, int(operation.target_id)) or ""
+        if operation.operation in {"chapter.save_version", "chapter.create_revision"}:
+            if operation.operation == "chapter.create_revision":
+                before = manager.read_chapter_node(title, operation.target_id) or ""
+            else:
+                before = manager.read_active_chapter(title, int(operation.target_id)) or ""
             after = operation.payload.get("content", "")
             text = "".join(difflib.unified_diff(before.splitlines(True), after.splitlines(True), fromfile="当前章节", tofile="Agent 提议"))
         else:
@@ -234,7 +239,9 @@ class AgentWorkbenchDialog(QDialog):
         self.pending.clear(); repo = self._repository()
         self._pending_sets = repo.list_pending_change_sets() if repo else []
         for change in self._pending_sets:
-            self.pending.addItem(f"{change.change_set_id} | {change.reason or 'Agent 变更'} | {len(change.operations)} 项")
+            origin = (change.validation_result or {}).get("origin", "")
+            source = "外部 AI" if origin == "external_control" else "内置 Agent"
+            self.pending.addItem(f"{change.change_set_id} | {source} | {change.reason or 'Agent 变更'} | {len(change.operations)} 项")
 
     def _selected_change(self):
         row = self.pending.currentRow()
@@ -248,7 +255,7 @@ class AgentWorkbenchDialog(QDialog):
         if dialog.exec() == QDialog.DialogCode.Accepted:
             try:
                 ChangeSetService(self.manager, self.book_combo.currentText(), self._repository()).approve(change.change_set_id, dialog.approved_ids)
-                if self.current_run_id:
+                if self.current_run_id and change.run_id == self.current_run_id:
                     self.runtime.resume(self.current_run_id, {"approved": True, "change_set_id": change.change_set_id})
                 QMessageBox.information(self, "完成", "变更已应用并创建项目快照。")
             except Exception as exc:
@@ -259,7 +266,7 @@ class AgentWorkbenchDialog(QDialog):
         change = self._selected_change()
         if change:
             ChangeSetService(self.manager, self.book_combo.currentText(), self._repository()).reject(change.change_set_id)
-            if self.current_run_id:
+            if self.current_run_id and change.run_id == self.current_run_id:
                 self.runtime.resume(self.current_run_id, {"approved": False, "change_set_id": change.change_set_id})
             self._refresh_pending()
 

@@ -7,7 +7,6 @@ import uuid
 from dataclasses import asdict
 from typing import Any, Iterator
 
-from config import Config
 from core.agent.context import AgentContextAssembler
 from core.agent.middleware import SafetyMiddleware
 from core.agent.profiles import build_system_prompt, get_agent_profile
@@ -178,10 +177,9 @@ class LangGraphAgentBackend:
     ) -> None:
         try:
             from langchain.agents import create_agent  # noqa: F401
-            from langchain_openai import ChatOpenAI  # noqa: F401
             from langgraph.types import Command, interrupt  # noqa: F401
         except Exception as exc:
-            raise RuntimeError("LangChain、LangGraph 或 langchain-openai 未安装") from exc
+            raise RuntimeError("LangChain 或 LangGraph 未安装") from exc
         self.manager = novel_manager
         self.client = client
         self.tool_registry = tool_registry
@@ -304,18 +302,19 @@ class LangGraphAgentBackend:
     def _build_graph(self, run, repository, profile, skills):
         from langchain.agents import create_agent
         from langchain_core.tools import StructuredTool
-        from langchain_openai import ChatOpenAI
         from langgraph.types import interrupt
 
         model = self.services.get("langchain_model")
         if model is None:
-            raw_client = getattr(self.client, "raw_client", self.client)
-            api_key = str(getattr(raw_client, "api_key", "") or Config.API_KEY)
-            base_url = str(getattr(raw_client, "base_url", "") or Config.BASE_URL)
-            model = ChatOpenAI(
+            from core.agent.gateway_langchain import GatewayLangChainChatModel
+            if hasattr(self.client, "client_for"):
+                from core.model_types import TaskStage
+                raw_client = self.client.client_for("agent_runtime", stage=TaskStage.AGENT, book_title=run.book_title)
+            else:
+                raw_client = getattr(self.client, "raw_client", self.client)
+            model = GatewayLangChainChatModel(
+                client=raw_client,
                 model=run.model,
-                api_key=api_key,
-                base_url=base_url,
                 temperature=float(getattr(self.client, "temperature", 0.3) or 0.3),
             )
         tools = []

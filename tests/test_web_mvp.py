@@ -172,6 +172,47 @@ class WebMvpTestCase(unittest.TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertIn("桌面端设置中心", response.json()["detail"])
 
+    def test_model_center_masks_secrets_and_saves_global_and_book_routes(self):
+        self.configure_api()
+        token = self.login()
+        headers = self.auth_headers(token)
+        center = self.client.get("/api/model-center", headers=headers)
+        self.assertEqual(200, center.status_code, center.text)
+        config = center.json()["config"]
+        self.assertEqual(2, config["schema_version"])
+        provider = next(iter(config["providers"].values()))
+        self.assertNotEqual("test-key", provider["api_key"])
+        self.assertTrue(provider["api_key_configured"])
+        provider["allow_insecure_http"] = True
+
+        confirmed = self.client.post(
+            "/api/auth/confirm", headers=headers, json={"password": "pass123"},
+        )
+        ticket_headers = {**headers, "X-Sensitive-Ticket": confirmed.json()["sensitive_ticket"]}
+        saved = self.client.put(
+            "/api/model-center", headers=ticket_headers, json={"config": config},
+        )
+        self.assertEqual(200, saved.status_code, saved.text)
+        config_path = os.path.join(AuthManager.get_user_dir("alice"), "config.enc")
+        with open(config_path, "rb") as encrypted_file:
+            self.assertNotIn(b"test-key", encrypted_file.read())
+
+        self.client.post("/api/books", headers=headers, json={"title": "路由书"})
+        book_routes = {
+            stage: {"inherit": True, "primary_model_id": "", "fallback_model_ids": [], "overrides": {}}
+            for stage in ("interactive", "drafting", "planning", "extraction", "review", "agent")
+        }
+        route_saved = self.client.put(
+            "/api/books/%E8%B7%AF%E7%94%B1%E4%B9%A6/model-routes",
+            headers=headers,
+            json={"routes": book_routes},
+        )
+        self.assertEqual(200, route_saved.status_code, route_saved.text)
+        loaded = self.client.get(
+            "/api/books/%E8%B7%AF%E7%94%B1%E4%B9%A6/model-routes", headers=headers,
+        )
+        self.assertTrue(loaded.json()["routes"]["drafting"]["inherit"])
+
     def test_fake_generation_saves_chapter_and_replays_sse(self):
         self.configure_api()
         token = self.login()

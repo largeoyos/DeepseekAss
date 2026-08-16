@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import asdict
+from datetime import datetime
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from core.agent.changes import ChangeSetService
 from core.agent.tools import ToolRegistry, ToolSpec
@@ -67,6 +69,32 @@ def build_domain_tool_registry(novel_manager, conversation_manager=None, web_sea
             if center - before <= num <= center + after:
                 selected.append({"node_id": node.get("id"), "chapter_num": num, "title": node.get("title", ""), "summary": node.get("summary", ""), "content": novel_manager.read_chapter_node(ctx.book_title, node.get("id")) or ""})
         return {"chapters": selected}
+
+    def chapter_tree(ctx, args):
+        meta = novel_manager.ensure_chapter_tree(ctx.book_title)
+        offset = max(0, int(args.get("offset", 0) or 0))
+        limit = max(1, min(500, int(args.get("limit", 500) or 500)))
+        tree_id = str(args.get("tree_id", "") or "")
+        include_summaries = bool(args.get("include_summaries", False))
+        nodes = novel_manager.list_chapter_tree_nodes(ctx.book_title)
+        if tree_id:
+            nodes = [item for item in nodes if str(item.get("tree_id") or "primary_tree") == tree_id]
+        total = len(nodes)
+        page = []
+        for node in nodes[offset:offset + limit]:
+            item = {key: value for key, value in dict(node).items() if key != "file"}
+            if not include_summaries:
+                item.pop("summary", None)
+            page.append(item)
+        end = offset + len(page)
+        return {
+            "trees": novel_manager.list_chapter_trees(ctx.book_title),
+            "nodes": page,
+            "active_path": list(meta.active_path),
+            "active_tree_id": meta.active_tree_id,
+            "target": novel_manager.get_active_generation_target(ctx.book_title),
+            "page": {"offset": offset, "limit": limit, "returned": len(page), "total": total, "next_offset": end if end < total else None},
+        }
 
     def chapter_search(ctx, args):
         query = str(args["query"]).strip()
@@ -169,6 +197,15 @@ def build_domain_tool_registry(novel_manager, conversation_manager=None, web_sea
         orphaned = [item["id"] for item in nodes if item["id"] not in active]
         return {"book_id": meta.book_id, "node_count": len(nodes), "missing_content_nodes": missing, "non_active_nodes": orphaned, "workspace_error": novel_manager.workspace_error(ctx.book_title), "world_bible_error": novel_manager.world_bible_load_error(ctx.book_title)}
 
+    def pending_changes(ctx, _args):
+        return {"changes": [asdict(item) for item in ctx.repository.list_pending_change_sets()]}
+
+    def change_read(ctx, args):
+        change = ctx.repository.load_change_set(str(args["change_set_id"]))
+        if change is None:
+            raise ValueError("变更不存在")
+        return {"change_set": asdict(change)}
+
     def write_draft(ctx, args):
         draft_id = ctx.repository.save_draft(ctx.run_id, args["name"], args["content"])
         return {"draft_id": draft_id, "name": args["name"]}
@@ -224,6 +261,7 @@ def build_domain_tool_registry(novel_manager, conversation_manager=None, web_sea
     registry.register(ToolSpec("chapter.read", "读取指定活跃章节。", _object_schema({"chapter_num": {"type": "integer"}}, ["chapter_num"]), chapter_read))
     registry.register(ToolSpec("chapter.read_node", "按章节树节点 ID 读取具体版本。", _object_schema({"node_id": {"type": "string"}}, ["node_id"]), chapter_read_node, max_result_chars=20000))
     registry.register(ToolSpec("chapter.read_range", "读取活跃路径中相邻若干章。", _object_schema({"center_chapter": {"type": "integer"}, "before": {"type": "integer"}, "after": {"type": "integer"}}, ["center_chapter"]), chapter_read_range, max_result_chars=24000))
+    registry.register(ToolSpec("chapter.tree", "读取完整章节森林、分支元数据与活跃路径。", _object_schema({"tree_id": {"type": "string"}, "offset": {"type": "integer"}, "limit": {"type": "integer"}, "include_summaries": {"type": "boolean"}}, []), chapter_tree, max_result_chars=30000))
     registry.register(ToolSpec("chapter.search", "在活跃章节路径中搜索文本。", _object_schema({"query": {"type": "string"}, "limit": {"type": "integer"}}, ["query"]), chapter_search))
     registry.register(ToolSpec("chapter.summary_search", "搜索活跃路径章节摘要。", _object_schema({"query": {"type": "string"}, "limit": {"type": "integer"}}, []), chapter_summary_search))
     registry.register(ToolSpec("world_bible.read", "读取结构化世界书。", _object_schema({}), world_read, max_result_chars=16000))
@@ -235,11 +273,13 @@ def build_domain_tool_registry(novel_manager, conversation_manager=None, web_sea
     registry.register(ToolSpec("project.author_plan", "读取作者规划、主角设定、世界观和写作约束。", _object_schema({}), project_author_plan))
     registry.register(ToolSpec("project.active_state", "读取活跃路径、剧情摘要和当前项目状态。", _object_schema({}), project_active_state, max_result_chars=16000))
     registry.register(ToolSpec("project.integrity", "检查项目结构和数据完整性。", _object_schema({}), project_integrity, allowed_agents=["project_maintainer"]))
+    registry.register(ToolSpec("changes.list_pending", "读取当前书籍的待审批变更。", _object_schema({}), pending_changes, allowed_agents=["external_controller", "writing_orchestrator", "world_bible_manager", "continuity_editor"]))
+    registry.register(ToolSpec("changes.read", "读取指定待审批或历史变更。", _object_schema({"change_set_id": {"type": "string"}}, ["change_set_id"]), change_read, allowed_agents=["external_controller", "writing_orchestrator", "world_bible_manager", "continuity_editor"]))
     registry.register(ToolSpec("chapter.write_draft", "将内容写入加密 Agent 草稿区。", _object_schema({"name": {"type": "string"}, "content": {"type": "string"}}, ["name", "content"]), write_draft, required_permission="draft_write", read_only=False))
     registry.register(ToolSpec("agent.save_advice", "将顾问构思保存为加密 Artifact。", _object_schema({"title": {"type": "string"}, "content": {"type": "string"}}, ["content"]), save_advice, required_permission="draft_write", read_only=False, allowed_agents=["writing_advisor"]))
-    registry.register(ToolSpec("chapter.propose", "提出正式章节版本变更，等待用户审批。", _object_schema({"chapter_num": {"type": "integer"}, "chapter_title": {"type": "string"}, "content": {"type": "string"}, "parent_id": {"type": "string"}, "reason": {"type": "string"}}, ["chapter_num", "chapter_title", "content"]), propose_chapter, required_permission="confirmed_write", read_only=False, produces_change_set=True, allowed_agents=["writing_orchestrator"]))
+    registry.register(ToolSpec("chapter.propose", "提出正式章节版本变更，等待用户审批。", _object_schema({"chapter_num": {"type": "integer"}, "chapter_title": {"type": "string"}, "content": {"type": "string"}, "parent_id": {"type": "string"}, "reason": {"type": "string"}}, ["chapter_num", "chapter_title", "content"]), propose_chapter, required_permission="confirmed_write", read_only=False, produces_change_set=True, allowed_agents=["writing_orchestrator", "external_controller"]))
     registry.register(ToolSpec("world_bible.propose", "提出完整世界书替换变更，等待用户审批。", _object_schema({"world_bible": {"type": "object"}, "reason": {"type": "string"}}, ["world_bible"]), propose_world, required_permission="confirmed_write", read_only=False, produces_change_set=True, allowed_agents=["continuity_editor"]))
-    registry.register(ToolSpec("world_bible.propose_patch", "提出字段级世界书变更，等待用户审批。", _object_schema({"operations": {"type": "array", "items": {"type": "object"}}, "reason": {"type": "string"}}, ["operations"]), propose_world_patch, required_permission="confirmed_write", read_only=False, produces_change_set=True, allowed_agents=["world_bible_manager", "continuity_editor"]))
+    registry.register(ToolSpec("world_bible.propose_patch", "提出字段级世界书变更，等待用户审批。", _object_schema({"operations": {"type": "array", "items": {"type": "object"}}, "reason": {"type": "string"}}, ["operations"]), propose_world_patch, required_permission="confirmed_write", read_only=False, produces_change_set=True, allowed_agents=["world_bible_manager", "continuity_editor", "external_controller"]))
     registry.register(ToolSpec("agent.todo", "记录当前任务的结构化待办。", _object_schema({"items": {"type": "array", "items": {"type": "object"}}}, ["items"]), todo))
     registry.register(ToolSpec("system.current_time", "读取指定 IANA 时区的现实日期和时间。", _object_schema({"timezone": {"type": "string"}}, []), current_time))
     registry.register(ToolSpec("conversation.read", "读取现有角色扮演会话。", _object_schema({"conversation_id": {"type": "string"}}, ["conversation_id"]), conversation_read, allowed_agents=["roleplay_director"]))

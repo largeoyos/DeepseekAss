@@ -1,3 +1,5 @@
+import json
+
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import (
     QDialog,
@@ -51,6 +53,21 @@ class ContentViewerDialog(QDialog):
         rfull = (entry.reasoning_content_full or "").strip()
         self._reasoning.setPlainText(rfull if rfull else (entry.reasoning_content_preview or "(无推理内容)"))
         tabs.addTab(self._reasoning, "推理内容")
+        self._routing = QPlainTextEdit()
+        self._routing.setReadOnly(True)
+        self._routing.setPlainText(json.dumps({
+            "provider_id": entry.provider_id,
+            "provider_name": entry.provider_name,
+            "protocol": entry.protocol,
+            "model_profile_id": entry.model_profile_id,
+            "stage": entry.stage,
+            "reasoning_level": entry.reasoning_level,
+            "context_budget": entry.context_budget,
+            "search_source": entry.search_source,
+            "fallback_attempts": entry.fallback_attempts,
+            "final_failure_reason": entry.final_failure_reason,
+        }, ensure_ascii=False, indent=2))
+        tabs.addTab(self._routing, "路由 / 预算 / 回退")
         layout.addWidget(tabs, stretch=1)
 
         notes = []
@@ -102,19 +119,19 @@ class TokenLogDialog(QDialog):
         tools.addWidget(clear_btn)
         layout.addLayout(tools)
 
-        self._table = QTableWidget(0, 12)
+        self._table = QTableWidget(0, 15)
         self._table.setHorizontalHeaderLabels([
-            "时间", "方向", "操作", "模式", "模型", "内容预览", "推理预览", "Prompt", "Completion / Total",
+            "时间", "方向", "操作", "阶段", "服务", "协议", "模型", "推理", "内容预览", "推理预览", "Prompt", "Completion / Total",
             "耗时", "字符", "汉字"
         ])
         self._table.horizontalHeader().setStretchLastSection(True)
         self._table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self._table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self._table.cellDoubleClicked.connect(self._on_cell_double_clicked)
-        preview_header = self._table.horizontalHeaderItem(5)
+        preview_header = self._table.horizontalHeaderItem(8)
         if preview_header is not None:
             preview_header.setToolTip("双击查看正文全文")
-        reasoning_header = self._table.horizontalHeaderItem(6)
+        reasoning_header = self._table.horizontalHeaderItem(9)
         if reasoning_header is not None:
             reasoning_header.setToolTip("模型思考/推理内容预览，双击正文或推理单元格查看全文")
         layout.addWidget(self._table, stretch=1)
@@ -144,7 +161,8 @@ class TokenLogDialog(QDialog):
         for entry in self._entries:
             haystack = " ".join([
                 entry.timestamp, entry.operation, entry.direction, entry.strategy,
-                entry.model, entry.content_preview, entry.reasoning_content_preview,
+                entry.model, entry.provider_name, entry.protocol, entry.stage,
+                entry.reasoning_level, entry.content_preview, entry.reasoning_content_preview,
             ]).lower()
             if keyword and keyword not in haystack:
                 continue
@@ -177,8 +195,11 @@ class TokenLogDialog(QDialog):
                 entry.timestamp,
                 "发送" if entry.direction == "send" else "接收",
                 entry.operation,
-                entry.strategy,
+                entry.stage,
+                entry.provider_name,
+                entry.protocol,
                 entry.model,
+                entry.reasoning_level,
                 content_preview,
                 reasoning_preview,
                 prompt,
@@ -189,13 +210,13 @@ class TokenLogDialog(QDialog):
             ]
             for col, value in enumerate(values):
                 item = QTableWidgetItem(value)
-                if col in (7, 8, 9, 10, 11):
+                if col in (10, 11, 12, 13, 14):
                     item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
                 self._table.setItem(row, col, item)
         self._table.resizeColumnsToContents()
 
     def _on_cell_double_clicked(self, row: int, column: int) -> None:
-        if column != 5 or row < 0 or row >= len(self._rows):
+        if column not in (8, 9) or row < 0 or row >= len(self._rows):
             return
         ContentViewerDialog(self, self._rows[row]).exec()
 

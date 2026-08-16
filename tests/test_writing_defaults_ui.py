@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PyQt6.QtWidgets import QApplication, QComboBox, QGroupBox, QLabel, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QApplication, QComboBox, QGroupBox, QLabel, QTabWidget, QVBoxLayout, QWidget
 
 from core.auth_manager import AuthManager
 from core.novel_manager import NovelManager
@@ -79,6 +79,38 @@ class WritingDefaultsUiTests(unittest.TestCase):
             self.assertEqual(settings["default_genre"], "suspense")
             self.assertEqual(settings["default_style_profile_id"], profile.profile_id)
             self.assertEqual(settings["default_style_strength"], "strict")
+            dialog.close()
+            parent.close()
+
+    def test_settings_dialog_exposes_multi_model_center_and_six_routes(self):
+        with tempfile.TemporaryDirectory() as root:
+            manager = NovelManager(os.path.join(root, "books"))
+            parent = _SettingsParent(manager)
+            dialog = SettingsDialog(
+                parent,
+                settings_manager=SettingsManager(root),
+                auth=AuthManager,
+                username="tester",
+                user_dir=root,
+                encrypted=False,
+                api_config={
+                    "text": {"base_url": "http://127.0.0.1:11434", "api_key": "", "model": "qwen3"},
+                    "image": {},
+                },
+                api_config_callback=lambda _value: None,
+                api_test_callback=lambda _kind, _value: (True, "ok"),
+                settings_changed_callback=lambda: None,
+                password_changed_callback=lambda _key: None,
+            )
+            tab_labels = [
+                tabs.tabText(index)
+                for tabs in dialog.findChildren(QTabWidget)
+                for index in range(tabs.count())
+            ]
+            self.assertTrue(any("服务连接" in label for label in tab_labels))
+            self.assertTrue(any("模型档案" in label for label in tab_labels))
+            self.assertTrue(any("任务路由" in label for label in tab_labels))
+            self.assertEqual(6, len(dialog._route_controls))
             dialog.close()
             parent.close()
 

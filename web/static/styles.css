@@ -338,8 +338,27 @@ label span { display: block; margin-bottom: 6px; color: var(--muted); font-size:
 
 
 .settings-mini-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.model-center-box { grid-column: 1 / -1; display: grid; gap: 14px; border-left: 4px solid var(--accent); }
+.model-center-heading, .route-editor-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.model-center-heading h3, .route-editor-head h4, .model-center-pane h4 { margin: 0 0 6px; }
+.model-center-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.model-center-pane { display: grid; align-content: start; gap: 9px; padding: 13px; border: 1px solid var(--line); background: var(--surface-2); }
+.button-row.compact button { min-height: 32px; padding: 0 8px; font-size: 12px; }
+.capability-grid { display: flex; flex-wrap: wrap; gap: 8px 14px; padding: 8px 0; }
+.capability-grid label { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); font-size: 12px; }
+.capability-grid input { width: auto; min-height: auto; }
+.route-editor-head label { min-width: 240px; }
+.route-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.route-card { display: grid; grid-template-columns: minmax(110px, .7fr) minmax(0, 1.3fr); gap: 8px 10px; padding: 12px; border: 1px solid var(--line); background: var(--surface-2); }
+.route-card h5 { grid-column: 1 / -1; margin: 0 0 2px; font-size: 14px; }
+.route-card label { min-width: 0; }
+.route-card .route-inherit { grid-column: 1 / -1; display: flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
+.route-card .route-inherit input { width: auto; min-height: auto; }
 @media (max-width: 720px) {
   .settings-mini-grid { grid-template-columns: 1fr; }
+  .model-center-columns, .route-grid { grid-template-columns: 1fr; }
+  .model-center-heading, .route-editor-head { display: grid; }
+  .route-editor-head label { min-width: 0; }
 }
 
 .world-tools { margin-top: 12px; }

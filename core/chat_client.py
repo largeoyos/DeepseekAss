@@ -1,22 +1,20 @@
-"""
-DeepSeek 聊天客户端 - 核心逻辑
-负责 API 调用、对话管理、模型切换、参数控制，与具体模式（策略）解耦
-"""
+"""多模型聊天客户端，保留原 DeepSeekChatClient 名称作为兼容别名。"""
 from datetime import datetime
 from typing import Generator
 
-from openai import OpenAI
-
 from config import Config
+from core.model_config import migrate_legacy_config, stage_for_operation
+from core.model_gateway import ModelGateway, format_citations_markdown
+from core.model_types import TaskStage
 from strategies.base_strategy import BaseStrategy
 
 
-class DeepSeekChatClient:
+class MultiModelChatClient:
     """
-    DeepSeek 聊天客户端
+    多模型聊天客户端。
 
     职责：
-    - 管理与 DeepSeek API 的连接
+    - 通过 ModelGateway 管理远程与本地模型连接
     - 维护对话上下文（消息列表）
     - 根据当前策略生成回复
     - 支持流式输出
@@ -24,16 +22,14 @@ class DeepSeekChatClient:
     - 不与任何具体模式耦合（依赖抽象 BaseStrategy）
     """
 
-    @staticmethod
-    def _create_openai_client(api_key: str, base_url: str) -> OpenAI:
-        return OpenAI(
-            api_key=api_key,
-            base_url=base_url,
-            timeout=Config.API_TIMEOUT_SECONDS,
-            max_retries=Config.API_MAX_RETRIES,
-        )
-
-    def __init__(self, strategy: BaseStrategy, model: str | None = None):
+    def __init__(
+        self,
+        strategy: BaseStrategy,
+        model: str | None = None,
+        *,
+        gateway: ModelGateway | None = None,
+        book_title: str = "",
+    ):
         """
         初始化客户端
 
@@ -42,8 +38,18 @@ class DeepSeekChatClient:
             model: 模型名称（若不指定则使用策略推荐的模型）
         """
         Config.validate()
-
-        self._client = self._create_openai_client(Config.API_KEY, Config.BASE_URL)
+        if gateway is None:
+            legacy = {
+                "text": {
+                    "api_key": Config.API_KEY,
+                    "base_url": Config.BASE_URL,
+                    "model": model or strategy.recommended_model,
+                }
+            }
+            gateway = ModelGateway(migrate_legacy_config(legacy, {"last_model": model or ""}))
+        self._gateway = gateway
+        self._book_title = str(book_title or "")
+        self._client = self.client_for("chat", stage=TaskStage.INTERACTIVE)
         self._strategy = strategy
         self._model = model or strategy.recommended_model
         self._temperature = strategy.recommended_temperature
@@ -53,6 +59,7 @@ class DeepSeekChatClient:
         self._messages: list[dict] = []
         self._global_user_prompt: str = ""
         self._last_usage: dict | None = None
+        self._last_gateway_result = None
 
         # 取消机制
         self._cancel_requested = False
@@ -69,8 +76,35 @@ class DeepSeekChatClient:
 
     @property
     def raw_client(self):
-        """暴露底层 OpenAI 客户端，供 NovelManager 等组件使用"""
+        """已弃用：返回互动阶段的 OpenAI 形状兼容代理。"""
         return self._client
+
+    @property
+    def gateway(self) -> ModelGateway:
+        return self._gateway
+
+    @property
+    def last_gateway_result(self):
+        return self._last_gateway_result
+
+    def client_for(
+        self,
+        operation: str,
+        *,
+        stage: TaskStage | None = None,
+        book_title: str | None = None,
+    ):
+        """为明确操作创建兼容客户端，阶段由注册表决定。"""
+        resolved_stage = stage or stage_for_operation(operation)
+        return self._gateway.compat_client(
+            operation,
+            stage=resolved_stage,
+            book_title=self._book_title if book_title is None else str(book_title or ""),
+        )
+
+    def set_book_title(self, book_title: str) -> None:
+        self._book_title = str(book_title or "")
+        self._client = self.client_for("chat", stage=TaskStage.INTERACTIVE)
 
     @property
     def model(self) -> str:
@@ -164,14 +198,40 @@ class DeepSeekChatClient:
             Config.MODEL_V4_PRO,
         }
         if model not in known:
-            print(f"[警告] 未知模型 '{model}'，将尝试使用，但可能出错。")
+            known.update(profile.model for profile in self._gateway.config.models.values())
+        if model not in known:
+            print(f"[警告] 未找到模型档案 '{model}'，仅更新显示名称。")
         self._model = model
+        selected = next(
+            (profile for profile in self._gateway.config.models.values()
+             if profile.model_id == model or profile.model == model),
+            None,
+        )
+        if selected is not None:
+            route = self._gateway.config.routes.get(TaskStage.INTERACTIVE.value)
+            if route is not None:
+                route.primary_model_id = selected.model_id
+            self._client = self.client_for("chat", stage=TaskStage.INTERACTIVE)
 
     def reconfigure_connection(self, api_key: str, base_url: str, model: str | None = None) -> None:
-        """Rebuild the OpenAI-compatible connection without clearing the conversation."""
-        self._client = self._create_openai_client(api_key, base_url)
+        """将旧版单连接设置转换为 v2 模型档案，不清空对话。"""
+        migrated = migrate_legacy_config({
+            "text": {
+                "api_key": api_key,
+                "base_url": base_url,
+                "model": model or self._model,
+            },
+            "image": dict(self._gateway.config.image or {}),
+        })
+        self._gateway.update_config(migrated)
+        self._client = self.client_for("chat", stage=TaskStage.INTERACTIVE)
         if model:
             self._model = model
+
+    def reconfigure_gateway(self, gateway: ModelGateway) -> None:
+        """替换网关配置，保留当前策略和对话。"""
+        self._gateway = gateway
+        self._client = self.client_for("chat", stage=TaskStage.INTERACTIVE)
 
     # ========== 取消机制 ==========
 
@@ -235,6 +295,12 @@ class DeepSeekChatClient:
             "total_tokens": getattr(usage, "total_tokens", None),
         }
 
+    @staticmethod
+    def _citation_block(result) -> str:
+        citations = list(getattr(result, "citations", []) or []) if result is not None else []
+        block = format_citations_markdown(citations)
+        return f"\n\n{block}" if block else ""
+
     def _build_api_kwargs(self, stream: bool = False, include_usage: bool = False) -> dict:
         """构造 API 调用参数字典"""
         kwargs = {
@@ -261,6 +327,7 @@ class DeepSeekChatClient:
             模型的完整回复文本
         """
         self._last_usage = None
+        self._last_gateway_result = None
         self._messages.append({"role": "user", "content": user_input, "timestamp": self._now_ts()})
 
         try:
@@ -275,6 +342,10 @@ class DeepSeekChatClient:
             if assistant_content is None:
                 assistant_content = "[模型返回了空回复]"
             self._last_usage = self._usage_to_dict(getattr(response, "usage", None))
+            self._last_gateway_result = getattr(response, "gateway_result", None)
+            if self._last_gateway_result is not None:
+                self._model = self._last_gateway_result.model or self._model
+                assistant_content += self._citation_block(self._last_gateway_result)
             self._messages.append({"role": "assistant", "content": assistant_content, "timestamp": self._now_ts()})
             return assistant_content
         except Exception as e:
@@ -292,6 +363,7 @@ class DeepSeekChatClient:
             每次产出一个 token 字符串
         """
         self._last_usage = None
+        self._last_gateway_result = None
         self._messages.append({"role": "user", "content": user_input, "timestamp": self._now_ts()})
 
         try:
@@ -312,12 +384,22 @@ class DeepSeekChatClient:
                 usage = getattr(chunk, "usage", None)
                 if usage is not None:
                     self._last_usage = self._usage_to_dict(usage)
+                result = getattr(chunk, "gateway_result", None)
+                if result is not None:
+                    self._last_gateway_result = result
+                    self._model = result.model or self._model
                 if not chunk.choices:
                     continue
                 delta = chunk.choices[0].delta
                 if delta and delta.content:
                     full_reply.append(delta.content)
                     yield delta.content
+
+            if not self._cancel_requested:
+                citation_block = self._citation_block(self._last_gateway_result)
+                if citation_block:
+                    full_reply.append(citation_block)
+                    yield citation_block
 
             if self._cancel_requested:
                 self._messages.pop()  # 取消时不保留部分回复
@@ -377,3 +459,7 @@ class DeepSeekChatClient:
         """重置对话，仅保留当前策略的 System Prompt"""
         system_prompt = self._strategy.get_system_prompt()
         self._messages = [{"role": "system", "content": system_prompt}]
+
+
+# 旧扩展和插件仍可导入原名称；新代码应使用 MultiModelChatClient。
+DeepSeekChatClient = MultiModelChatClient

@@ -30,6 +30,36 @@ class ChangeSetService:
         self.repository.save_change_set(change_set)
         return change_set
 
+    def propose_chapter_revision(self, run_id: str, book_id: str, base_node_id: str, chapter_title: str, content: str, reason: str = "") -> ChangeSet:
+        meta = self.manager.ensure_chapter_tree(self.book_title)
+        node = meta.chapter_nodes.get(base_node_id)
+        if not node or node.get("virtual") or node.get("storage_kind") == "extra_uuid":
+            raise ChangeSetError("基准章节节点不存在或不支持修订")
+        current = self.manager.read_chapter_node(self.book_title, base_node_id)
+        if current is None:
+            raise ChangeSetError("基准章节正文不存在")
+        chapter_num = int(node.get("chapter_num") or 0)
+        if chapter_num <= 0:
+            raise ChangeSetError("基准章节节点无效")
+        operation = ChangeOperation(
+            operation_id=f"op_{uuid.uuid4().hex}",
+            operation="chapter.create_revision",
+            target_type="chapter_node",
+            target_id=base_node_id,
+            expected_checksum=self._digest(current),
+            payload={
+                "base_node_id": base_node_id,
+                "chapter_num": chapter_num,
+                "chapter_title": chapter_title.strip() or str(node.get("title") or f"第{chapter_num}章"),
+                "content": content,
+                "parent_id": str(node.get("parent_id") or ""),
+                "activate": False,
+            },
+        )
+        change_set = ChangeSet(f"changes_{uuid.uuid4().hex}", run_id, book_id, [operation], {"valid": True}, reason=reason)
+        self.repository.save_change_set(change_set)
+        return change_set
+
     def propose_world_bible(self, run_id: str, book_id: str, world_bible: dict, reason: str = "") -> ChangeSet:
         from core.world_bible import world_bible_to_dict
         current = world_bible_to_dict(self.manager.load_world_bible(self.book_title))
@@ -103,6 +133,11 @@ class ChangeSetService:
             if operation.operation == "chapter.save_version":
                 current = self.manager.read_active_chapter(self.book_title, int(operation.target_id)) or ""
                 actual = self._digest(current)
+            elif operation.operation == "chapter.create_revision":
+                current = self.manager.read_chapter_node(self.book_title, operation.target_id)
+                if current is None:
+                    raise ChangeSetError(f"目标章节节点不存在: {operation.target_id}")
+                actual = self._digest(current)
             elif operation.operation in {"world_bible.replace", "world_bible.patch"}:
                 from core.world_bible import world_bible_to_dict
                 actual = self._digest_json(world_bible_to_dict(self.manager.load_world_bible(self.book_title)))
@@ -118,6 +153,20 @@ class ChangeSetService:
             version = self.manager.get_next_version(self.book_title, chapter_num)
             _path, saved_version = self.manager.save_chapter_version(self.book_title, chapter_num, data["chapter_title"], data["content"], version=version, parent_id=data.get("parent_id") or None)
             self.manager.switch_active_node(self.book_title, self.manager._node_id(chapter_num, saved_version))
+        elif operation.operation == "chapter.create_revision":
+            data = operation.payload
+            chapter_num = int(data["chapter_num"])
+            version = self.manager.get_next_version(self.book_title, chapter_num)
+            _path, saved_version = self.manager.save_chapter_version(
+                self.book_title,
+                chapter_num,
+                data["chapter_title"],
+                data["content"],
+                version=version,
+                parent_id=data.get("parent_id") or None,
+            )
+            data["created_node_id"] = self.manager._node_id(chapter_num, saved_version)
+            data["created_version"] = saved_version
         elif operation.operation == "world_bible.replace":
             from core.world_bible import dict_to_world_bible
             self.manager.save_world_bible(self.book_title, dict_to_world_bible(operation.payload["world_bible"]))
@@ -228,14 +277,11 @@ class ChangeSetService:
             elif action == "entity.supersede":
                 if target is None:
                     raise ChangeSetError(f"世界书实体不存在: {entity_id}")
-                supersedes = target.setdefault("supersedes", [])
                 source = op.get("supersedes") or payload.get("supersedes")
                 if isinstance(source, list):
-                    for item in source:
-                        if item not in supersedes:
-                            supersedes.append(item)
-                elif source and source not in supersedes:
-                    supersedes.append(source)
+                    source = next((str(item) for item in reversed(source) if str(item)), "")
+                if source:
+                    target["supersedes"] = str(source)
                 target.update({k: v for k, v in payload.items() if k != "supersedes"})
             elif action == "entity.merge":
                 if target is None:

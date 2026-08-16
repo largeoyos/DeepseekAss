@@ -4,6 +4,7 @@ import json
 from dataclasses import dataclass, field
 
 from core.agent.types import ToolCallRequest
+from core.model_types import TaskStage
 
 
 @dataclass
@@ -18,7 +19,10 @@ class AgentModelAdapter:
     """OpenAI-compatible adapter with safe fallback when tools are unsupported."""
 
     def __init__(self, client, model: str, *, temperature: float = 0.3, max_tokens: int = 8192) -> None:
-        self.client = getattr(client, "raw_client", client)
+        if hasattr(client, "client_for"):
+            self.client = client.client_for("agent_runtime", stage=TaskStage.AGENT)
+        else:
+            self.client = getattr(client, "raw_client", client)
         self.model = model
         self.temperature = temperature
         self.max_tokens = max_tokens

@@ -99,6 +99,34 @@ class AgentChapterGenerationTests(unittest.TestCase):
             workspace = manager.get_workspace("book")
             ledger = workspace.storage.read_json(f"{workspace.agent_root}/chapter_runs/{plan.plan_id}.json")
             self.assertEqual("prepared", ledger["status"])
+            self.assertEqual(2, ledger["generation_target"]["chapter_num"])
+            self.assertEqual(manager._node_id(1, 1), ledger["generation_target"]["parent_id"])
+
+    def test_regeneration_target_keeps_plan_parent_and_uses_new_version(self):
+        with tempfile.TemporaryDirectory() as root:
+            manager = NovelManager(bookshelf_root=root)
+            manager.create_book("book")
+            client = FakeClient([valid_plan()])
+            service = AgentChapterGenerationService(manager, client)
+            request = AgentChapterRequest("book", 1, "开始", "", "", 1000, "fake")
+            plan = service.prepare(request)
+            workspace = manager.get_workspace("book")
+            ledger = workspace.storage.read_json(
+                f"{workspace.agent_root}/chapter_runs/{plan.plan_id}.json"
+            )
+            original_target = ledger["generation_target"]
+
+            manager.save_chapter_version(
+                "book", 1, "开始", "第一版正文", version=1,
+                parent_id=original_target["parent_id"],
+            )
+            manager.switch_active_node("book", manager._node_id(1, 1))
+
+            target = service.build_regeneration_target(request, original_target)
+
+            self.assertEqual(1, target["chapter_num"])
+            self.assertEqual(2, target["version"])
+            self.assertEqual(original_target["parent_id"], target["parent_id"])
 
     def test_invalid_plan_is_repaired_once(self):
         with tempfile.TemporaryDirectory() as root:
@@ -256,6 +284,35 @@ class AgentChapterGenerationTests(unittest.TestCase):
             saved = workspace.storage.read_json(f"{workspace.agent_root}/story_director.json")
             self.assertEqual("逼近钟楼真相", saved["current_volume_goal"])
             self.assertEqual(1, saved["last_review_chapter"])
+
+    def test_story_director_does_not_advance_twice_for_regenerated_chapter(self):
+        with tempfile.TemporaryDirectory() as root:
+            manager = NovelManager(bookshelf_root=root)
+            manager.create_book("book")
+            service = AgentChapterGenerationService(
+                manager, FakeClient([valid_plan()]), skills_enabled=False
+            )
+            request = AgentChapterRequest("book", 2, "继续", "", "", 1000, "fake")
+            plan = service.prepare(request)
+            workspace = manager.get_workspace("book")
+            workspace.storage.write_json(
+                f"{workspace.agent_root}/story_director.json",
+                {
+                    **service._director_defaults(),
+                    "last_chapter": 2,
+                    "last_review_chapter": 1,
+                    "chapters_without_main_progress": 4,
+                    "next_turn_distance": 2,
+                },
+            )
+
+            result = service.update_director_state(
+                request, plan, "同一章的新版本摘要", "fake"
+            )
+
+            self.assertFalse(result["reviewed"])
+            self.assertEqual(4, result["state"]["chapters_without_main_progress"])
+            self.assertEqual(2, result["state"]["next_turn_distance"])
 
     def test_maintenance_archives_resolved_but_protects_resident(self):
         with tempfile.TemporaryDirectory() as root:

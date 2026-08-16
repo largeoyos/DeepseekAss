@@ -270,16 +270,55 @@ class AgentChapterGenerationService:
         )
         selected.recommended_candidate_id = selected.candidate_id
         selected.candidate_plans = [item.to_dict(include_candidates=False) for item in candidates]
+        generation_target = self.manager.get_active_generation_target(request.book_title)
+        if int(generation_target.get("chapter_num", 0) or 0) != request.chapter_num:
+            generation_target = {
+                "chapter_num": request.chapter_num,
+                "version": self.manager.get_next_version(
+                    request.book_title, request.chapter_num
+                ),
+                "parent_id": "",
+            }
         workspace = self.manager.get_workspace(request.book_title)
         workspace.storage.write_json(
             f"{workspace.agent_root}/chapter_runs/{plan_id}.json",
             {
                 "schema_version": 2, "run_id": plan_id, "status": "prepared",
                 "request": asdict(request), "plan": selected.to_dict(),
+                "generation_target": generation_target,
                 "critic": critique, "story_director": director_state, "created_at": now_iso(),
             },
         )
         return selected
+
+    def build_regeneration_target(
+        self, request: AgentChapterRequest, original_target: dict,
+    ) -> dict:
+        """Create a new version target for the same chapter and plan.
+
+        The active path normally advances after the first prose generation, so
+        ``get_active_generation_target`` would point at the following chapter.
+        Re-generation must instead retain the plan's original parent and only
+        allocate a fresh version number for its chapter.
+        """
+        target_chapter = int(original_target.get("chapter_num", 0) or 0)
+        if target_chapter != request.chapter_num:
+            raise AgentPlanError("当前草案与待重新生成的章节不一致，请重新规划。")
+
+        meta = self.manager.ensure_chapter_tree(request.book_title)
+        parent_id = str(original_target.get("parent_id") or "")
+        if not parent_id and request.chapter_num == 1:
+            parent_id = self.manager._virtual_root_node_id()
+        if parent_id not in meta.chapter_nodes:
+            raise AgentPlanError("当前草案的上游章节已变化，无法安全地重新生成。")
+
+        return {
+            "chapter_num": request.chapter_num,
+            "version": self.manager.get_next_version(
+                request.book_title, request.chapter_num
+            ),
+            "parent_id": parent_id,
+        }
 
     def generate(self, request: AgentChapterRequest, approved_plan: AgentChapterPlan) -> AgentChapterResult:
         meta = self.manager.load_meta(request.book_title)
@@ -563,6 +602,9 @@ class AgentChapterGenerationService:
     ) -> dict:
         """Persist lightweight progress every chapter and refresh the director every 3 chapters."""
         state = self._load_director_state(request.book_title)
+        replacing_same_chapter = (
+            int(state.get("last_chapter", 0) or 0) == request.chapter_num
+        )
         state["last_chapter"] = request.chapter_num
         state["recent_major_choice"] = self._last_scene_value(approved_plan, "choice")
         state["recent_failure_or_cost"] = self._last_scene_value(approved_plan, "cost")
@@ -574,14 +616,15 @@ class AgentChapterGenerationService:
         state["unredeemed_promises"] = list(dict.fromkeys([
             *old_promises, *[item for item in new_promises if item],
         ]))[-12:]
-        state["chapters_without_main_progress"] = (
-            0 if approved_plan.plot_threads
-            else int(state.get("chapters_without_main_progress", 0) or 0) + 1
-        )
-        state["next_turn_distance"] = max(
-            0, int(state.get("next_turn_distance", 3) or 3) - 1
-        )
-        review_due = (
+        if not replacing_same_chapter:
+            state["chapters_without_main_progress"] = (
+                0 if approved_plan.plot_threads
+                else int(state.get("chapters_without_main_progress", 0) or 0) + 1
+            )
+            state["next_turn_distance"] = max(
+                0, int(state.get("next_turn_distance", 3) or 3) - 1
+            )
+        review_due = not replacing_same_chapter and (
             request.chapter_num <= 1
             or request.chapter_num - int(state.get("last_review_chapter", 0) or 0) >= 3
         )

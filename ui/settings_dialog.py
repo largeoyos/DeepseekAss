@@ -1,6 +1,8 @@
+import json
 import os
 import shutil
 import threading
+import uuid
 import zipfile
 from copy import deepcopy
 
@@ -17,7 +19,9 @@ from PyQt6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
     QMessageBox,
+    QPlainTextEdit,
     QScrollArea,
     QPushButton,
     QRadioButton,
@@ -29,6 +33,8 @@ from PyQt6.QtWidgets import (
 
 from config import Config
 from core.auth_manager import AuthError, AuthManager
+from core.model_config import STAGE_LABELS, ModelConfig, create_provider_template, sanitize_extra_body, validate_provider
+from core.model_types import ModelProfile, ProviderProtocol, RoutePolicy, TaskStage
 from core.settings_manager import DEFAULT_PRESETS, SettingsManager
 from core.style_profiles import STYLE_STRENGTH_LABELS, StyleProfileRepository
 from utils.genre_styles import GENRES
@@ -57,6 +63,12 @@ class SettingsDialog(QDialog):
         settings_changed_callback,
         password_changed_callback,
         mode_change_guard=None,
+        model_config: dict | None = None,
+        model_config_callback=None,
+        book_routes_load_callback=None,
+        book_routes_save_callback=None,
+        model_test_callback=None,
+        model_discover_callback=None,
     ):
         super().__init__(parent)
         self._settings_manager = settings_manager
@@ -71,6 +83,16 @@ class SettingsDialog(QDialog):
         self._settings_changed_callback = settings_changed_callback
         self._password_changed_callback = password_changed_callback
         self._mode_change_guard = mode_change_guard
+        self._model_config = ModelConfig.from_dict(model_config or api_config, self._settings)
+        self._model_config_callback = model_config_callback
+        self._book_routes_load_callback = book_routes_load_callback
+        self._book_routes_save_callback = book_routes_save_callback
+        self._model_test_callback = model_test_callback
+        self._model_discover_callback = model_discover_callback
+        self._editing_provider_id = ""
+        self._editing_model_id = ""
+        self._route_scope = "global"
+        self._book_routes: dict = {}
         self._updating_agent_mode = False
         self._async_signals = _SettingsAsyncSignals(self)
         self._async_signals.completed.connect(self._on_async_completed)
@@ -83,7 +105,7 @@ class SettingsDialog(QDialog):
     def _init_ui(self) -> None:
         layout = QVBoxLayout(self)
         tabs = QTabWidget()
-        tabs.addTab(self._build_api_tab(), "API 与模型")
+        tabs.addTab(self._build_api_tab(), "模型中心")
         tabs.addTab(self._build_models_tab(), "写作默认值与参数")
         tabs.addTab(self._build_account_tab(), "账号安全")
         tabs.addTab(self._build_data_tab(), "数据管理")
@@ -147,7 +169,8 @@ class SettingsDialog(QDialog):
         self._default_style_strength_combo.setCurrentIndex(max(0, strength_index))
         self._refresh_default_style_profiles()
 
-        defaults_form.addRow("默认模型", self._default_model_combo)
+        # 模型默认值由“模型中心 → 任务路由”管理。保留控件对象仅用于读取旧偏好和插件兼容。
+        self._default_model_combo.hide()
         defaults_form.addRow("默认生成参数", self._default_preset_combo)
         defaults_form.addRow("默认题材", self._default_genre_combo)
         defaults_form.addRow("默认文风", self._default_style_combo)
@@ -279,45 +302,567 @@ class SettingsDialog(QDialog):
         page = QWidget()
         layout = QVBoxLayout(page)
         layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(14)
+        layout.setSpacing(10)
 
-        title = QLabel("模型服务")
+        title = QLabel("多模型中心")
         title.setObjectName("apiTitle")
-        subtitle = QLabel("分别配置文字生成与图片生成服务。配置保存在当前用户的加密文件中。")
+        subtitle = QLabel(
+            "先建立服务连接，再定义模型能力，最后把六类写作任务路由到不同模型。"
+            " API Key、自定义 Header 和高级 JSON 只保存在当前用户的加密配置中。"
+        )
         subtitle.setObjectName("apiSubtitle")
         subtitle.setWordWrap(True)
         layout.addWidget(title)
         layout.addWidget(subtitle)
 
         self._api_fields: dict[str, dict[str, QLineEdit]] = {}
-        layout.addWidget(self._build_api_section(
-            "text", "文字 API", "用于对话、续写、分析、世界书与 Agent。", required=True
+        center_tabs = QTabWidget()
+        center_tabs.addTab(self._build_provider_center(), "1  服务连接")
+        center_tabs.addTab(self._build_model_profiles_center(), "2  模型档案")
+        center_tabs.addTab(self._build_routes_center(), "3  任务路由")
+        image_page = QWidget()
+        image_layout = QVBoxLayout(image_page)
+        image_layout.addWidget(self._build_api_section(
+            "image", "图片 API", "图片生成仍保持独立配置；不使用时可全部留空。", required=False
         ))
-        layout.addWidget(self._build_api_section(
-            "image", "图片 API", "用于封面、插图等图片生成；暂不使用时可以留空。", required=False
-        ))
+        image_layout.addStretch()
+        center_tabs.addTab(image_page, "图片 API")
+        layout.addWidget(center_tabs, 1)
 
         actions = QHBoxLayout()
+        risk = QLabel("跨服务回退时，当前任务上下文可能发送给备用服务。")
+        risk.setStyleSheet("color: #9a5d00;")
+        actions.addWidget(risk)
         actions.addStretch()
-        save_btn = QPushButton("保存全部配置")
+        save_btn = QPushButton("保存模型中心")
         save_btn.setObjectName("primaryButton")
-        save_btn.clicked.connect(self._save_api_config)
+        save_btn.clicked.connect(self._save_model_center)
         actions.addWidget(save_btn)
         layout.addLayout(actions)
-        layout.addStretch()
 
         page.setStyleSheet("""
             QLabel#apiTitle { font-size: 22px; font-weight: 700; }
-            QLabel#apiSubtitle { color: #8b98a9; margin-bottom: 4px; }
+            QLabel#apiSubtitle { color: #5f6b76; margin-bottom: 4px; }
             QGroupBox#apiCard {
-                border: 1px solid #394758; border-radius: 10px;
-                margin-top: 12px; padding: 14px;
+                border: 1px solid #cbd2d9; border-radius: 2px;
+                margin-top: 12px; padding: 12px;
                 font-size: 15px; font-weight: 700;
             }
             QGroupBox#apiCard::title { subcontrol-origin: margin; left: 14px; padding: 0 6px; }
-            QPushButton#primaryButton { background: #2774c8; color: white; padding: 8px 18px; font-weight: 700; }
+            QPushButton#primaryButton { background: #166534; color: white; padding: 8px 18px; font-weight: 700; }
         """)
+        self._refresh_provider_list()
+        self._refresh_model_list()
+        self._refresh_route_model_choices()
         return page
+
+    def _build_provider_center(self) -> QWidget:
+        page = QWidget()
+        root = QHBoxLayout(page)
+        left = QVBoxLayout()
+        self._provider_list = QListWidget()
+        self._provider_list.currentItemChanged.connect(self._on_provider_selected)
+        left.addWidget(self._provider_list, 1)
+        templates = QHBoxLayout()
+        for label, template in (("+ DeepSeek", "deepseek"), ("+ Responses", "openai_responses"), ("+ 兼容", "generic"), ("+ Ollama", "ollama")):
+            button = QPushButton(label)
+            button.clicked.connect(lambda _=False, value=template: self._add_provider_template(value))
+            templates.addWidget(button)
+        left.addLayout(templates)
+        delete_btn = QPushButton("删除服务")
+        delete_btn.clicked.connect(self._delete_provider)
+        left.addWidget(delete_btn)
+        root.addLayout(left, 2)
+
+        form = QFormLayout()
+        self._provider_name = QLineEdit()
+        self._provider_protocol = QComboBox()
+        for protocol, label in (
+            (ProviderProtocol.OPENAI_CHAT, "OpenAI Chat 兼容"),
+            (ProviderProtocol.OPENAI_RESPONSES, "OpenAI Responses"),
+            (ProviderProtocol.OLLAMA_NATIVE, "Ollama 原生"),
+        ):
+            self._provider_protocol.addItem(label, protocol.value)
+        self._provider_url = QLineEdit()
+        self._provider_key = QLineEdit()
+        self._provider_key.setEchoMode(QLineEdit.EchoMode.Password)
+        self._provider_auth_header = QLineEdit()
+        self._provider_auth_prefix = QLineEdit()
+        self._provider_timeout = QSpinBox(); self._provider_timeout.setRange(1, 3600)
+        self._provider_retries = QSpinBox(); self._provider_retries.setRange(0, 10)
+        self._provider_headers = QPlainTextEdit(); self._provider_headers.setMaximumHeight(72)
+        self._provider_headers.setPlaceholderText('{"X-Project": "value"}')
+        self._provider_enabled = QCheckBox("启用")
+        self._provider_insecure = QCheckBox("允许非本机 HTTP（有明文传输风险）")
+        form.addRow("服务名称", self._provider_name)
+        form.addRow("协议", self._provider_protocol)
+        form.addRow("调用地址", self._provider_url)
+        form.addRow("API Key（可空）", self._provider_key)
+        form.addRow("认证 Header", self._provider_auth_header)
+        form.addRow("认证前缀", self._provider_auth_prefix)
+        form.addRow("超时（秒）", self._provider_timeout)
+        form.addRow("服务内重试", self._provider_retries)
+        form.addRow("自定义 Headers JSON", self._provider_headers)
+        form.addRow("", self._provider_enabled)
+        form.addRow("", self._provider_insecure)
+        root.addLayout(form, 3)
+        return page
+
+    def _build_model_profiles_center(self) -> QWidget:
+        page = QWidget()
+        root = QHBoxLayout(page)
+        left = QVBoxLayout()
+        self._model_profile_list = QListWidget()
+        self._model_profile_list.currentItemChanged.connect(self._on_model_selected)
+        left.addWidget(self._model_profile_list, 1)
+        row = QHBoxLayout()
+        add_btn = QPushButton("+ 模型档案"); add_btn.clicked.connect(self._add_model_profile)
+        delete_btn = QPushButton("删除"); delete_btn.clicked.connect(self._delete_model_profile)
+        row.addWidget(add_btn); row.addWidget(delete_btn)
+        left.addLayout(row)
+        test_btn = QPushButton("连接 / 能力测试"); test_btn.clicked.connect(self._test_selected_model)
+        discover_btn = QPushButton("从服务获取模型列表"); discover_btn.clicked.connect(self._discover_models)
+        left.addWidget(test_btn); left.addWidget(discover_btn)
+        root.addLayout(left, 2)
+
+        form = QFormLayout()
+        self._model_provider = QComboBox()
+        self._model_name = QLineEdit(); self._model_real_name = QLineEdit()
+        self._model_context = QSpinBox(); self._model_context.setRange(512, 2_000_000)
+        self._model_output = QSpinBox(); self._model_output.setRange(1, 500_000)
+        self._model_runtime_context = QSpinBox(); self._model_runtime_context.setRange(0, 2_000_000)
+        self._model_runtime_context.setSpecialValueText("不下发")
+        self._model_runtime_context.setToolTip("仅 Ollama 原生下发 num_ctx；更大上下文会显著增加显存/内存占用。")
+        self._model_template = QComboBox()
+        for value, label in (("generic", "通用"), ("deepseek", "DeepSeek"), ("openai_responses", "Responses"), ("ollama", "Ollama")):
+            self._model_template.addItem(label, value)
+        capabilities = QWidget(); caps = QHBoxLayout(capabilities); caps.setContentsMargins(0, 0, 0, 0)
+        self._cap_stream = QCheckBox("流式"); self._cap_tools = QCheckBox("工具")
+        self._cap_search = QCheckBox("原生搜索"); self._cap_reasoning = QCheckBox("推理")
+        self._cap_json = QCheckBox("JSON")
+        for item in (self._cap_stream, self._cap_tools, self._cap_search, self._cap_reasoning, self._cap_json): caps.addWidget(item)
+        self._model_reasoning_levels = QLineEdit(); self._model_reasoning_levels.setPlaceholderText("off, low, medium, high, xhigh, max")
+        self._model_default_reasoning = QComboBox()
+        for value in ("off", "low", "medium", "high", "xhigh", "max"): self._model_default_reasoning.addItem(value, value)
+        self._model_default_search = QComboBox()
+        for value, label in (("off", "关闭"), ("on_demand", "按需"), ("always", "总是")): self._model_default_search.addItem(label, value)
+        params = QWidget(); params_layout = QHBoxLayout(params); params_layout.setContentsMargins(0, 0, 0, 0)
+        self._param_temperature = QCheckBox("temperature"); self._param_top_p = QCheckBox("top_p")
+        self._param_frequency = QCheckBox("frequency_penalty"); self._param_max_tokens = QCheckBox("max_tokens")
+        for item in (self._param_temperature, self._param_top_p, self._param_frequency, self._param_max_tokens): params_layout.addWidget(item)
+        self._model_default_temperature = QLineEdit(); self._model_default_top_p = QLineEdit(); self._model_default_frequency = QLineEdit()
+        self._model_extra = QPlainTextEdit(); self._model_extra.setMaximumHeight(84); self._model_extra.setPlaceholderText("{}")
+        self._model_enabled = QCheckBox("启用模型档案")
+        form.addRow("所属服务", self._model_provider)
+        form.addRow("档案名称", self._model_name)
+        form.addRow("真实模型名", self._model_real_name)
+        form.addRow("上下文窗口", self._model_context)
+        form.addRow("最大输出", self._model_output)
+        form.addRow("Ollama num_ctx", self._model_runtime_context)
+        form.addRow("请求模板", self._model_template)
+        form.addRow("能力", capabilities)
+        form.addRow("支持的推理等级", self._model_reasoning_levels)
+        form.addRow("默认推理", self._model_default_reasoning)
+        form.addRow("默认联网", self._model_default_search)
+        form.addRow("发送参数", params)
+        defaults = QWidget(); defaults_layout = QHBoxLayout(defaults); defaults_layout.setContentsMargins(0, 0, 0, 0)
+        for label, field in (("temp", self._model_default_temperature), ("top_p", self._model_default_top_p), ("freq", self._model_default_frequency)):
+            defaults_layout.addWidget(QLabel(label)); defaults_layout.addWidget(field)
+        form.addRow("档案默认参数", defaults)
+        form.addRow("高级请求 JSON", self._model_extra)
+        form.addRow("", self._model_enabled)
+        root.addLayout(form, 3)
+        return page
+
+    def _build_routes_center(self) -> QWidget:
+        page = QScrollArea(); page.setWidgetResizable(True)
+        content = QWidget(); root = QVBoxLayout(content)
+        scope_row = QHBoxLayout()
+        self._route_scope_combo = QComboBox()
+        self._route_scope_combo.addItem("用户默认", "global")
+        book = ""
+        parent = self.parent()
+        if parent is not None and hasattr(parent, "_get_current_book_title"):
+            book = parent._get_current_book_title() or ""
+        self._route_book_title = book
+        self._route_scope_combo.addItem(f"当前书籍：{book or '未选择'}", "book")
+        self._route_scope_combo.currentIndexChanged.connect(self._on_route_scope_changed)
+        scope_row.addWidget(QLabel("作用域")); scope_row.addWidget(self._route_scope_combo); scope_row.addStretch()
+        root.addLayout(scope_row)
+        self._route_controls: dict[str, dict] = {}
+        for stage in TaskStage:
+            group = QGroupBox(STAGE_LABELS[stage]); group.setObjectName("apiCard")
+            form = QFormLayout(group)
+            inherit = QCheckBox("继承用户默认（仅当前书籍）")
+            primary = QComboBox()
+            fallback = QLineEdit(); fallback.setPlaceholderText("按顺序填档案名，逗号分隔")
+            reasoning = QComboBox(); reasoning.addItem("继承档案", "")
+            for value in ("off", "low", "medium", "high", "xhigh", "max"): reasoning.addItem(value, value)
+            web_search = QComboBox(); web_search.addItem("继承档案", "")
+            for value, label in (("off", "关闭"), ("on_demand", "按需"), ("always", "总是")): web_search.addItem(label, value)
+            context = QSpinBox(); context.setRange(0, 2_000_000); context.setSpecialValueText("继承档案")
+            output = QSpinBox(); output.setRange(0, 500_000); output.setSpecialValueText("继承档案")
+            form.addRow("", inherit); form.addRow("主模型", primary); form.addRow("备用链", fallback)
+            form.addRow("推理等级", reasoning); form.addRow("联网策略", web_search)
+            form.addRow("上下文上限", context); form.addRow("输出上限", output)
+            self._route_controls[stage.value] = {
+                "inherit": inherit, "primary": primary, "fallback": fallback,
+                "reasoning": reasoning, "web_search": web_search, "context": context, "output": output,
+            }
+            root.addWidget(group)
+        root.addStretch(); page.setWidget(content)
+        return page
+
+    @staticmethod
+    def _set_combo_data(combo: QComboBox, value) -> None:
+        index = combo.findData(value)
+        combo.setCurrentIndex(index if index >= 0 else 0)
+
+    def _refresh_provider_list(self, selected_id: str = "") -> None:
+        if not hasattr(self, "_provider_list"):
+            return
+        selected_id = selected_id or self._editing_provider_id
+        self._provider_list.blockSignals(True)
+        self._provider_list.clear()
+        for provider in self._model_config.providers.values():
+            item = QListWidgetItem(f"{provider.name}\n{provider.protocol.value}")
+            item.setData(256, provider.provider_id)
+            self._provider_list.addItem(item)
+        self._provider_list.blockSignals(False)
+        for index in range(self._provider_list.count()):
+            if self._provider_list.item(index).data(256) == selected_id:
+                self._provider_list.setCurrentRow(index)
+                break
+        else:
+            if self._provider_list.count(): self._provider_list.setCurrentRow(0)
+
+    def _on_provider_selected(self, current, _previous=None) -> None:
+        if current is None:
+            return
+        if self._editing_provider_id:
+            self._store_provider_editor(show_errors=False)
+        provider_id = str(current.data(256) or "")
+        provider = self._model_config.providers.get(provider_id)
+        if not provider:
+            return
+        self._editing_provider_id = provider_id
+        self._provider_name.setText(provider.name)
+        self._set_combo_data(self._provider_protocol, provider.protocol.value)
+        self._provider_url.setText(provider.base_url)
+        self._provider_key.setText(provider.api_key)
+        self._provider_auth_header.setText(provider.auth_header)
+        self._provider_auth_prefix.setText(provider.auth_prefix)
+        self._provider_timeout.setValue(int(provider.timeout_seconds))
+        self._provider_retries.setValue(int(provider.max_retries))
+        self._provider_headers.setPlainText(json.dumps(provider.headers, ensure_ascii=False, indent=2))
+        self._provider_enabled.setChecked(provider.enabled)
+        self._provider_insecure.setChecked(provider.allow_insecure_http)
+
+    def _store_provider_editor(self, *, show_errors: bool) -> bool:
+        provider = self._model_config.providers.get(self._editing_provider_id)
+        if not provider:
+            return True
+        try:
+            headers = json.loads(self._provider_headers.toPlainText().strip() or "{}")
+            if not isinstance(headers, dict):
+                raise ValueError("Headers JSON 必须是对象")
+        except Exception as exc:
+            if show_errors: QMessageBox.warning(self, "Headers JSON 无效", str(exc))
+            return False
+        provider.name = self._provider_name.text().strip() or provider.name
+        provider.protocol = ProviderProtocol(str(self._provider_protocol.currentData()))
+        provider.base_url = self._provider_url.text().strip().rstrip("/")
+        provider.api_key = self._provider_key.text().strip()
+        provider.auth_header = self._provider_auth_header.text().strip() or "Authorization"
+        provider.auth_prefix = self._provider_auth_prefix.text()
+        provider.timeout_seconds = float(self._provider_timeout.value())
+        provider.max_retries = self._provider_retries.value()
+        provider.headers = {str(key): str(value) for key, value in headers.items()}
+        provider.enabled = self._provider_enabled.isChecked()
+        provider.allow_insecure_http = self._provider_insecure.isChecked()
+        return True
+
+    def _add_provider_template(self, template: str) -> None:
+        self._store_provider_editor(show_errors=False)
+        provider, profile = create_provider_template(template)
+        provider.provider_id = f"provider_{uuid.uuid4().hex[:12]}"
+        profile.provider_id = provider.provider_id
+        profile.model_id = f"model_{uuid.uuid4().hex[:12]}"
+        self._model_config.providers[provider.provider_id] = provider
+        self._model_config.models[profile.model_id] = profile
+        self._editing_provider_id = provider.provider_id
+        self._refresh_provider_list(provider.provider_id)
+        self._refresh_model_list(profile.model_id)
+        self._refresh_route_model_choices()
+
+    def _delete_provider(self) -> None:
+        provider_id = self._editing_provider_id
+        provider = self._model_config.providers.get(provider_id)
+        if not provider:
+            return
+        if QMessageBox.question(self, "删除服务", f"删除「{provider.name}」及其全部模型档案？") != QMessageBox.StandardButton.Yes:
+            return
+        model_ids = {item.model_id for item in self._model_config.models.values() if item.provider_id == provider_id}
+        self._model_config.providers.pop(provider_id, None)
+        for model_id in model_ids: self._model_config.models.pop(model_id, None)
+        self._editing_provider_id = ""; self._editing_model_id = ""
+        self._model_config.ensure_valid_routes()
+        self._refresh_provider_list(); self._refresh_model_list(); self._refresh_route_model_choices()
+
+    def _refresh_model_list(self, selected_id: str = "") -> None:
+        if not hasattr(self, "_model_profile_list"):
+            return
+        selected_id = selected_id or self._editing_model_id
+        self._model_profile_list.blockSignals(True)
+        self._model_profile_list.clear()
+        self._model_provider.blockSignals(True); self._model_provider.clear()
+        for provider in self._model_config.providers.values():
+            self._model_provider.addItem(provider.name, provider.provider_id)
+        self._model_provider.blockSignals(False)
+        for profile in self._model_config.models.values():
+            provider = self._model_config.providers.get(profile.provider_id)
+            item = QListWidgetItem(f"{profile.name}\n{provider.name if provider else '服务已删除'}")
+            item.setData(256, profile.model_id)
+            self._model_profile_list.addItem(item)
+        self._model_profile_list.blockSignals(False)
+        for index in range(self._model_profile_list.count()):
+            if self._model_profile_list.item(index).data(256) == selected_id:
+                self._model_profile_list.setCurrentRow(index); break
+        else:
+            if self._model_profile_list.count(): self._model_profile_list.setCurrentRow(0)
+
+    def _on_model_selected(self, current, _previous=None) -> None:
+        if current is None:
+            return
+        if self._editing_model_id:
+            self._store_model_editor(show_errors=False)
+        model_id = str(current.data(256) or "")
+        profile = self._model_config.models.get(model_id)
+        if not profile:
+            return
+        self._editing_model_id = model_id
+        self._set_combo_data(self._model_provider, profile.provider_id)
+        self._model_name.setText(profile.name); self._model_real_name.setText(profile.model)
+        self._model_context.setValue(profile.context_window); self._model_output.setValue(profile.max_output_tokens)
+        self._model_runtime_context.setValue(int(profile.runtime_context or 0))
+        self._set_combo_data(self._model_template, profile.template)
+        caps = profile.capabilities
+        self._cap_stream.setChecked(caps.streaming); self._cap_tools.setChecked(caps.tools)
+        self._cap_search.setChecked(caps.native_web_search); self._cap_reasoning.setChecked(caps.reasoning)
+        self._cap_json.setChecked(caps.structured_output)
+        self._model_reasoning_levels.setText(", ".join(caps.supported_reasoning_levels or ["off"]))
+        self._set_combo_data(self._model_default_reasoning, profile.defaults.reasoning_level)
+        self._set_combo_data(self._model_default_search, profile.defaults.web_search)
+        support = profile.parameter_support
+        self._param_temperature.setChecked(bool(support.get("temperature", True)))
+        self._param_top_p.setChecked(bool(support.get("top_p", True)))
+        self._param_frequency.setChecked(bool(support.get("frequency_penalty", True)))
+        self._param_max_tokens.setChecked(bool(support.get("max_tokens", True)))
+        self._model_default_temperature.setText("" if profile.defaults.temperature is None else str(profile.defaults.temperature))
+        self._model_default_top_p.setText("" if profile.defaults.top_p is None else str(profile.defaults.top_p))
+        self._model_default_frequency.setText("" if profile.defaults.frequency_penalty is None else str(profile.defaults.frequency_penalty))
+        self._model_extra.setPlainText(json.dumps(profile.extra_body, ensure_ascii=False, indent=2))
+        self._model_enabled.setChecked(profile.enabled)
+
+    @staticmethod
+    def _optional_float(text: str) -> float | None:
+        return None if not str(text or "").strip() else float(text)
+
+    def _store_model_editor(self, *, show_errors: bool) -> bool:
+        profile = self._model_config.models.get(self._editing_model_id)
+        if not profile:
+            return True
+        try:
+            extra = json.loads(self._model_extra.toPlainText().strip() or "{}")
+            if not isinstance(extra, dict): raise ValueError("高级 JSON 必须是对象")
+            temperature = self._optional_float(self._model_default_temperature.text())
+            top_p = self._optional_float(self._model_default_top_p.text())
+            frequency = self._optional_float(self._model_default_frequency.text())
+        except Exception as exc:
+            if show_errors: QMessageBox.warning(self, "模型档案无效", str(exc))
+            return False
+        profile.provider_id = str(self._model_provider.currentData() or profile.provider_id)
+        profile.name = self._model_name.text().strip() or profile.name
+        profile.model = self._model_real_name.text().strip() or profile.model
+        profile.context_window = self._model_context.value(); profile.max_output_tokens = self._model_output.value()
+        profile.runtime_context = self._model_runtime_context.value() or None
+        profile.template = str(self._model_template.currentData() or "generic")
+        caps = profile.capabilities
+        caps.streaming = self._cap_stream.isChecked(); caps.tools = self._cap_tools.isChecked()
+        caps.native_web_search = self._cap_search.isChecked(); caps.reasoning = self._cap_reasoning.isChecked()
+        caps.structured_output = self._cap_json.isChecked()
+        caps.supported_reasoning_levels = [item.strip() for item in self._model_reasoning_levels.text().split(",") if item.strip()] or ["off"]
+        profile.defaults.reasoning_level = str(self._model_default_reasoning.currentData() or "off")
+        profile.defaults.web_search = str(self._model_default_search.currentData() or "off")
+        profile.defaults.temperature = temperature; profile.defaults.top_p = top_p; profile.defaults.frequency_penalty = frequency
+        profile.parameter_support = {
+            "temperature": self._param_temperature.isChecked(), "top_p": self._param_top_p.isChecked(),
+            "frequency_penalty": self._param_frequency.isChecked(), "max_tokens": self._param_max_tokens.isChecked(),
+        }
+        profile.extra_body = sanitize_extra_body(extra); profile.enabled = self._model_enabled.isChecked()
+        return True
+
+    def _add_model_profile(self) -> None:
+        self._store_model_editor(show_errors=False)
+        provider_id = str(self._model_provider.currentData() or next(iter(self._model_config.providers), ""))
+        if not provider_id:
+            QMessageBox.warning(self, "缺少服务", "请先新建服务连接。"); return
+        model_id = f"model_{uuid.uuid4().hex[:12]}"
+        profile = ModelProfile(model_id, provider_id, "新模型", "model-name")
+        self._model_config.models[model_id] = profile
+        self._editing_model_id = model_id
+        self._refresh_model_list(model_id); self._refresh_route_model_choices()
+
+    def _delete_model_profile(self) -> None:
+        profile = self._model_config.models.get(self._editing_model_id)
+        if not profile:
+            return
+        if QMessageBox.question(self, "删除模型", f"删除档案「{profile.name}」？") != QMessageBox.StandardButton.Yes:
+            return
+        self._model_config.models.pop(profile.model_id, None); self._editing_model_id = ""
+        self._model_config.ensure_valid_routes(); self._refresh_model_list(); self._refresh_route_model_choices()
+
+    def _test_selected_model(self) -> None:
+        if not self._store_provider_editor(show_errors=True) or not self._store_model_editor(show_errors=True): return
+        if not self._model_test_callback:
+            QMessageBox.information(self, "能力测试", "请先保存配置后，再使用主窗口的连接测试。"); return
+        if QMessageBox.question(
+            self, "运行能力测试",
+            "将实际发起普通、流式、推理和工具请求；若档案声明原生搜索，还会发起一次联网请求。"
+            "这可能产生费用和外部数据传输。\n\n继续吗？",
+        ) != QMessageBox.StandardButton.Yes:
+            return
+        ok, message = self._model_test_callback(self._model_config.to_dict(), self._editing_model_id)
+        (QMessageBox.information if ok else QMessageBox.critical)(self, "能力测试", message)
+
+    def _discover_models(self) -> None:
+        if not self._store_provider_editor(show_errors=True) or not self._store_model_editor(show_errors=True): return
+        if not self._model_discover_callback:
+            QMessageBox.information(self, "模型发现", "当前运行环境未提供模型发现回调。"); return
+        ok, result = self._model_discover_callback(self._model_config.to_dict(), self._editing_model_id)
+        if not ok:
+            QMessageBox.critical(self, "模型发现失败", str(result)); return
+        names = list(result or [])
+        if not names:
+            QMessageBox.information(self, "模型发现", "服务未返回模型。"); return
+        QMessageBox.information(self, "已发现模型", "\n".join(str(item) for item in names[:100]))
+
+    def _refresh_route_model_choices(self) -> None:
+        if not hasattr(self, "_route_controls"):
+            return
+        profiles = list(self._model_config.models.values())
+        for controls in self._route_controls.values():
+            selected = controls["primary"].currentData()
+            controls["primary"].clear()
+            for profile in profiles: controls["primary"].addItem(profile.name, profile.model_id)
+            self._set_combo_data(controls["primary"], selected)
+        self._load_routes_into_controls()
+
+    def _load_routes_into_controls(self) -> None:
+        if not hasattr(self, "_route_controls"):
+            return
+        source = (
+            {key: value.to_dict() for key, value in self._model_config.routes.items()}
+            if self._route_scope == "global" else self._book_routes
+        )
+        names = {profile.model_id: profile.name for profile in self._model_config.models.values()}
+        for stage, controls in self._route_controls.items():
+            route = RoutePolicy.from_dict(source.get(stage))
+            controls["inherit"].setChecked(route.inherit if self._route_scope == "book" else False)
+            controls["inherit"].setEnabled(self._route_scope == "book")
+            self._set_combo_data(controls["primary"], route.primary_model_id)
+            controls["fallback"].setText(", ".join(names.get(item, item) for item in route.fallback_model_ids))
+            self._set_combo_data(controls["reasoning"], route.overrides.reasoning_level or "")
+            self._set_combo_data(controls["web_search"], route.overrides.web_search or "")
+            controls["context"].setValue(int(route.overrides.context_window or 0))
+            controls["output"].setValue(int(route.overrides.max_output_tokens or 0))
+
+    def _collect_routes(self) -> dict:
+        by_label = {}
+        for profile in self._model_config.models.values():
+            by_label[profile.model_id] = profile.model_id; by_label[profile.name] = profile.model_id; by_label[profile.model] = profile.model_id
+        result = {}
+        for stage, controls in self._route_controls.items():
+            fallback_ids = []
+            for value in controls["fallback"].text().replace("，", ",").split(","):
+                resolved = by_label.get(value.strip())
+                if resolved and resolved not in fallback_ids: fallback_ids.append(resolved)
+            primary = str(controls["primary"].currentData() or "")
+            fallback_ids = [item for item in fallback_ids if item != primary]
+            result[stage] = RoutePolicy.from_dict({
+                "inherit": controls["inherit"].isChecked() if self._route_scope == "book" else False,
+                "primary_model_id": primary,
+                "fallback_model_ids": fallback_ids,
+                "overrides": {
+                    "reasoning_level": controls["reasoning"].currentData() or None,
+                    "web_search": controls["web_search"].currentData() or None,
+                    "context_window": controls["context"].value() or None,
+                    "max_output_tokens": controls["output"].value() or None,
+                },
+            }).to_dict()
+        return result
+
+    def _on_route_scope_changed(self, *_args) -> None:
+        if hasattr(self, "_route_controls"):
+            collected = self._collect_routes()
+            if self._route_scope == "global":
+                self._model_config.routes = {key: RoutePolicy.from_dict(value) for key, value in collected.items()}
+            else:
+                self._book_routes = collected
+        self._route_scope = str(self._route_scope_combo.currentData() or "global")
+        if self._route_scope == "book":
+            if not self._route_book_title:
+                QMessageBox.warning(self, "未选择书籍", "请先在主界面选择一本书。")
+                self._route_scope_combo.setCurrentIndex(0); return
+            if self._book_routes_load_callback:
+                self._book_routes = dict(self._book_routes_load_callback(self._route_book_title) or {})
+        self._load_routes_into_controls()
+
+    def _save_model_center(self) -> None:
+        if not self._store_provider_editor(show_errors=True) or not self._store_model_editor(show_errors=True): return
+        collected = self._collect_routes()
+        if self._route_scope == "global":
+            self._model_config.routes = {key: RoutePolicy.from_dict(value) for key, value in collected.items()}
+        else:
+            self._book_routes = collected
+        errors = []
+        for provider in self._model_config.providers.values(): errors.extend(f"{provider.name}：{item}" for item in validate_provider(provider))
+        for stage in TaskStage:
+            route = self._model_config.routes.get(stage.value)
+            if not route or route.primary_model_id not in self._model_config.models:
+                errors.append(f"{STAGE_LABELS[stage]}：请选择主模型"); continue
+            profile = self._model_config.models[route.primary_model_id]
+            reasoning = route.overrides.reasoning_level
+            if reasoning and reasoning not in set(profile.capabilities.supported_reasoning_levels or ["off"]):
+                errors.append(f"{STAGE_LABELS[stage]}：{profile.name} 不支持 {reasoning} 推理")
+        if self._book_routes:
+            for stage in TaskStage:
+                route = RoutePolicy.from_dict(self._book_routes.get(stage.value))
+                if route.inherit:
+                    continue
+                profile = self._model_config.models.get(route.primary_model_id)
+                if profile is None:
+                    errors.append(f"当前书籍 / {STAGE_LABELS[stage]}：主模型无效")
+                    continue
+                reasoning = route.overrides.reasoning_level
+                if reasoning and reasoning not in set(profile.capabilities.supported_reasoning_levels or ["off"]):
+                    errors.append(f"当前书籍 / {STAGE_LABELS[stage]}：{profile.name} 不支持 {reasoning} 推理")
+        image_config = self._api_values("image")
+        if any(image_config.values()) and not all(image_config.values()): errors.append("图片 API 需要同时填写地址、Key 和模型")
+        if errors:
+            QMessageBox.warning(self, "配置无效", "\n".join(errors)); return
+        self._model_config.image = image_config
+        try:
+            if self._model_config_callback:
+                self._model_config_callback(self._model_config.to_dict())
+            else:
+                self._api_config_callback({"text": self._model_config.legacy_text_config(), "image": image_config})
+            if self._book_routes_save_callback and self._route_book_title and self._book_routes:
+                self._book_routes_save_callback(self._route_book_title, self._book_routes)
+        except Exception as exc:
+            QMessageBox.critical(self, "保存失败", str(exc)); return
+        self._api_config = {"text": self._model_config.legacy_text_config(), "image": image_config}
+        QMessageBox.information(self, "已保存", "服务连接、模型档案和任务路由已加密保存并立即生效。")
 
     def _build_api_section(self, kind: str, title: str, description: str, *, required: bool) -> QGroupBox:
         config = self._api_config.get(kind, {}) or {}

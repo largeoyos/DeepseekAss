@@ -1532,6 +1532,111 @@ class WebFullFeatureTests(unittest.TestCase):
         self.assertEqual(captured["request"].requirement, "克制、悬疑、少解释")
         self.assertEqual(captured["request"].target_words, 2200)
         self.assertEqual(captured["request"].manual_entity_ids, ["char-main", "loc-city"])
+
+    def test_agent_chapter_can_regenerate_from_same_plan_as_new_version(self):
+        self.configure_text_api()
+        self.client.post(
+            "/api/books", headers=self.headers, json={"title": "AgentRetryDesk"}
+        )
+
+        from dataclasses import asdict
+        from core.agent.chapter_generation import (
+            AgentChapterPlan,
+            AgentChapterRequest,
+        )
+        from core.agent.supervision_agent import SupervisionResult
+        from core.agent.world_maintenance import WorldMaintenanceResult
+        from core.agent.types import now_iso
+
+        token = self.headers["Authorization"].split(" ", 1)[1]
+        ctx = self.runtime.context_from_token(token)
+        target = ctx.novel_manager.get_active_generation_target("AgentRetryDesk")
+        request = AgentChapterRequest(
+            "AgentRetryDesk", 1, "开端", "主角作出选择", "保持悬念", 500,
+            "fake-model",
+        )
+        plan = AgentChapterPlan(
+            plan_id="chapter-plan-retry-web",
+            chapter_goal="让主角作出不可逆选择",
+            scenes=[{
+                "scene_id": "scene_1", "title": "选择", "purpose": "推进主线",
+                "goal": "拿到线索", "conflict": "同伴阻止", "outcome": "主角出发",
+                "choice": "独自追查", "cost": "失去同伴信任",
+                "target_words": 500,
+            }],
+            character_arcs=[], plot_threads=["主线"], foreshadowing_actions=[],
+            selected_world_entities=[], selected_history=[], constraints=[],
+            context_report={"content": "固定上下文", "injected_chars": 4},
+            created_at=now_iso(),
+        )
+        workspace = ctx.novel_manager.get_workspace("AgentRetryDesk")
+        run_path = f"{workspace.agent_root}/chapter_runs/{plan.plan_id}.json"
+        workspace.storage.write_json(run_path, {
+            "schema_version": 2,
+            "run_id": plan.plan_id,
+            "status": "prepared",
+            "request": asdict(request),
+            "plan": plan.to_dict(),
+            "generation_target": target,
+            "created_at": now_iso(),
+        })
+
+        def fake_supervise(_service, supervision_request, progress=None):
+            del progress
+            return SupervisionResult(
+                "supervision-web", supervision_request.chapter_content,
+                {"status": "passed", "repair_rounds": 0},
+            )
+
+        def fake_world_maintenance(
+            _service, _client, _book_title, chapter_num, version, **_kwargs
+        ):
+            return WorldMaintenanceResult(
+                f"world_{chapter_num}_{version}", "completed", chapter_num, version
+            )
+
+        patches = (
+            patch(
+                "core.agent.supervision_agent.AgentSupervisionService.supervise",
+                fake_supervise,
+            ),
+            patch(
+                "core.agent.world_bible_agent.WorldBibleAgentService.analyze_chapter",
+                fake_world_maintenance,
+            ),
+        )
+        with patches[0], patches[1]:
+            generated = self.client.post(
+                "/api/books/AgentRetryDesk/agent/chapter/generate",
+                headers=self.headers,
+                json={"plan_id": plan.plan_id, "reuse_current_plan": False},
+            )
+            self.assertEqual(generated.status_code, 200, generated.text)
+            first_task = self.wait_task(generated.json()["task_id"])
+            self.assertEqual(first_task["status"], "completed", first_task)
+
+            regenerated = self.client.post(
+                "/api/books/AgentRetryDesk/agent/chapter/generate",
+                headers=self.headers,
+                json={"plan_id": plan.plan_id, "reuse_current_plan": True},
+            )
+            self.assertEqual(regenerated.status_code, 200, regenerated.text)
+            second_task = self.wait_task(regenerated.json()["task_id"])
+            self.assertEqual(second_task["status"], "completed", second_task)
+
+        versions = ctx.novel_manager.get_chapter_versions("AgentRetryDesk", 1)
+        self.assertEqual([1, 2], [item["v"] for item in versions])
+        record = workspace.storage.read_json(run_path)
+        attempts = record["generation_attempts"]
+        self.assertEqual([False, True], [
+            item["regenerated_from_current_plan"] for item in attempts
+        ])
+        meta = ctx.novel_manager.load_meta("AgentRetryDesk")
+        first_node = ctx.novel_manager._node_id(1, 1)
+        second_node = ctx.novel_manager._node_id(1, 2)
+        self.assertEqual(target["parent_id"], meta.chapter_nodes[first_node]["parent_id"])
+        self.assertEqual(target["parent_id"], meta.chapter_nodes[second_node]["parent_id"])
+
     def test_agent_extra_generation_creates_chapter_tree_node(self):
         self.configure_text_api()
         self.client.post("/api/books", headers=self.headers, json={"title": "ExtraDesk"})

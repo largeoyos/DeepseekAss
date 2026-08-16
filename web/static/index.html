@@ -126,7 +126,7 @@
                 <section class="detail-pane agent-grid">
                   <div class="tool-box"><h3>通用 Agent 会话</h3><div class="inline-form compact"><select id="workbenchAgentKind"></select><input id="workbenchSessionTitle" placeholder="会话标题"></div><div class="button-row"><button id="createAgentSessionBtn" type="button">新建会话</button><button id="refreshAgentRunBtn" type="button">读取运行</button></div><label><span>任务描述</span><textarea id="workbenchMessage" rows="4" placeholder="自由分析、规划、检查或构思"></textarea></label><label><span>手动引用（每行一个章节/设定/片段提示）</span><textarea id="workbenchReferences" rows="3"></textarea></label><div class="button-row"><button id="runAgentSessionBtn" class="primary" type="button">发送到 Agent</button><button id="pauseAgentRunBtn" type="button">暂停</button><button id="resumeAgentRunBtn" type="button">恢复</button><button id="cancelAgentRunBtn" type="button">停止</button></div><div id="agentRunTimeline" class="agent-run-view"><div class="notice small">发送后显示 Agent 回答、运行状态、工具调用和事件时间线。</div></div></div>
                   <div class="tool-box"><h3>写作顾问</h3><label><span>问题</span><textarea id="advisorMessage" rows="5"></textarea></label><label class="check-line"><input id="advisorFictionContext" type="checkbox" checked>按虚构小说创作任务包装</label><label><span>手动引用（每行一个章节/设定/片段提示）</span><textarea id="advisorReferences" rows="3"></textarea></label><div class="button-row"><button id="advisorBtn" class="primary" type="button">询问顾问</button><button id="saveAdvisorAdviceBtn" type="button">保存为构思</button><button id="advisorWorldBtn" type="button">加入世界书审批</button></div></div>
-                  <div class="tool-box"><h3>主线章节 Agent</h3><label><span>章节标题</span><input id="agentChapterTitle"></label><label><span>章节剧情</span><textarea id="agentPlot" rows="5"></textarea></label><label><span>写作要求</span><textarea id="agentRequirement" rows="3" placeholder="本章额外要求；留空时沿用小说设定"></textarea></label><div class="inline-form compact"><label><span>目标字数</span><input id="agentWords" type="number" min="500" max="30000" step="500" value="3000"></label><label><span>手动世界书实体 ID</span><input id="agentManualEntities" placeholder="可选，逗号分隔"></label></div><div class="button-row"><button id="agentPlanBtn" type="button">生成规划</button><button id="agentGenerateBtn" class="primary" type="button">按计划生成</button></div><label id="agentCandidateField" class="hidden"><span>候选规划</span><select id="agentCandidateSelect"></select></label><div id="agentPlanRecommendation" class="notice small hidden"></div><textarea id="agentPlanView" class="code-area" rows="8" placeholder="规划结果"></textarea></div><div class="tool-box"><h3>构思与审批</h3><textarea id="agentInspector" class="code-area" rows="8" placeholder="点击左侧构思或历史消息查看内容"></textarea><div id="changeScopeList" class="stack-list compact"></div><div class="button-row"><button id="approveSelectedChangeBtn" type="button">确认作用域并批准</button><button id="rejectSelectedChangeBtn" type="button">拒绝选中变更</button></div></div>
+                  <div class="tool-box"><h3>主线章节 Agent</h3><label><span>章节标题</span><input id="agentChapterTitle"></label><label><span>章节剧情</span><textarea id="agentPlot" rows="5"></textarea></label><label><span>写作要求</span><textarea id="agentRequirement" rows="3" placeholder="本章额外要求；留空时沿用小说设定"></textarea></label><div class="inline-form compact"><label><span>目标字数</span><input id="agentWords" type="number" min="500" max="30000" step="500" value="3000"></label><label><span>手动世界书实体 ID</span><input id="agentManualEntities" placeholder="可选，逗号分隔"></label></div><div class="button-row"><button id="agentPlanBtn" type="button">生成规划</button><button id="agentGenerateBtn" class="primary" type="button">按计划生成</button><button id="agentRegenerateBtn" type="button" disabled title="跳过规划，按当前已确认草案为同一章生成新版本">按当前草案重新生成</button></div><label id="agentCandidateField" class="hidden"><span>候选规划</span><select id="agentCandidateSelect"></select></label><div id="agentPlanRecommendation" class="notice small hidden"></div><textarea id="agentPlanView" class="code-area" rows="8" placeholder="规划结果"></textarea></div><div class="tool-box"><h3>构思与审批</h3><textarea id="agentInspector" class="code-area" rows="8" placeholder="点击左侧构思或历史消息查看内容"></textarea><div id="changeScopeList" class="stack-list compact"></div><div class="button-row"><button id="approveSelectedChangeBtn" type="button">确认作用域并批准</button><button id="rejectSelectedChangeBtn" type="button">拒绝选中变更</button></div></div>
                   <div class="tool-box"><h3>章节润色 Agent</h3><label><span>节点 ID</span><input id="polishNodeId" placeholder="从章节树选择后自动填入"></label><label><span>润色要求</span><textarea id="polishRequirement" rows="4"></textarea></label><div class="button-row"><button id="polishPlanBtn" type="button">规划润色</button><button id="polishGenerateBtn" type="button">执行润色</button></div></div>
                   <div class="tool-box"><h3>扩展章节 / 分支线</h3><label><span>类型</span><select id="extraType"><option value="enrichment">丰富内容</option><option value="if_line">IF线</option><option value="prequel">前传</option><option value="sequel">后传</option></select></label><label><span>起点节点</span><input id="extraStartNodeId"></label><label><span>终点节点</span><input id="extraEndNodeId"></label><label><span>参考节点</span><input id="extraRefNodeId"></label><label><span>标题</span><input id="extraTitle"></label><label><span>大致剧情</span><textarea id="extraPlot" rows="4" placeholder="输入关键场景、分歧选择或希望发生的事件"></textarea></label><label><span>写作要求</span><textarea id="extraRequirement" rows="3" placeholder="额外风格、限制、人物动机要求，可留空"></textarea></label><label><span>目标字数</span><input id="extraWords" type="number" min="500" max="50000" step="500" value="5000"></label><label><span>手动世界书实体 ID</span><input id="extraManualEntities" placeholder="可选，逗号分隔"></label><div class="button-row"><button id="extraPlanBtn" type="button">规划番外</button><button id="extraGenerateBtn" type="button">生成番外</button></div></div>
                 </section>
@@ -350,10 +350,9 @@
                 <button id="confirmBtn" type="button">确认 10 分钟</button>
               </section>
               <section class="tool-box">
-                <h3>基础 API</h3>
-                <label><span>当前生成模型</span><input id="currentModel" list="modelOptions" placeholder="deepseek-v4-flash"></label>
-                <datalist id="modelOptions"></datalist>
-                <div class="button-row"><button id="saveCurrentModelBtn" type="button">切换当前模型</button></div><label><span>章节模型路由</span><select id="modelRoutingMode"><option value="standard">正文与辅助任务均使用当前模型</option><option value="pro_body_flash_aux">正文 Pro · 摘要/世界书/监督 Flash（省费）</option></select></label><button id="saveModelRoutingBtn" type="button">保存模型路由</button>
+                <h3>兼容入口与图片 API</h3>
+                <p class="muted">兼容入口：修改当前互动档案和独立图片 API。多服务与分阶段路由请在下方模型中心管理。</p>
+                <div class="hidden"><input id="currentModel" list="modelOptions"><datalist id="modelOptions"></datalist><button id="saveCurrentModelBtn" type="button"></button><select id="modelRoutingMode"><option value="standard"></option><option value="pro_body_flash_aux"></option></select><button id="saveModelRoutingBtn" type="button"></button></div>
                 <label><span>文字 API Key</span><input id="apiKey" type="password"></label>
                 <label><span>文字 Base URL</span><input id="baseUrl"></label>
                 <label><span>文字模型</span><input id="apiModel"></label>
@@ -363,6 +362,47 @@
                   <label><span>图片模型</span><input id="imageModel"></label>
                 </div>
                 <div class="button-row"><button id="saveApiBtn" class="primary" type="button">保存 API</button><button id="testApiBtn" type="button">测试连接</button></div>
+              </section>
+              <section class="tool-box model-center-box">
+                <div class="model-center-heading">
+                  <div><h3>多模型中心</h3><p class="muted">服务连接 → 模型档案 → 六阶段路由。跨服务回退可能将当前上下文发送给备用服务。</p></div>
+                  <button id="saveModelCenterBtn" class="primary" type="button">保存模型中心</button>
+                </div>
+                <div class="model-center-columns">
+                  <div class="model-center-pane">
+                    <h4>1  服务连接</h4>
+                    <label><span>已配置服务</span><select id="providerProfileSelect"></select></label>
+                    <div class="button-row compact"><button id="addDeepSeekProviderBtn" type="button">+ DeepSeek</button><button id="addResponsesProviderBtn" type="button">+ Responses</button><button id="addOllamaProviderBtn" type="button">+ Ollama</button><button id="deleteProviderBtn" type="button">删除</button></div>
+                    <label><span>服务名称</span><input id="providerName"></label>
+                    <label><span>协议</span><select id="providerProtocol"><option value="openai_chat">OpenAI Chat 兼容</option><option value="openai_responses">OpenAI Responses</option><option value="ollama_native">Ollama 原生</option></select></label>
+                    <label><span>调用地址</span><input id="providerUrl"></label>
+                    <label><span>API Key（可空）</span><input id="providerApiKey" type="password"></label>
+                    <div class="settings-mini-grid"><label><span>认证 Header</span><input id="providerAuthHeader" placeholder="Authorization"></label><label><span>认证前缀</span><input id="providerAuthPrefix" placeholder="Bearer "></label></div>
+                    <label><span>自定义 Headers JSON</span><textarea id="providerHeaders" rows="3" placeholder="{}"></textarea></label>
+                    <div class="settings-mini-grid"><label><span>超时秒</span><input id="providerTimeout" type="number" min="1" max="3600"></label><label><span>重试</span><input id="providerRetries" type="number" min="0" max="10"></label></div>
+                    <label class="check-line"><input id="providerEnabled" type="checkbox">启用连接</label>
+                    <label class="check-line"><input id="providerInsecure" type="checkbox">允许非本机 HTTP</label>
+                  </div>
+                  <div class="model-center-pane">
+                    <h4>2  模型档案</h4>
+                    <label><span>已配置模型</span><select id="modelProfileSelect"></select></label>
+                    <div class="button-row compact"><button id="addModelProfileBtn" type="button">+ 模型</button><button id="discoverModelsBtn" type="button">获取列表</button><button id="testModelProfileBtn" type="button">能力测试</button><button id="deleteModelProfileBtn" type="button">删除</button></div>
+                    <label><span>所属服务</span><select id="modelProviderSelect"></select></label>
+                    <div class="settings-mini-grid"><label><span>档案名</span><input id="modelProfileName"></label><label><span>真实模型名</span><input id="modelRealName"></label></div>
+                    <label><span>请求模板</span><select id="modelTemplate"><option value="generic">通用</option><option value="deepseek">DeepSeek</option><option value="openai_responses">Responses</option><option value="ollama">Ollama</option></select></label>
+                    <div class="settings-mini-grid"><label><span>上下文窗口</span><input id="modelContextWindow" type="number" min="512"></label><label><span>最大输出</span><input id="modelMaxOutput" type="number" min="1"></label></div>
+                    <label><span>Ollama num_ctx（越大越占显存/内存，0 表示不下发）</span><input id="modelRuntimeContext" type="number" min="0"></label>
+                    <div class="capability-grid"><label><input id="modelCapStream" type="checkbox">流式</label><label><input id="modelCapTools" type="checkbox">工具</label><label><input id="modelCapSearch" type="checkbox">原生搜索</label><label><input id="modelCapReasoning" type="checkbox">推理</label><label><input id="modelCapJson" type="checkbox">JSON</label></div>
+                    <div class="capability-grid"><label><input id="modelParamTemperature" type="checkbox">发送 temperature</label><label><input id="modelParamTopP" type="checkbox">发送 top_p</label><label><input id="modelParamFrequency" type="checkbox">发送 frequency_penalty</label><label><input id="modelParamMaxTokens" type="checkbox">发送输出上限</label></div>
+                    <label><span>推理等级（逗号分隔）</span><input id="modelReasoningLevels"></label>
+                    <div class="settings-mini-grid"><label><span>默认推理</span><select id="modelDefaultReasoning"><option>off</option><option>low</option><option>medium</option><option>high</option><option>xhigh</option><option>max</option></select></label><label><span>默认联网</span><select id="modelDefaultSearch"><option value="off">关闭</option><option value="on_demand">按需</option><option value="always">总是</option></select></label></div>
+                    <div class="settings-mini-grid"><label><span>默认 temperature（空=不发送）</span><input id="modelDefaultTemperature"></label><label><span>默认 top_p（空=不发送）</span><input id="modelDefaultTopP"></label><label><span>默认 frequency_penalty（空=不发送）</span><input id="modelDefaultFrequency"></label></div>
+                    <label><span>高级请求 JSON</span><textarea id="modelExtraBody" rows="4" placeholder="{}"></textarea></label>
+                    <label class="check-line"><input id="modelProfileEnabled" type="checkbox">启用模型档案</label>
+                  </div>
+                </div>
+                <div class="route-editor-head"><h4>3  任务路由</h4><label><span>作用域</span><select id="modelRouteScope"><option value="global">用户默认</option><option value="book">当前书籍</option></select></label></div>
+                <div id="modelRouteRows" class="route-grid"></div>
               </section>
               <section class="tool-box global-prompt-box">
                 <h3>全局偏好提示词</h3>
@@ -491,6 +531,8 @@
         <header class="agent-plan-dialog-header"><div><p class="eyebrow">Token 日志</p><h2 id="tokenContentDialogTitle">内容全文</h2></div><button id="closeTokenContentDialogBtn" class="icon-button" type="button" aria-label="关闭">×</button></header>
         <p id="tokenContentMeta" class="muted"></p>
         <pre id="tokenContentFull" class="agent-plan-dialog-content"></pre>
+        <details class="json-drawer"><summary>推理内容（仅日志详情显示）</summary><pre id="tokenReasoningFull" class="agent-plan-dialog-content"></pre></details>
+        <details class="json-drawer"><summary>路由、上下文预算与回退</summary><pre id="tokenRoutingDetail" class="agent-plan-dialog-content"></pre></details>
         <p id="tokenContentNote" class="notice small hidden">旧日志未保存全文，仅能显示保存时的预览。</p>
         <div class="button-row"><button id="closeTokenContentDialogFooterBtn" class="primary" type="button">关闭</button></div>
       </section>

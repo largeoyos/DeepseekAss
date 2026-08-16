@@ -33,6 +33,16 @@ class TokenLogEntry:
     duration_ms: int | None = None
     char_count: int | None = None
     hanzi_count: int | None = None
+    provider_id: str = ""
+    provider_name: str = ""
+    protocol: str = ""
+    model_profile_id: str = ""
+    stage: str = ""
+    reasoning_level: str = ""
+    context_budget: dict | None = None
+    search_source: str = ""
+    fallback_attempts: list[dict] | None = None
+    final_failure_reason: str = ""
 
 
 class TokenLogManager:
@@ -113,6 +123,7 @@ class TokenLogManager:
         duration_ms: int | None = None,
         char_count: int | None = None,
         hanzi_count: int | None = None,
+        gateway_metadata: dict | None = None,
     ) -> TokenLogEntry:
         preview = (content or "").strip().replace("\n", " ")
         if len(preview) > 60:
@@ -121,6 +132,7 @@ class TokenLogManager:
         if len(reasoning_preview) > 60:
             reasoning_preview = reasoning_preview[:60] + "..."
         status = "ok" if usage else "unavailable"
+        gateway_metadata = dict(gateway_metadata or {})
         entry = TokenLogEntry(
             id=uuid.uuid4().hex,
             timestamp=datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -142,6 +154,16 @@ class TokenLogManager:
             duration_ms=duration_ms,
             char_count=char_count,
             hanzi_count=hanzi_count,
+            provider_id=str(gateway_metadata.get("provider_id") or ""),
+            provider_name=str(gateway_metadata.get("provider_name") or ""),
+            protocol=str(gateway_metadata.get("protocol") or ""),
+            model_profile_id=str(gateway_metadata.get("model_profile_id") or ""),
+            stage=str(gateway_metadata.get("stage") or ""),
+            reasoning_level=str(gateway_metadata.get("reasoning_level") or ""),
+            context_budget=gateway_metadata.get("context_budget"),
+            search_source=str(gateway_metadata.get("search_source") or ""),
+            fallback_attempts=gateway_metadata.get("fallback_attempts"),
+            final_failure_reason=str(gateway_metadata.get("final_failure_reason") or ""),
         )
         rows = [asdict(entry)] + self._read()
         self._write(rows)

@@ -7,6 +7,7 @@ import secrets
 import shutil
 import threading
 import time
+from urllib.parse import urlparse
 from dataclasses import asdict, is_dataclass
 from pathlib import Path
 from typing import Callable
@@ -15,8 +16,10 @@ from config import Config
 from core.app_services import ChapterGenerationService
 from core.auth_manager import AuthError, AuthManager
 from core.character_book import CharacterBookManager
-from core.chat_client import DeepSeekChatClient
 from core.chat_domain import ScenePresetManager, SenderProfileManager
+from core.model_config import ModelConfig, stage_for_operation
+from core.model_gateway import ModelGateway, format_citations_markdown
+from core.model_types import TaskStage
 from core.conversation_manager import ConversationManager
 from core.novel_manager import NovelManager, NovelMeta
 from core.settings_manager import SettingsManager
@@ -147,53 +150,98 @@ class WebUserContext:
         self.novel_manager.configure_retrieval(self.settings)
 
     def load_api_config(self) -> dict:
+        """旧 Web API 兼容视图；真实配置由 load_model_config 管理。"""
+        config = self.load_model_config()
+        return {"text": config.legacy_text_config(), "image": dict(config.image or {})}
+
+    def load_model_config(self) -> ModelConfig:
         self.reload_settings()
         config_path = os.path.join(self.user_dir, "config.enc")
         data = AuthManager.decrypt_json(self.enc_key, config_path) or {}
-        if data and "text" not in data:
-            data = {
-                "text": {
-                    "api_key": data.get("api_key", ""),
-                    "base_url": data.get("base_url", Config.BASE_URL),
-                    "model": data.get("model") or self.settings.get("last_model") or Config.MODEL_V4_FLASH,
-                },
-                "image": {
-                    "api_key": data.get("image_api_key", ""),
-                    "base_url": data.get("image_base_url", ""),
-                    "model": data.get("image_model", Config.IMAGE_MODEL),
-                },
-            }
-        text = dict(data.get("text") or {})
-        image = dict(data.get("image") or {})
-        text.setdefault("api_key", Config.API_KEY)
-        text.setdefault("base_url", Config.BASE_URL)
-        text.setdefault("model", self.settings.get("last_model") or Config.MODEL_V4_FLASH)
-        image.setdefault("api_key", Config.IMAGE_API_KEY)
-        image.setdefault("base_url", Config.IMAGE_BASE_URL)
-        image.setdefault("model", Config.IMAGE_MODEL)
-        return {"text": text, "image": image}
+        config = ModelConfig.from_dict(data, self.settings)
+        if int(data.get("schema_version") or 0) < 2:
+            self.save_model_config(config)
+        return config
 
-    def save_api_config(self, config: dict) -> None:
+    def save_model_config(self, config: ModelConfig) -> None:
         path = os.path.join(self.user_dir, "config.enc")
-        AuthManager.encrypt_json(self.enc_key, path, config)
-        settings = self.settings_manager.load()
-        text = config.get("text") or {}
-        if text.get("model"):
-            model = text.get("model")
-            settings["last_model"] = model
+        AuthManager.encrypt_json(self.enc_key, path, config.to_dict())
+        legacy = config.legacy_text_config()
+        if legacy.get("model"):
+            settings = self.settings_manager.load()
+            settings["last_model"] = legacy["model"]
             custom_models = list(settings.get("custom_models") or [])
-            if model not in custom_models:
-                custom_models.append(model)
+            if legacy["model"] not in custom_models:
+                custom_models.append(legacy["model"])
             settings["custom_models"] = custom_models
             self.settings_manager.save(settings)
             self.settings = settings
 
+    def save_api_config(self, config: dict) -> None:
+        if int(dict(config or {}).get("schema_version") or 0) >= 2:
+            self.save_model_config(ModelConfig.from_dict(config, self.settings))
+            return
+        model_config = self.load_model_config()
+        text = config.get("text") or {}
+        route = model_config.routes.get(TaskStage.INTERACTIVE.value)
+        profile = model_config.models.get(route.primary_model_id) if route else None
+        provider = model_config.providers.get(profile.provider_id) if profile else None
+        if profile and provider:
+            provider.api_key = str(text.get("api_key", provider.api_key) or "")
+            provider.base_url = str(text.get("base_url", provider.base_url) or provider.base_url).rstrip("/")
+            if str(text.get("model") or "").strip():
+                profile.model = str(text["model"]).strip()
+                profile.name = profile.model
+        model_config.image = dict(config.get("image") or model_config.image or {})
+        self.save_model_config(model_config)
+
     def require_text_api(self) -> dict:
-        api_config = self.load_api_config()
-        text = api_config.get("text") or {}
-        if not str(text.get("api_key") or "").strip():
-            raise WebApiConfigError("请先在网页端设置或桌面端设置中心配置文字 API")
-        return api_config
+        return self.require_model(TaskStage.INTERACTIVE)
+
+    def require_model(self, stage: TaskStage, book_title: str = "") -> dict:
+        model_config = self.load_model_config()
+        book_routes = self.load_book_model_routes(book_title) if book_title else None
+        route = model_config.effective_route(stage, book_routes)
+        profile = model_config.models.get(route.primary_model_id) if route else None
+        provider = model_config.providers.get(profile.provider_id) if profile else None
+        if not profile or not provider or not profile.enabled or not provider.enabled:
+            raise WebApiConfigError(f"请先在模型中心为{stage.value}阶段配置可用的模型档案")
+        if not provider.base_url.strip() or not profile.model.strip():
+            raise WebApiConfigError("模型服务 URL 和真实模型名不能为空")
+        host = (urlparse(provider.base_url).hostname or "").lower() if provider else ""
+        local_host = host in {"127.0.0.1", "::1", "localhost"}
+        if provider and provider.protocol.value != "ollama_native" and not local_host and not provider.api_key.strip():
+            raise WebApiConfigError(
+                "当前远程模型服务尚未配置 API Key；"
+                "请在网页模型中心或桌面端设置中心完成配置。"
+                "本地 Ollama/localhost 兼容服务可以不填 Key。"
+            )
+        return {
+            "text": {
+                "api_key": provider.api_key,
+                "base_url": provider.base_url,
+                "model": profile.model,
+            },
+            "image": dict(model_config.image or {}),
+        }
+
+    def load_book_model_routes(self, book_title: str) -> dict:
+        if not book_title:
+            return {}
+        data = self.novel_manager.get_workspace(book_title).storage.read_json(
+            ".deepseekass/model_routes.json", default={}
+        ) or {}
+        return dict(data.get("routes") or data)
+
+    def build_model_gateway(self, event_sink=None) -> ModelGateway:
+        from core.agent.web_search import WebSearchClient, WebSearchConfig
+        search = WebSearchClient(WebSearchConfig.from_settings(self.settings))
+        return ModelGateway(
+            self.load_model_config(),
+            book_route_loader=self.load_book_model_routes,
+            external_search=search.search,
+            event_sink=event_sink,
+        )
 
     def markdown_path(self, relative: str) -> str:
         relative = (relative or "").replace("\\", "/").strip("/")
@@ -244,6 +292,24 @@ def masked_api_config(config: dict) -> dict:
     return result
 
 
+def masked_model_config(config: ModelConfig | dict) -> dict:
+    """模型中心的脱敏视图，不返回 Key、自定义 Header 值或高级 JSON 内容。"""
+    model_config = config if isinstance(config, ModelConfig) else ModelConfig.from_dict(config)
+    data = model_config.to_dict()
+    for provider in data.get("providers", {}).values():
+        key = str(provider.get("api_key") or "")
+        provider["api_key_configured"] = bool(key)
+        provider["api_key"] = (key[:4] + "..." + key[-4:]) if len(key) > 8 else ("***" if key else "")
+        headers = dict(provider.get("headers") or {})
+        provider["headers_configured"] = sorted(headers)
+        provider["headers"] = {name: "***" for name in headers}
+    for profile in data.get("models", {}).values():
+        extra = dict(profile.get("extra_body") or {})
+        profile["extra_body_configured"] = bool(extra)
+        profile["extra_body"] = {}
+    return data
+
+
 class WebRuntime:
     def __init__(
         self,
@@ -253,6 +319,7 @@ class WebRuntime:
     ) -> None:
         self.tokens = TokenStore(ttl_seconds=token_ttl_seconds)
         self.sensitive = SensitiveStore()
+        self._uses_default_client_factory = client_factory is None
         self.client_factory = client_factory or self._default_client_factory
         self._task_queues: dict[str, queue.Queue[TaskEvent]] = {}
         self._task_events: dict[str, list[TaskEvent]] = {}
@@ -412,7 +479,7 @@ class WebRuntime:
         plot: str,
         target_words: int,
     ) -> str:
-        api_config = ctx.require_text_api()
+        api_config = ctx.require_model(TaskStage.DRAFTING, title)
         lock = self._generation_locks.setdefault(ctx.username, threading.Lock())
         if not lock.acquire(blocking=False):
             raise RuntimeError("当前账号已有生成任务在运行，请稍后再试")
@@ -455,10 +522,20 @@ class WebRuntime:
             self._task_queues.setdefault(event.task_id, queue.Queue()).put(event)
 
     def _default_client_factory(self, api_config: dict):
-        text = api_config.get("text") or {}
-        return DeepSeekChatClient._create_openai_client(
-            str(text.get("api_key") or ""),
-            str(text.get("base_url") or Config.BASE_URL),
+        config = ModelConfig.from_dict(api_config)
+        return ModelGateway(config).compat_client("chat", stage=TaskStage.INTERACTIVE)
+
+    def model_client(self, ctx: WebUserContext, operation: str, *, book_title: str = "", event_sink=None):
+        """默认走六阶段网关；测试注入的旧 client_factory 仍保持兼容。"""
+        stage = stage_for_operation(operation)
+        api_config = ctx.require_model(stage, book_title)
+        if not self._uses_default_client_factory:
+            return self.client_factory(api_config)
+        gateway = ctx.build_model_gateway(event_sink=event_sink)
+        return gateway.compat_client(
+            operation,
+            stage=stage,
+            book_title=book_title,
         )
 
     def _run_generation_task(
@@ -481,7 +558,21 @@ class WebRuntime:
             "max_tokens": max(target_words * 2, params["max_tokens"]),
         }
         auxiliary_model = auxiliary_generation_model(ctx.settings, params["model"])
-        raw_client = self.client_factory(api_config)
+        def model_event(event: dict) -> None:
+            event = dict(event or {})
+            message = "正在连接主模型"
+            if event.get("type") in {"model_attempt_failed", "model_stream_failed"}:
+                message = "模型调用失败"
+                if event.get("will_retry"):
+                    message += "，正在重试当前服务"
+                elif event.get("will_fallback"):
+                    message += "，正在切换备用服务"
+            elif event.get("fallback"):
+                message = "已切换到备用模型"
+            handle.progress(message, stage="模型路由", data={"model_event": event})
+
+        body_client = self.model_client(ctx, "novel_chapter", book_title=title, event_sink=model_event)
+        context_client = self.model_client(ctx, "novel_context_summary", book_title=title, event_sink=model_event)
 
         handle.progress("准备章节上下文", percent=5, stage="准备上下文")
         meta = manager.load_meta(title)
@@ -496,7 +587,7 @@ class WebRuntime:
             chapter_title,
             plot,
             global_prompt=str(ctx.settings.get("global_user_prompt") or ""),
-            client=raw_client,
+            client=context_client,
             model=auxiliary_model,
         )
         prompt = build_generation_prompt(
@@ -535,7 +626,7 @@ class WebRuntime:
         messages.append({"role": "user", "content": prompt})
 
         handle.progress("正在生成正文", percent=20, stage="生成正文")
-        content = self._stream_completion(handle, raw_client, messages, body_params)
+        content = self._stream_completion(handle, body_client, messages, body_params)
         if not content.strip():
             raise RuntimeError("模型未返回章节正文")
 
@@ -550,7 +641,12 @@ class WebRuntime:
             handle.progress(labels.get(stage, "正在监督章节"), percent=60, stage="章节监督")
 
         content, supervision = supervise_chapter(
-            lambda _kind: raw_client,
+            lambda kind: self.model_client(
+                ctx,
+                f"web_chapter_supervision_{kind}",
+                book_title=title,
+                event_sink=model_event,
+            ),
             chapter_content=content,
             chapter_title=f"Chapter {chapter_num}: {chapter_title}",
             chapter_outline=plot,
@@ -589,7 +685,7 @@ class WebRuntime:
         handle.progress("生成章节摘要", percent=74, stage="生成摘要")
         try:
             summary = manager.generate_summary(
-                raw_client,
+                self.model_client(ctx, "novel_summary", book_title=title, event_sink=model_event),
                 content,
                 chapter_num,
                 chapter_title,
@@ -608,7 +704,7 @@ class WebRuntime:
         handle.progress("更新世界书", percent=84, stage="更新世界书")
         try:
             service.world_bible.sync_chapter(
-                raw_client,
+                self.model_client(ctx, "world_bible_update", book_title=title, event_sink=model_event),
                 title,
                 chapter_num,
                 saved_version,
@@ -639,9 +735,10 @@ class WebRuntime:
         handle.progress("生成完成", percent=100, stage="完成", data={"result": result})
         return result
 
-    def _stream_completion(self, handle, raw_client, messages: list[dict], params: dict) -> str:
+    def _stream_completion(self, handle, client, messages: list[dict], params: dict) -> str:
         chunks: list[str] = []
-        response = raw_client.chat.completions.create(
+        gateway_result = None
+        response = client.chat.completions.create(
             model=params["model"],
             messages=messages,
             temperature=params["temperature"],
@@ -654,7 +751,11 @@ class WebRuntime:
         for chunk in response:
             if handle.cancelled:
                 raise RuntimeError("任务已取消")
-            delta = chunk.choices[0].delta
+            gateway_result = getattr(chunk, "gateway_result", None) or gateway_result
+            choices = getattr(chunk, "choices", []) or []
+            if not choices:
+                continue
+            delta = choices[0].delta
             text = getattr(delta, "content", None) or ""
             if not text:
                 continue
@@ -677,7 +778,9 @@ class WebRuntime:
                 stage="生成正文",
                 data={"text": "".join(chunks[-8:])[-500:]},
             )
-        return "".join(chunks).strip()
+        content = "".join(chunks).strip()
+        citation_block = format_citations_markdown(list(getattr(gateway_result, "citations", []) or []))
+        return f"{content}\n\n{citation_block}".strip() if citation_block else content
 
 
 def generation_params(settings: dict, api_config: dict) -> dict:

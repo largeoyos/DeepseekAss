@@ -1,4 +1,6 @@
-openai>=1.0.0
+openai>=2.0.0,<3.0.0
+httpx>=0.28.0,<1.0.0
+mcp>=2.0.0,<3.0.0
 fastapi>=0.110.0
 uvicorn>=0.27.0
 python-dotenv>=1.0.0
@@ -9,6 +11,5 @@ python-docx>=1.0.0
 cryptography>=42.0.0
 langchain>=1.0.0
 langgraph>=1.0.0
-langchain-openai>=1.0.0
 llama-index-core>=0.12.0
 llama-index-embeddings-openai>=0.3.0
