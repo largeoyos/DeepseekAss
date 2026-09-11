@@ -239,8 +239,15 @@ class MultiModelChatClient:
         """请求取消当前操作。关闭 HTTP 流并设置取消标志。"""
         self._cancel_requested = True
         if self._current_stream is not None:
-            self._current_stream.close()
-            self._current_stream = None
+            try:
+                self._current_stream.close()
+            except (OSError, RuntimeError, ValueError):
+                # Python generators cannot be closed concurrently while their
+                # worker thread is inside __next__; the shared flag will stop
+                # consumption as soon as that call yields or raises.
+                pass
+            finally:
+                self._current_stream = None
 
     def reset_cancel(self) -> None:
         """每次新任务开始前重置取消标志。"""

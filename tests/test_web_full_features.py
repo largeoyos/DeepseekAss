@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import tempfile
@@ -22,9 +23,17 @@ class FakeOpenAIClient:
     def __init__(self) -> None:
         self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
 
-    def create(self, *, stream=False, **_kwargs):
+    def create(self, *, stream=False, **kwargs):
         if stream:
             return iter([SimpleNamespace(choices=[SimpleNamespace(delta=SimpleNamespace(content="正文"))])])
+        prompt = "\n".join(str(item.get("content") or "") for item in kwargs.get("messages") or [])
+        if '"directions"' in prompt and "发展方向" in prompt:
+            content = json.dumps({"directions": [
+                {"title": "推进主线", "highlight": "线索升级", "plot": "主角沿已有线索继续调查", "foreshadowing": []},
+                {"title": "深化关系", "highlight": "人物选择", "plot": "同伴的决定改变调查节奏", "foreshadowing": []},
+                {"title": "回收伏笔", "highlight": "前后呼应", "plot": "旧线索在新场景中显露意义", "foreshadowing": []},
+            ]}, ensure_ascii=False)
+            return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=content))])
         return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="OK"))])
 
 

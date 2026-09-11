@@ -114,6 +114,42 @@ class WritingDefaultsUiTests(unittest.TestCase):
             dialog.close()
             parent.close()
 
+    def test_settings_dialog_saves_ai_control_defaults(self):
+        with tempfile.TemporaryDirectory() as root:
+            manager = NovelManager(os.path.join(root, "books"))
+            parent = _SettingsParent(manager)
+            settings_manager = SettingsManager(root)
+            dialog = SettingsDialog(
+                parent,
+                settings_manager=settings_manager,
+                auth=AuthManager,
+                username="tester",
+                user_dir=root,
+                encrypted=False,
+                api_config={"text": {"base_url": "http://127.0.0.1:11434", "api_key": "", "model": "qwen3"}, "image": {}},
+                api_config_callback=lambda _value: None,
+                api_test_callback=lambda _kind, _value: (True, "ok"),
+                settings_changed_callback=lambda: None,
+                password_changed_callback=lambda _key: None,
+            )
+            dialog._control_tree_page_size.setValue(123)
+            dialog._control_chapter_page_chars.setValue(4567)
+            dialog._control_search_scope.setCurrentIndex(dialog._control_search_scope.findData("active"))
+            dialog._control_agent_enabled.setChecked(True)
+            dialog._control_agent_target_words.setValue(4200)
+            dialog._control_agent_instruction_prefix.setPlainText("保持第三人称限知")
+            with patch("ui.settings_dialog.QMessageBox.information"):
+                dialog._save_ai_control_settings()
+            settings = settings_manager.load()
+            self.assertEqual(123, settings["control_tree_page_size"])
+            self.assertEqual(4567, settings["control_chapter_page_chars"])
+            self.assertEqual("active", settings["control_search_scope"])
+            self.assertTrue(settings["control_agent_enabled"])
+            self.assertEqual(4200, settings["control_agent_target_words"])
+            self.assertEqual("保持第三人称限知", settings["control_agent_instruction_prefix"])
+            dialog.close()
+            parent.close()
+
     def test_new_book_inherits_user_defaults(self):
         with tempfile.TemporaryDirectory() as root:
             manager = NovelManager(os.path.join(root, "books"))

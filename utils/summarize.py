@@ -526,13 +526,13 @@ def split_text_locally(text: str, max_chars: int = 3000) -> list[tuple[str, str]
     if titled:
         return titled
 
-    paragraphs = [p.strip() for p in re.split(r"\n\s*\n+", text) if p.strip()]
-    if len(paragraphs) >= 2:
-        return [(f"段落 {idx}", para) for idx, para in enumerate(paragraphs, 1)]
+    paragraph_breaks = [match.end() for match in re.finditer(r"\n[ \t\r]*\n+", text)]
+    if paragraph_breaks:
+        return _group_local_text(text, paragraph_breaks, max_chars)
 
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    if len(lines) >= 2:
-        return [(f"段落 {idx}", line) for idx, line in enumerate(lines, 1)]
+    line_breaks = [match.end() for match in re.finditer(r"\n", text)]
+    if line_breaks:
+        return _group_local_text(text, line_breaks, max_chars)
 
     if len(text) <= max_chars:
         return [("全文", text)]
@@ -541,6 +541,31 @@ def split_text_locally(text: str, max_chars: int = 3000) -> list[tuple[str, str]
     for idx, start in enumerate(range(0, len(text), max_chars), 1):
         result.append((f"片段 {idx}", text[start:start + max_chars]))
     return result
+
+
+def _group_local_text(text: str, candidates: list[int], target_chars: int) -> list[tuple[str, str]]:
+    """Group paragraph/line boundaries near the target size instead of returning one item per line."""
+    target_chars = max(500, int(target_chars or 3000))
+    min_tail_chars = max(200, target_chars // 3)
+    starts = [0]
+    section_start = 0
+    previous_candidate = 0
+    for position in candidates:
+        if position >= len(text):
+            continue
+        if position - section_start < target_chars:
+            previous_candidate = position
+            continue
+        chosen = previous_candidate if previous_candidate > section_start else position
+        if len(text) - chosen < min_tail_chars:
+            break
+        starts.append(chosen)
+        section_start = chosen
+        previous_candidate = position if position > chosen else chosen
+    return [
+        (f"段落 {index}", text[start:(starts[index] if index < len(starts) else len(text))])
+        for index, start in enumerate(starts, 1)
+    ]
 
 
 def segment_by_ai(client, text: str, model: str, global_user_prompt: str = "") -> list[tuple[str, str]]:

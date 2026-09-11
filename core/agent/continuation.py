@@ -14,6 +14,7 @@ from ui.continuation_dialogs import (
     SUGGESTION_PROMPT,
     _build_world_summary,
     _safe_format,
+    generate_direction_suggestions,
 )
 from utils.prompts import Prompts
 
@@ -57,6 +58,9 @@ class AgentContinuationService:
     """Deterministic Agent facade for continuation import analysis, segmentation and direction planning."""
 
     MAX_SEGMENT_CHARS = 40_000
+    TARGET_SECTION_CHARS = 6_000
+    MIN_SECTION_CHARS = 2_000
+    MAX_SECTIONS_PER_CHUNK = 12
     MIN_ANCHOR_CHARS = 20
     MAX_ANCHOR_CHARS = 60
 
@@ -161,7 +165,8 @@ class AgentContinuationService:
         raw = ""
         try:
             raw = self._request_segmentation(source, model, skills_text, global_user_prompt)
-            return self._parse_sections(raw, source), 0, ""
+            sections = self._parse_sections(raw, source)
+            return self._coalesce_dense_sections(sections, source), 0, ""
         except Exception as first_error:
             try:
                 repaired = self._request_segmentation(
@@ -172,7 +177,8 @@ class AgentContinuationService:
                     repair_error=str(first_error),
                     invalid_response=raw,
                 )
-                return self._parse_sections(repaired, source), 1, ""
+                sections = self._parse_sections(repaired, source)
+                return self._coalesce_dense_sections(sections, source), 1, ""
             except Exception as repair_error:
                 return [], 1, f"Agent 输出无效（{repair_error}）"
 
@@ -186,14 +192,19 @@ class AgentContinuationService:
         repair_error: str = "",
         invalid_response: str = "",
     ) -> str:
+        max_sections = self._max_agent_sections(source)
         prompt = (
-            "你是续写导入分段 Agent。请为给定原文块标记连续段落的起点。\n"
+            "你是续写导入分段 Agent。请按场景、时间、地点、视角或主要情节阶段的明显变化，"
+            "为给定原文块标记连续章节片段的起点。\n"
             "规则：\n"
             "1. 正文由程序按原文切片，绝不输出 content、正文、改写文本或 Markdown。\n"
             "2. 只输出 JSON 数组，每项只含 title 和 start_quote。\n"
             "3. 第一项 start_quote 必须是空字符串，表示当前原文块的开头。\n"
             f"4. 后续 start_quote 必须逐字复制原文中该段开头连续 {self.MIN_ANCHOR_CHARS}-{self.MAX_ANCHOR_CHARS} 个字符。\n"
             "5. 标题简短准确；锚点必须按原文顺序且不得重复。\n"
+            f"6. 目标粒度是每段约 3000-8000 字；本块最多 {max_sections} 段。"
+            "普通自然段、对白换行、轻微话题变化都不是分段理由。\n"
+            "7. 如果没有明显的场景级转折，只返回第一项，不要为了凑数量强行切分。\n"
             "格式：[{\"title\":\"开端\",\"start_quote\":\"\"},{\"title\":\"转折\",\"start_quote\":\"原文连续片段\"}]。\n"
             f"\n【可用写作 Skills】\n{skills_text}\n"
             f"\n【用户偏好】\n{global_user_prompt}\n"
@@ -210,9 +221,12 @@ class AgentContinuationService:
             model=model,
             messages=[{"role": "user", "content": prompt}],
             temperature=0.2,
-            max_tokens=2000,
+            max_tokens=4000,
         )
-        return str(response.choices[0].message.content or "")
+        content = str(response.choices[0].message.content or "").strip()
+        if not content:
+            raise ValueError("Agent 返回了空内容")
+        return content
 
     def generate_settings_from_world_data(
         self,
@@ -274,15 +288,7 @@ class AgentContinuationService:
             prompt += f"\n\n用户偏好参考: {global_user_prompt}"
         if xp_mode:
             prompt += f"\n\n{Prompts.XP_MODE_SYSTEM}\n\n{Prompts.XP_SUGGESTION_GUIDE}"
-        response = self.client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=1500,
-            temperature=0.8,
-        )
-        text = response.choices[0].message.content or ""
-        directions = [line.strip() for line in text.split("\n") if line.strip() and ("方向" in line or "：" in line)]
-        result = directions[:5] if directions else [text[:200]]
+        result = generate_direction_suggestions(self.client, model, prompt)
         self._save_run(book_title, AgentContinuationRun(
             run_id=f"cont_direction_{uuid.uuid4().hex}",
             task="continuation_direction",
@@ -336,6 +342,49 @@ class AgentContinuationService:
         return self._sections_from_boundaries(source, boundaries)
 
     @classmethod
+    def _max_agent_sections(cls, source: str) -> int:
+        expected = max(1, (len(source) + cls.TARGET_SECTION_CHARS - 1) // cls.TARGET_SECTION_CHARS)
+        return min(cls.MAX_SECTIONS_PER_CHUNK, max(3, expected * 2))
+
+    @classmethod
+    def _coalesce_dense_sections(
+        cls,
+        sections: list[tuple[str, str]],
+        source: str,
+    ) -> list[tuple[str, str]]:
+        """Keep semantic output, but prevent paragraph-level over-segmentation."""
+        max_sections = cls._max_agent_sections(source)
+        if len(sections) <= max_sections:
+            return sections
+
+        target_chars = max(
+            cls.TARGET_SECTION_CHARS,
+            (len(source) + max_sections - 1) // max_sections,
+        )
+        merged: list[tuple[str, str]] = []
+        current_title = ""
+        current_parts: list[str] = []
+        current_chars = 0
+        for title, content in sections:
+            if not current_parts:
+                current_title = title
+            current_parts.append(content)
+            current_chars += len(content)
+            if current_chars >= target_chars:
+                merged.append((current_title, "".join(current_parts)))
+                current_title = ""
+                current_parts = []
+                current_chars = 0
+        if current_parts:
+            tail = "".join(current_parts)
+            if merged and len(tail) < cls.MIN_SECTION_CHARS:
+                previous_title, previous_content = merged[-1]
+                merged[-1] = (previous_title, previous_content + tail)
+            else:
+                merged.append((current_title, tail))
+        return merged
+
+    @classmethod
     def _split_source_chunks(cls, source: str) -> list[str]:
         if len(source) <= cls.MAX_SEGMENT_CHARS:
             return [source]
@@ -387,26 +436,39 @@ class AgentContinuationService:
                 headings.insert(0, (0, "前置内容"))
             return cls._sections_from_boundaries(source, headings)
 
-        boundaries = [(0, "段落 1")]
         paragraph_breaks = list(re.finditer(r"\n[ \t\r]*\n+", source))
         if paragraph_breaks:
-            for index, match in enumerate(paragraph_breaks, 2):
-                if match.end() < len(source):
-                    boundaries.append((match.end(), f"段落 {index}"))
-            return cls._sections_from_boundaries(source, boundaries)
+            candidates = [match.end() for match in paragraph_breaks if match.end() < len(source)]
+            return cls._group_local_boundaries(source, candidates)
 
         line_breaks = list(re.finditer(r"\n", source))
         if line_breaks:
-            for index, match in enumerate(line_breaks, 2):
-                if match.end() < len(source):
-                    boundaries.append((match.end(), f"段落 {index}"))
-            if len(boundaries) > 1:
-                return cls._sections_from_boundaries(source, boundaries)
-        if len(source) <= cls.MAX_SEGMENT_CHARS:
+            candidates = [match.end() for match in line_breaks if match.end() < len(source)]
+            return cls._group_local_boundaries(source, candidates)
+        if len(source) <= cls.TARGET_SECTION_CHARS:
             return [("全文", source)]
         boundaries = [(0, "片段 1")]
-        for index, start in enumerate(range(cls.MAX_SEGMENT_CHARS, len(source), cls.MAX_SEGMENT_CHARS), 2):
+        for index, start in enumerate(range(cls.TARGET_SECTION_CHARS, len(source), cls.TARGET_SECTION_CHARS), 2):
             boundaries.append((start, f"片段 {index}"))
+        return cls._sections_from_boundaries(source, boundaries)
+
+    @classmethod
+    def _group_local_boundaries(cls, source: str, candidates: list[int]) -> list[tuple[str, str]]:
+        """Group natural paragraphs/lines into useful extraction-sized sections."""
+        starts = [0]
+        section_start = 0
+        previous_candidate = 0
+        for position in candidates:
+            if position - section_start < cls.TARGET_SECTION_CHARS:
+                previous_candidate = position
+                continue
+            chosen = previous_candidate if previous_candidate > section_start else position
+            if len(source) - chosen < cls.MIN_SECTION_CHARS:
+                break
+            starts.append(chosen)
+            section_start = chosen
+            previous_candidate = position if position > chosen else chosen
+        boundaries = [(start, f"段落 {index}") for index, start in enumerate(starts, 1)]
         return cls._sections_from_boundaries(source, boundaries)
 
     @staticmethod

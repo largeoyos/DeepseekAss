@@ -112,6 +112,7 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._build_appearance_tab(), "外观")
         tabs.addTab(self._build_agent_tab(), "Agent")
         tabs.addTab(self._build_writing_automation_tab(), "写作自动化")
+        tabs.addTab(self._build_ai_control_tab(), "AI 控制接口")
         layout.addWidget(tabs, stretch=1)
 
         row = QHBoxLayout()
@@ -120,6 +121,103 @@ class SettingsDialog(QDialog):
         close_btn.clicked.connect(self.accept)
         row.addWidget(close_btn)
         layout.addLayout(row)
+
+    def _build_ai_control_tab(self) -> QWidget:
+        page = QScrollArea()
+        page.setWidgetResizable(True)
+        content = QWidget()
+        layout = QVBoxLayout(content)
+
+        intro = QLabel(
+            "这些是 MCP/CLI 在调用时未显式传参所使用的默认值。"
+            "自动化令牌和密码不会保存在此处。"
+        )
+        intro.setWordWrap(True)
+        layout.addWidget(intro)
+
+        read_group = QGroupBox("读取与搜索默认值")
+        read_form = QFormLayout(read_group)
+        self._control_tree_page_size = QSpinBox()
+        self._control_tree_page_size.setRange(1, 500)
+        self._control_tree_page_size.setValue(int(self._settings.get("control_tree_page_size", 500)))
+        self._control_chapter_page_chars = QSpinBox()
+        self._control_chapter_page_chars.setRange(1, 100000)
+        self._control_chapter_page_chars.setSingleStep(1000)
+        self._control_chapter_page_chars.setValue(int(self._settings.get("control_chapter_page_chars", 20000)))
+        self._control_search_scope = QComboBox()
+        self._control_search_scope.addItem("全部分支", "all")
+        self._control_search_scope.addItem("仅活跃路径", "active")
+        scope_index = self._control_search_scope.findData(str(self._settings.get("control_search_scope") or "all"))
+        self._control_search_scope.setCurrentIndex(max(0, scope_index))
+        self._control_search_limit = QSpinBox()
+        self._control_search_limit.setRange(1, 50)
+        self._control_search_limit.setValue(int(self._settings.get("control_search_limit", 20)))
+        self._control_world_page_size = QSpinBox()
+        self._control_world_page_size.setRange(1, 500)
+        self._control_world_page_size.setValue(int(self._settings.get("control_world_page_size", 100)))
+        self._control_include_summaries = QCheckBox("章节树默认携带摘要")
+        self._control_include_summaries.setChecked(bool(self._settings.get("control_include_summaries", False)))
+        read_form.addRow("章节树每页节点", self._control_tree_page_size)
+        read_form.addRow("正文每页字符", self._control_chapter_page_chars)
+        read_form.addRow("章节搜索范围", self._control_search_scope)
+        read_form.addRow("搜索结果上限", self._control_search_limit)
+        read_form.addRow("世界书每页实体", self._control_world_page_size)
+        read_form.addRow("", self._control_include_summaries)
+        layout.addWidget(read_group)
+
+        agent_group = QGroupBox("内置写作 Agent")
+        agent_layout = QVBoxLayout(agent_group)
+        self._control_agent_enabled = QCheckBox("允许具有 generate 权限的自动化令牌调用写作总管")
+        self._control_agent_enabled.setChecked(bool(self._settings.get("control_agent_enabled", False)))
+        self._control_agent_enabled.setToolTip("会调用已配置的 Agent 模型，可能产生 API 费用；正式修改仍需人工审批。")
+        agent_layout.addWidget(self._control_agent_enabled)
+        agent_form = QFormLayout()
+        self._control_agent_target_words = QSpinBox()
+        self._control_agent_target_words.setRange(500, 50000)
+        self._control_agent_target_words.setSingleStep(500)
+        self._control_agent_target_words.setValue(int(self._settings.get("control_agent_target_words", 3000)))
+        self._control_agent_instruction_prefix = QPlainTextEdit()
+        self._control_agent_instruction_prefix.setPlaceholderText("可选：每次调用写作 Agent 都自动加入的风格、禁区或审稿要求")
+        self._control_agent_instruction_prefix.setPlainText(str(self._settings.get("control_agent_instruction_prefix") or ""))
+        self._control_agent_instruction_prefix.setMaximumHeight(120)
+        agent_form.addRow("默认目标字数", self._control_agent_target_words)
+        agent_form.addRow("固定指令前缀", self._control_agent_instruction_prefix)
+        agent_layout.addLayout(agent_form)
+        note = QLabel(
+            "安全边界：需用 auth grant --allow-agent 另行签发 generate 权限。"
+            "Agent 只能创建待审批变更，MCP 不能批准自己的提案。"
+        )
+        note.setWordWrap(True)
+        agent_layout.addWidget(note)
+        layout.addWidget(agent_group)
+
+        actions = QHBoxLayout()
+        actions.addStretch()
+        save_btn = QPushButton("保存 AI 控制默认值")
+        save_btn.clicked.connect(self._save_ai_control_settings)
+        actions.addWidget(save_btn)
+        layout.addLayout(actions)
+        layout.addStretch()
+        page.setWidget(content)
+        return page
+
+    def _save_ai_control_settings(self) -> None:
+        settings = self._settings_manager.load()
+        settings.update({
+            "control_tree_page_size": self._control_tree_page_size.value(),
+            "control_chapter_page_chars": self._control_chapter_page_chars.value(),
+            "control_search_scope": str(self._control_search_scope.currentData() or "all"),
+            "control_search_limit": self._control_search_limit.value(),
+            "control_world_page_size": self._control_world_page_size.value(),
+            "control_include_summaries": self._control_include_summaries.isChecked(),
+            "control_agent_enabled": self._control_agent_enabled.isChecked(),
+            "control_agent_target_words": self._control_agent_target_words.value(),
+            "control_agent_instruction_prefix": self._control_agent_instruction_prefix.toPlainText().strip(),
+        })
+        self._settings_manager.save(settings)
+        self._settings = settings
+        self._settings_changed_callback()
+        QMessageBox.information(self, "已保存", "AI 控制接口默认参数已保存。")
 
     def _build_models_tab(self) -> QWidget:
         page = QScrollArea()

@@ -125,6 +125,8 @@ class AgentExtraRequestDialog(QDialog):
         start = self._nodes.get(start_id, {})
         previous = str(self.end_combo.currentData() or "")
         self.end_combo.clear()
+        if start:
+            self.end_combo.addItem(f"{self._node_label(start)} · 同章插入", start_id)
         for child_id in start.get("children_ids", []) or []:
             child = self._nodes.get(str(child_id))
             if child and child.get("tree_id") == start.get("tree_id"):

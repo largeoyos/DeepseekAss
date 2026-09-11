@@ -14,6 +14,7 @@ from core.agent.repository import AgentRepository
 from core.auth_manager import AuthManager
 from core.control_auth import ControlGrant
 from core.novel_manager import NovelManager
+from core.settings_manager import SettingsManager
 from core.world_bible import (
     CharacterEntry,
     LocationEntry,
@@ -84,6 +85,15 @@ class ControlService:
             crypto=AuthManager,
             enc_key=grant.enc_key,
         )
+        self.settings_manager = SettingsManager(self.user_dir, AuthManager, grant.enc_key)
+        self.settings = self.settings_manager.load()
+
+    def _setting_int(self, key: str, fallback: int, *, minimum: int, maximum: int) -> int:
+        try:
+            value = int(self.settings.get(key, fallback))
+        except (TypeError, ValueError):
+            value = fallback
+        return max(minimum, min(maximum, value))
 
     def _require(self, scope: str) -> None:
         if scope not in self.grant.scopes:
@@ -132,6 +142,8 @@ class ControlService:
             "propose_world_bible_patch": self.propose_world_bible_patch,
             "list_pending_changes": self.list_pending_changes,
             "get_change_set": self.get_change_set,
+            "get_control_settings": self.get_control_settings,
+            "run_writing_agent": self.run_writing_agent,
         }
         handler = handlers.get(tool_name)
         if handler is None:
@@ -144,6 +156,28 @@ class ControlService:
         except Exception as exc:
             self._audit(tool_name, book, False, error=str(exc), argument_keys=sorted(arguments))
             raise
+
+    def get_control_settings(self) -> dict:
+        self._require("read")
+        defaults = {
+            "tree_page_size": self._setting_int("control_tree_page_size", 500, minimum=1, maximum=500),
+            "chapter_page_chars": self._setting_int("control_chapter_page_chars", 20000, minimum=1, maximum=100000),
+            "search_scope": str(self.settings.get("control_search_scope") or "all"),
+            "search_limit": self._setting_int("control_search_limit", 20, minimum=1, maximum=50),
+            "world_page_size": self._setting_int("control_world_page_size", 100, minimum=1, maximum=500),
+            "include_summaries": bool(self.settings.get("control_include_summaries", False)),
+            "agent_target_words": self._setting_int("control_agent_target_words", 3000, minimum=500, maximum=50000),
+        }
+        return {
+            "schema_version": self.SCHEMA_VERSION,
+            "defaults": defaults,
+            "capabilities": {
+                "read": "read" in self.grant.scopes,
+                "propose": "propose" in self.grant.scopes,
+                "writing_agent": "generate" in self.grant.scopes and bool(self.settings.get("control_agent_enabled", False)),
+                "approve": False,
+            },
+        }
 
     def _audit(
         self,
@@ -207,13 +241,15 @@ class ControlService:
         book: str,
         tree_id: str = "",
         offset: int = 0,
-        limit: int = 500,
-        include_summaries: bool = False,
+        limit: int | None = None,
+        include_summaries: bool | None = None,
     ) -> dict:
         self._require("read")
         title, meta = self._book(book)
         offset = max(0, int(offset))
-        limit = max(1, min(500, int(limit)))
+        limit = self._setting_int("control_tree_page_size", 500, minimum=1, maximum=500) if limit is None else max(1, min(500, int(limit)))
+        if include_summaries is None:
+            include_summaries = bool(self.settings.get("control_include_summaries", False))
         tree_meta = self.manager.ensure_chapter_tree(title)
         nodes = self.manager.list_chapter_tree_nodes(title)
         if tree_id:
@@ -235,7 +271,7 @@ class ControlService:
             "page": {"offset": offset, "limit": limit, "returned": len(page), "total": total, "next_offset": end if end < total else None},
         }
 
-    def read_chapter(self, book: str, node_id: str, start: int = 0, max_chars: int = 20000) -> dict:
+    def read_chapter(self, book: str, node_id: str, start: int = 0, max_chars: int | None = None) -> dict:
         self._require("read")
         title, meta = self._book(book)
         node = self.manager.ensure_chapter_tree(title).chapter_nodes.get(str(node_id))
@@ -245,7 +281,7 @@ class ControlService:
         if content is None:
             raise ControlNotFoundError(f"章节正文不存在: {node_id}")
         start = max(0, int(start))
-        max_chars = max(1, min(100000, int(max_chars)))
+        max_chars = self._setting_int("control_chapter_page_chars", 20000, minimum=1, maximum=100000) if max_chars is None else max(1, min(100000, int(max_chars)))
         chunk = content[start:start + max_chars]
         end = start + len(chunk)
         return {
@@ -256,15 +292,16 @@ class ControlService:
             "page": {"start": start, "end": end, "total_chars": len(content), "next_start": end if end < len(content) else None},
         }
 
-    def search_chapters(self, book: str, query: str, scope: str = "all", limit: int = 20) -> dict:
+    def search_chapters(self, book: str, query: str, scope: str = "", limit: int | None = None) -> dict:
         self._require("read")
         title, meta = self._book(book)
         query = str(query or "").strip()
         if not query:
             raise ControlValidationError("query 不能为空")
+        scope = str(scope or self.settings.get("control_search_scope") or "all")
         if scope not in {"active", "all"}:
             raise ControlValidationError("scope 必须是 active 或 all")
-        limit = max(1, min(50, int(limit)))
+        limit = self._setting_int("control_search_limit", 20, minimum=1, maximum=50) if limit is None else max(1, min(50, int(limit)))
         nodes = self.manager.get_active_path_nodes(title) if scope == "active" else self.manager.list_chapter_tree_nodes(title)
         pattern = re.compile(re.escape(query), re.IGNORECASE)
         results = []
@@ -291,7 +328,7 @@ class ControlService:
     def _world(self, title: str) -> dict:
         return world_bible_to_dict(self.manager.load_world_bible(title))
 
-    def get_world_bible(self, book: str, category: str = "", offset: int = 0, limit: int = 100) -> dict:
+    def get_world_bible(self, book: str, category: str = "", offset: int = 0, limit: int | None = None) -> dict:
         self._require("read")
         title, meta = self._book(book)
         world = self._world(title)
@@ -310,7 +347,7 @@ class ControlService:
             raise ControlValidationError(f"未知世界书分类: {category}")
         items = list(world.get(collection) or [])
         offset = max(0, int(offset))
-        limit = max(1, min(500, int(limit)))
+        limit = self._setting_int("control_world_page_size", 100, minimum=1, maximum=500) if limit is None else max(1, min(500, int(limit)))
         page = items[offset:offset + limit]
         end = offset + len(page)
         base.update({
@@ -320,7 +357,7 @@ class ControlService:
         })
         return base
 
-    def search_world_bible(self, book: str, query: str, entity_type: str = "", limit: int = 20) -> dict:
+    def search_world_bible(self, book: str, query: str, entity_type: str = "", limit: int | None = None) -> dict:
         self._require("read")
         title, meta = self._book(book)
         query = str(query or "").strip().casefold()
@@ -328,7 +365,7 @@ class ControlService:
             raise ControlValidationError("query 不能为空")
         if entity_type and entity_type not in WORLD_COLLECTIONS:
             raise ControlValidationError(f"未知世界书实体类型: {entity_type}")
-        limit = max(1, min(50, int(limit)))
+        limit = self._setting_int("control_search_limit", 20, minimum=1, maximum=50) if limit is None else max(1, min(50, int(limit)))
         world = self._world(title)
         results = []
         for kind, collection in WORLD_COLLECTIONS.items():
@@ -368,6 +405,116 @@ class ControlService:
         title, meta = self._book(book)
         warnings = audit_world_bible_consistency(self.manager.load_world_bible(title))
         return {"schema_version": self.SCHEMA_VERSION, "book": self._book_identity(title, meta), "warning_count": len(warnings), "warnings": warnings}
+
+    def run_writing_agent(
+        self,
+        book: str,
+        instruction: str,
+        chapter_title: str = "",
+        target_words: int | None = None,
+        manual_references: list[str] | None = None,
+    ) -> dict:
+        """Run the built-in writing orchestrator and keep formal writes behind approval."""
+        self._require("generate")
+        self._require("propose")
+        if not bool(self.settings.get("control_agent_enabled", False)):
+            raise ControlPermissionError("设置中未允许外部 AI 调用内置写作 Agent")
+        book_title, meta = self._book(book)
+        instruction = str(instruction or "").strip()
+        if not instruction:
+            raise ControlValidationError("instruction 不能为空")
+        if len(instruction) > 30000:
+            raise ControlValidationError("instruction 超过 30000 字符限制")
+        references = [str(item) for item in (manual_references or []) if str(item).strip()]
+        if len(references) > 100:
+            raise ControlValidationError("manual_references 最多 100 项")
+        words = (
+            self._setting_int("control_agent_target_words", 3000, minimum=500, maximum=50000)
+            if target_words is None
+            else max(500, min(50000, int(target_words)))
+        )
+
+        from core.agent.backends import build_agent_backend
+        from core.agent.domain_tools import build_domain_tool_registry
+        from core.agent.repository import AgentRepository
+        from core.agent.types import AgentRunRequest
+        from core.conversation_manager import ConversationManager
+        from core.model_config import ModelConfig
+        from core.model_gateway import ModelGateway
+        from core.model_types import TaskStage
+
+        raw_config = AuthManager.decrypt_json(self.grant.enc_key, os.path.join(self.user_dir, "config.enc")) or {}
+        model_config = ModelConfig.from_dict(raw_config, self.settings)
+
+        def load_book_routes(title: str) -> dict:
+            data = self.manager.get_workspace(title).storage.read_json(".deepseekass/model_routes.json", default={}) or {}
+            return dict(data.get("routes") or data)
+
+        route = model_config.effective_route(TaskStage.AGENT, load_book_routes(book_title))
+        profile = model_config.models.get(route.primary_model_id)
+        if profile is None:
+            raise ControlValidationError("Agent 阶段没有可用模型路由")
+        gateway = ModelGateway(model_config, book_route_loader=load_book_routes)
+        client = gateway.compat_client("agent_runtime", stage=TaskStage.AGENT, book_title=book_title)
+        conversations = ConversationManager(
+            os.path.join(self.user_dir, "conversations"), crypto=AuthManager, enc_key=self.grant.enc_key
+        )
+        backend, backend_status = build_agent_backend(
+            settings=self.settings,
+            novel_manager=self.manager,
+            client=client,
+            tool_registry=build_domain_tool_registry(self.manager, conversations),
+            skills_enabled=bool(self.settings.get("agent_skills_enabled", True)),
+        )
+        session = backend.create_session(book_title, "writing_orchestrator", "外部 AI 写作任务")
+        target = self.manager.get_active_generation_target(book_title)
+        resolved_title = str(chapter_title or f"第{int(target.get('chapter_num') or 1)}章")
+        prefix = str(self.settings.get("control_agent_instruction_prefix") or "").strip()
+        message = "\n\n".join(filter(None, [
+            prefix,
+            instruction,
+            (
+                f"请使用内置工具读取项目、章节树和世界书，创作「{resolved_title}」，目标约 {words} 字。"
+                "完成后必须调用 chapter.propose 提交待人工审批的章节变更；"
+                "不要越过审批，不要只返回写作建议。"
+            ),
+        ]))
+        run = backend.run(AgentRunRequest(
+            str(meta.book_id), session.session_id, "writing_orchestrator", message,
+            references, model=profile.model, book_title=book_title,
+        ))
+        if run.status == "failed":
+            raise ControlError(run.error or "写作 Agent 运行失败")
+        repository = AgentRepository(self.manager.get_workspace(book_title))
+        for change_id in run.change_set_ids:
+            change = repository.load_change_set(change_id)
+            if change is None:
+                continue
+            change.validation_result.update({
+                "origin": "external_control",
+                "via": "writing_agent",
+                "grant_id": self.grant.grant_id,
+                "requires_human_approval": True,
+            })
+            repository.save_change_set(change)
+        assistants = [item for item in run.messages if item.get("role") == "assistant" and item.get("content")]
+        final_text = str(assistants[-1].get("content") or "") if assistants else ""
+        return {
+            "schema_version": self.SCHEMA_VERSION,
+            "book": self._book_identity(book_title, meta),
+            "session_id": session.session_id,
+            "run_id": run.run_id,
+            "status": run.status,
+            "terminal_reason": run.terminal_reason,
+            "backend": asdict(backend_status),
+            "model": profile.model,
+            "target": {"chapter_title": resolved_title, "target_words": words},
+            "change_set_ids": list(run.change_set_ids),
+            "artifact_ids": list(run.artifact_ids),
+            "requires_human_approval": bool(run.change_set_ids),
+            "final_text": _clip(final_text, 5000),
+            "warning": "" if run.change_set_ids else "Agent 未创建变更提案，请检查 final_text 并重试。",
+        }
 
     def propose_chapter_revision(self, book: str, base_node_id: str, title: str, content: str, reason: str = "") -> dict:
         self._require("propose")

@@ -126,8 +126,13 @@ class AgentRuntime:
                 if turn.content:
                     self._emit(repository, run.run_id, "model_stream", {"text": turn.content})
                 if not turn.tool_calls or run.planning_only:
-                    run.status = "completed"
-                    run.terminal_reason = "planning_only" if run.planning_only else "model_completed"
+                    if not turn.content and not run.planning_only:
+                        run.status = "failed"
+                        run.terminal_reason = "empty_response"
+                        run.error = "模型未返回可显示的文本回答，可能是响应为空或被内容过滤。"
+                    else:
+                        run.status = "completed"
+                        run.terminal_reason = "planning_only" if run.planning_only else "model_completed"
                     break
                 for call in turn.tool_calls:
                     signature = f"{call.tool_name}:{json.dumps(call.arguments, sort_keys=True, ensure_ascii=False)}"

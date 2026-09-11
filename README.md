@@ -170,7 +170,7 @@ python control_main.py --username alice auth grant --name codex
 }
 ```
 
-打包版把 `command` 换成 `DeepseekAssControl.exe`，参数保持为 `--username alice mcp`。只读授权使用 `auth grant --read-only`；查看和撤销授权使用 `auth list`、`auth revoke <grant_id>`。
+打包版把 `command` 换成 `DeepseekAssControl.exe`，参数保持为 `--username alice mcp`。只读授权使用 `auth grant --read-only`；允许调用内置写作 Agent 需显式使用 `auth grant --allow-agent`；查看和撤销授权使用 `auth list`、`auth revoke <grant_id>`。
 
 CLI 默认输出稳定 JSON，可用 `--pretty` 美化；只有 `tree show --output tree` 输出人类可读树形文本。例如：
 
@@ -184,6 +184,8 @@ python control_main.py --username alice changes list --book "我的小说"
 ```
 
 AI 不能直接应用正式变更。章节修订会成为不激活的新版本，世界书修改会成为字段级待审批补丁；可在桌面 Agent 工作台、Web 待审批区，或交互式 `changes approve/reject` 命令中审核。
+
+设置中心的「AI 控制接口」页可设置默认分页、搜索范围、搜索上限、写作 Agent 目标字数与固定指令。开启写作 Agent 后可用 `agent run --book <book_id> --input <file>`，或 MCP 工具 `run_writing_agent`让内置写作总管产生待审批章节。面向 AI 的完整操作说明见 [AI_CONTROL_GUIDE.md](AI_CONTROL_GUIDE.md)；MCP 也会暴露 `deepseekass://ai-control-guide` 资源。
 
 ### 从零开始写小说
 

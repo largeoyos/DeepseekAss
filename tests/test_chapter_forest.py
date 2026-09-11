@@ -59,6 +59,30 @@ class ChapterForestTests(unittest.TestCase):
         finally:
             temp.cleanup()
 
+    def test_enrichment_extra_allows_same_start_and_end_and_inserts_after_node(self):
+        temp, manager, title = self._manager_with_two_chapters()
+        try:
+            start_id = "ch0001_v001"
+            node = manager.save_extra_node(
+                title,
+                run_id="run-enrich-same-1",
+                extra_type="enrichment",
+                chapter_title="同章补遗",
+                content="同章番外正文",
+                start_node_id=start_id,
+                end_node_id=start_id,
+            )
+            meta = manager.ensure_chapter_tree(title)
+            extra_id = node["id"]
+            self.assertTrue(manager.are_direct_path_neighbors(title, start_id, start_id))
+            self.assertEqual(["ch0000_v000", start_id, extra_id, "ch0002_v001"], meta.active_path)
+            self.assertEqual([extra_id], meta.chapter_nodes[start_id]["children_ids"])
+            self.assertEqual(["ch0002_v001"], meta.chapter_nodes[extra_id]["children_ids"])
+            self.assertEqual(extra_id, meta.chapter_nodes["ch0002_v001"]["parent_id"])
+            self.assertEqual("同章番外正文", manager.read_chapter_node(title, extra_id))
+        finally:
+            temp.cleanup()
+
     def test_if_line_extra_branches_without_changing_primary_path(self):
         temp, manager, title = self._manager_with_two_chapters()
         try:

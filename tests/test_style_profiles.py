@@ -16,6 +16,8 @@ from core.style_profiles import (
     StyleProfile,
     StyleProfileRepository,
     StyleSourceDocument,
+    _parse_json_response,
+    _style_json_completion_options,
     calculate_style_metrics,
     render_style_prompt,
     split_style_text,
@@ -79,6 +81,22 @@ class _EmptyManager:
 
 
 class StyleProfileTests(unittest.TestCase):
+    def test_style_json_parser_accepts_fences_prefix_and_trailing_comma(self):
+        data = _parse_json_response('说明：```json\n{"narrative_person":"第三人称",}\n```')
+        self.assertEqual(data["narrative_person"], "第三人称")
+
+    def test_style_json_parser_distinguishes_empty_and_truncated_output(self):
+        with self.assertRaisesRegex(ValueError, "空内容"):
+            _parse_json_response("")
+        with self.assertRaisesRegex(ValueError, "不完整"):
+            _parse_json_response('{"narrative_person":"第三人称"')
+
+    def test_deepseek_v4_style_request_uses_json_mode_without_thinking(self):
+        options = _style_json_completion_options("deepseek-v4-pro")
+        self.assertEqual(options["response_format"], {"type": "json_object"})
+        self.assertEqual(options["extra_body"], {"thinking": {"type": "disabled"}})
+        self.assertEqual(_style_json_completion_options("custom-model"), {})
+
     def test_chunking_covers_full_text_without_truncation(self):
         source = "".join(f"第{i}章\n" + ("风吹过长街。" * 430) + "\n\n" for i in range(14))
         chunks = split_style_text(source)

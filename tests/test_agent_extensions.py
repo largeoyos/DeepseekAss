@@ -1,4 +1,5 @@
 import json
+import json
 import tempfile
 import time
 import unittest
@@ -15,7 +16,12 @@ from core.agent.types import ToolCallRequest
 from core.agent.web_search import WebSearchClient, WebSearchConfig
 from core.novel_manager import NovelManager
 from core.world_bible import ManualOverride, WorldBible, apply_manual_overrides
-from ui.continuation_dialogs import SectionPreviewDialog, suggest_directions
+from ui.continuation_dialogs import (
+    SectionPreviewDialog,
+    generate_direction_suggestions,
+    parse_direction_suggestions,
+    suggest_directions,
+)
 from strategies.novel_strategy import NovelStrategy
 from utils.genre_styles import get_tone_by_key, get_tone_display
 from utils.prompts import Prompts
@@ -178,6 +184,49 @@ class ExtendedAgentTests(unittest.TestCase):
         self.assertEqual(source, "".join(content for _, content in report.sections))
         self.assertTrue(report.errors)
 
+    def test_agent_continuation_empty_response_fallback_groups_natural_paragraphs(self):
+        paragraphs = [f"自然段 {index}：" + "正文" * 50 for index in range(1, 357)]
+        source = "\n\n".join(paragraphs)
+        client = _FakeContinuationClient(["", ""])
+
+        report = AgentContinuationService(client=client).segment_text_with_report(source, "model-x")
+
+        self.assertTrue(report.used_fallback)
+        self.assertEqual(1, report.fallback_chunks)
+        self.assertEqual(1, report.repair_attempts)
+        self.assertLessEqual(len(report.sections), 12)
+        self.assertGreater(len(report.sections), 1)
+        self.assertEqual(source, "".join(content for _, content in report.sections))
+        self.assertIn("空内容", report.errors[0])
+
+    def test_agent_continuation_coalesces_excessive_valid_agent_sections(self):
+        paragraphs = [f"场景{index:02d}起点：" + "甲" * 1000 for index in range(1, 31)]
+        source = "\n\n".join(paragraphs)
+        anchors = [{"title": "开端", "start_quote": ""}]
+        anchors.extend(
+            {"title": f"场景 {index}", "start_quote": paragraphs[index - 1][:20]}
+            for index in range(2, 31)
+        )
+        client = _FakeContinuationClient(json.dumps(anchors, ensure_ascii=False))
+
+        report = AgentContinuationService(client=client).segment_text_with_report(source, "model-x")
+
+        self.assertEqual(0, report.fallback_chunks)
+        self.assertLessEqual(len(report.sections), AgentContinuationService.MAX_SECTIONS_PER_CHUNK)
+        self.assertEqual(source, "".join(content for _, content in report.sections))
+        prompt = client.chat.completions.calls[0]["messages"][0]["content"]
+        self.assertIn("3000-8000", prompt)
+        self.assertIn("普通自然段", prompt)
+
+    def test_shared_local_segmentation_groups_lines_by_target_size(self):
+        from utils.summarize import split_text_locally
+
+        source = "\n".join(f"第 {index} 行：" + "甲" * 80 for index in range(1, 301))
+        sections = split_text_locally(source, max_chars=3000)
+
+        self.assertLess(len(sections), 20)
+        self.assertEqual(source, "".join(content for _, content in sections))
+
     def test_agent_continuation_chunks_long_text_without_losing_tail(self):
         source = "甲" * 39000 + "\n\n" + "乙" * 39000 + "\n\n" + "丙" * 5000
         client = _FakeContinuationClient(json.dumps([
@@ -245,7 +294,11 @@ class ExtendedAgentTests(unittest.TestCase):
         plot = "剧情信息" * 1590 + plot_tail
         requirement = "必须保持第一人称，并以克制的节奏描写雨夜。"
         requested_plot = "主角必须在旧书店找到信件，并与店主发生简短对话。"
-        client = _FakeContinuationClient("方向1：继续追查 | 紧张感 | 主角循线索推进真相")
+        client = _FakeContinuationClient(json.dumps({"directions": [
+            {"title": "继续追查", "highlight": "紧张感", "plot": "主角循线索推进真相", "foreshadowing": ["旧信件"]},
+            {"title": "暂时撤退", "highlight": "压抑", "plot": "主角整理线索后重返现场", "foreshadowing": []},
+            {"title": "意外结盟", "highlight": "关系转折", "plot": "店主提供关键证词", "foreshadowing": ["店主的迟疑"]},
+        ]}, ensure_ascii=False))
 
         directions = AgentContinuationService(client=client).suggest_directions(
             setting,
@@ -257,7 +310,9 @@ class ExtendedAgentTests(unittest.TestCase):
         )
 
         prompt = client.chat.completions.calls[0]["messages"][0]["content"]
-        self.assertEqual(["方向1：继续追查 | 紧张感 | 主角循线索推进真相"], directions)
+        self.assertIn("方向1：继续追查", directions[0])
+        self.assertIn("关联伏笔：旧信件", directions[0])
+        self.assertEqual({"type": "json_object"}, client.chat.completions.calls[0]["response_format"])
         self.assertIn(world_tail, prompt)
         self.assertIn(background_tail, prompt)
         self.assertIn(plot_tail, prompt)
@@ -266,7 +321,11 @@ class ExtendedAgentTests(unittest.TestCase):
     def test_legacy_direction_uses_continuation_requirement_and_plot(self):
         requirement = "必须使用第三人称，避免新增冲突。"
         requested_plot = "两位角色在早餐桌上和解，并提及昨夜的误会。"
-        client = _FakeContinuationClient("方向1：早餐和解 | 温暖克制 | 用对话化解误会")
+        client = _FakeContinuationClient(json.dumps({"directions": [
+            {"title": "早餐和解", "highlight": "温暖克制", "plot": "用对话化解误会", "foreshadowing": []},
+            {"title": "共同出门", "highlight": "关系回暖", "plot": "两人沿途确认彼此心意", "foreshadowing": []},
+            {"title": "旧事重提", "highlight": "克制坦白", "plot": "借昨夜误会说出长期顾虑", "foreshadowing": []},
+        ]}, ensure_ascii=False))
 
         directions = suggest_directions(
             client,
@@ -278,11 +337,40 @@ class ExtendedAgentTests(unittest.TestCase):
         )
 
         prompt = client.chat.completions.calls[0]["messages"][0]["content"]
-        self.assertEqual(["方向1：早餐和解 | 温暖克制 | 用对话化解误会"], directions)
+        self.assertIn("方向1：早餐和解", directions[0])
+        self.assertIn("核心看点：温暖克制", directions[0])
         self.assertIn("【本次续写要求（必须遵守）】", prompt)
         self.assertIn(requirement, prompt)
         self.assertIn("【用户指定续写剧情（必须作为方向约束）】", prompt)
         self.assertIn(requested_plot, prompt)
+
+    def test_direction_json_parser_accepts_fenced_json_and_validates_schema(self):
+        raw = "```json\n" + json.dumps({"directions": [
+            {"title": "一", "highlight": "看点一", "plot": "走向一", "foreshadowing": []},
+            {"title": "二", "highlight": "看点二", "plot": "走向二", "foreshadowing": ["伏笔甲"]},
+            {"title": "三", "highlight": "看点三", "plot": "走向三", "foreshadowing": []},
+        ]}, ensure_ascii=False) + "\n```"
+
+        parsed = parse_direction_suggestions(raw)
+
+        self.assertEqual(3, len(parsed))
+        self.assertIn("关联伏笔：伏笔甲", parsed[1])
+        with self.assertRaisesRegex(ValueError, "3-5"):
+            parse_direction_suggestions('{"directions": []}')
+
+    def test_direction_json_generation_repairs_invalid_first_response(self):
+        valid = json.dumps({"directions": [
+            {"title": "一", "highlight": "看点一", "plot": "走向一", "foreshadowing": []},
+            {"title": "二", "highlight": "看点二", "plot": "走向二", "foreshadowing": []},
+            {"title": "三", "highlight": "看点三", "plot": "走向三", "foreshadowing": []},
+        ]}, ensure_ascii=False)
+        client = _FakeContinuationClient(["这不是 JSON", valid])
+
+        parsed = generate_direction_suggestions(client, "model-x", "给出方向")
+
+        self.assertEqual(3, len(parsed))
+        self.assertEqual(2, len(client.chat.completions.calls))
+        self.assertIn("校验错误", client.chat.completions.calls[1]["messages"][0]["content"])
     def test_saved_advice_artifacts_are_listed_for_library(self):
         with tempfile.TemporaryDirectory() as root:
             manager = NovelManager(bookshelf_root=root)

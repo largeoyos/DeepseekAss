@@ -23,6 +23,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from core.auth_manager import AuthManager
+from core.app_services import ChapterBranchService
 from core.character_book import CharacterProfile, character_book_to_dict, dict_to_character_book
 from core.chat_domain import ScenePreset, SceneState, SenderProfile, TurnPolicy, filter_fields, change_set_from_dict, apply_memory_change_set, revert_memory_change_set
 from core.novel_manager import NovelMeta
@@ -843,6 +844,8 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
 
     @app.delete("/api/books/{title}", tags=["books"])
     def delete_book(title: str, ctx: WebUserContext = Depends(current_context)):
+        if title not in ctx.novel_manager.list_books():
+            raise HTTPException(status_code=404, detail="书籍不存在")
         ok = ctx.novel_manager.delete_book(title)
         if not ok:
             raise HTTPException(status_code=404, detail="书籍不存在")
@@ -899,14 +902,11 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
 
     @app.post("/api/books/{title}/chapter-trees/{tree_id}/activate", tags=["chapters"])
     def activate_chapter_tree(title: str, tree_id: str, ctx: WebUserContext = Depends(current_context)):
-        if not ctx.novel_manager.switch_active_tree(title, tree_id):
+        report = ChapterBranchService(ctx.novel_manager).activate_tree(title, tree_id)
+        if report is None:
             raise HTTPException(status_code=404, detail="阅读树不存在")
-        try:
-            ctx.novel_manager.rebuild_plot_summary_from_tree(title)
-        except Exception:
-            pass
         meta = ctx.novel_manager.ensure_chapter_tree(title)
-        return {"ok": True, "trees": ctx.novel_manager.list_chapter_trees(title), "nodes": ctx.novel_manager.list_chapter_tree_nodes(title), "active_path": meta.active_path, "active_tree_id": meta.active_tree_id}
+        return {"ok": True, "world_sync": report, "trees": ctx.novel_manager.list_chapter_trees(title), "nodes": ctx.novel_manager.list_chapter_tree_nodes(title), "active_path": meta.active_path, "active_tree_id": meta.active_tree_id}
 
     @app.get("/api/books/{title}/nodes/{node_id}/path", tags=["chapters"])
     def node_path(title: str, node_id: str, ctx: WebUserContext = Depends(current_context)):
@@ -950,11 +950,8 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
         version = ctx.novel_manager.get_next_version(title, chapter_num)
         _path, saved_version = ctx.novel_manager.save_chapter_version(title, chapter_num, chapter_title, payload.content, version=version, parent_id=node.get("parent_id"))
         if payload.activate:
-            ctx.novel_manager.set_active_version(title, chapter_num, saved_version)
-            try:
-                ctx.novel_manager.rebuild_plot_summary_from_tree(title)
-            except Exception:
-                pass
+            ChapterBranchService(ctx.novel_manager).activate_node(
+                title, ctx.novel_manager._node_id(chapter_num, saved_version))
         saved_node_id = ctx.novel_manager._node_id(chapter_num, saved_version)
         saved_meta = ctx.novel_manager.ensure_chapter_tree(title)
         return {"ok": True, "node_id": saved_node_id, "version": saved_version, "node": saved_meta.chapter_nodes.get(saved_node_id)}
@@ -1145,13 +1142,10 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
 
     @app.post("/api/books/{title}/nodes/{node_id}/activate", tags=["chapters"])
     def activate_node(title: str, node_id: str, ctx: WebUserContext = Depends(current_context)):
-        if not ctx.novel_manager.switch_active_node(title, node_id):
+        report = ChapterBranchService(ctx.novel_manager).activate_node(title, node_id)
+        if report is None:
             raise HTTPException(status_code=404, detail="节点不存在")
-        try:
-            ctx.novel_manager.rebuild_plot_summary_from_tree(title)
-        except Exception:
-            pass
-        return {"ok": True}
+        return {"ok": True, "world_sync": report}
 
     @app.delete("/api/books/{title}/nodes/{node_id}", tags=["chapters"])
     def delete_node(title: str, node_id: str, ctx: WebUserContext = Depends(current_context)):
@@ -1184,10 +1178,10 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
     @app.post("/api/books/{title}/chapters/{chapter_num}/versions/{version}/activate", tags=["chapters"])
     def activate_chapter_version(title: str, chapter_num: int, version: int, ctx: WebUserContext = Depends(current_context)):
         node_id = ctx.novel_manager._node_id(chapter_num, version)
-        if not ctx.novel_manager.switch_active_node(title, node_id):
+        report = ChapterBranchService(ctx.novel_manager).activate_node(title, node_id)
+        if report is None:
             raise HTTPException(status_code=404, detail="章节版本不存在")
-        ctx.novel_manager.rebuild_plot_summary_from_tree(title)
-        return {"ok": True, "node_id": node_id}
+        return {"ok": True, "node_id": node_id, "world_sync": report}
 
     @app.delete("/api/books/{title}/chapters/{chapter_num}/versions/{version}", tags=["chapters"])
     def delete_version(title: str, chapter_num: int, version: int, ctx: WebUserContext = Depends(current_context)):
@@ -2275,9 +2269,12 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
 
     @app.post("/api/books/{title}/agent/changes/approve", tags=["agent"])
     def approve_change(title: str, payload: ChangeApprovalRequest, ctx: WebUserContext = Depends(current_context)):
-        from core.agent.changes import ChangeSetService
+        from core.agent.changes import ChangeSetError, ChangeSetService
         from core.agent.repository import AgentRepository
-        result = ChangeSetService(ctx.novel_manager, title, AgentRepository(ctx.novel_manager.get_workspace(title))).approve(payload.change_set_id, payload.operation_ids)
+        try:
+            result = ChangeSetService(ctx.novel_manager, title, AgentRepository(ctx.novel_manager.get_workspace(title))).approve(payload.change_set_id, payload.operation_ids)
+        except ChangeSetError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         return {"change_set": asdict(result)}
 
     @app.post("/api/books/{title}/agent/changes/reject", tags=["agent"])
@@ -2332,8 +2329,20 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
                 books = ctx.novel_manager.list_books()
                 book_title = payload.title or (books[0] if books else "")
                 service = AgentContinuationService(ctx.novel_manager, client, skills_enabled=bool(ctx.settings.get("agent_skills_enabled", True)))
-                sections = service.segment_text(source, model, book_title=book_title, global_user_prompt=str(ctx.settings.get("global_user_prompt") or ""))
-                return {"sections": section_dicts(sections), "method": "agent"}
+                report = service.segment_text_with_report(source, model, book_title=book_title, global_user_prompt=str(ctx.settings.get("global_user_prompt") or ""))
+                return {
+                    "sections": section_dicts(report.sections),
+                    "method": "agent",
+                    "fallback": report.used_fallback,
+                    "error": report.errors[0] if report.errors else "",
+                    "segmentation_report": {
+                        "chunks_total": report.chunks_total,
+                        "agent_chunks": report.agent_chunks,
+                        "fallback_chunks": report.fallback_chunks,
+                        "repair_attempts": report.repair_attempts,
+                        "coverage_ratio": report.coverage_ratio,
+                    },
+                }
             from utils.summarize import segment_by_ai
             sections = segment_by_ai(client, source, model, global_user_prompt=str(ctx.settings.get("global_user_prompt") or ""))
             return {"sections": section_dicts(sections), "method": "ai"}

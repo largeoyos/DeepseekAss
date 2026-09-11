@@ -507,15 +507,21 @@ class ModelGateway:
                             yield StreamEvent("text_delta", result.content)
                         yield StreamEvent("completed", result=result)
                         return
-                    for event in adapter.stream(prepared):
-                        if event.event_type in {"text_delta", "reasoning_delta"} and event.text:
-                            emitted = True
-                        if event.result is not None:
-                            attempts.append(AttemptRecord(model.model_id, provider.provider_id, model.model, provider.protocol.value, True))
-                            event.result.citations = _dedupe_citations([*pre_citations, *event.result.citations])
-                            event.result.attempts = attempts
-                            self._decorate(event.result, request, prepared, report)
-                        yield event
+                    events = adapter.stream(prepared)
+                    try:
+                        for event in events:
+                            if event.event_type in {"text_delta", "reasoning_delta"} and event.text:
+                                emitted = True
+                            if event.result is not None:
+                                attempts.append(AttemptRecord(model.model_id, provider.provider_id, model.model, provider.protocol.value, True))
+                                event.result.citations = _dedupe_citations([*pre_citations, *event.result.citations])
+                                event.result.attempts = attempts
+                                self._decorate(event.result, request, prepared, report)
+                            yield event
+                    finally:
+                        close_events = getattr(events, "close", None)
+                        if callable(close_events):
+                            close_events()
                     return
                 except Exception as exc:
                     last_error = exc

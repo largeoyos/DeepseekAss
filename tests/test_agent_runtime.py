@@ -67,6 +67,35 @@ class AgentRuntimeTests(unittest.TestCase):
         self.assertEqual("只能提供计划", turn.content)
         self.assertNotIn("tools", completions.calls[-1])
 
+    def test_model_adapter_retries_a_bare_400_without_tools(self):
+        completions = FakeCompletions([response("文本顾问回复")], error="Error code: 400")
+        turn = AgentModelAdapter(FakeClient(completions), "fake").complete(
+            [{"role": "user", "content": "test"}],
+            [{"type": "function", "function": {"name": "x", "parameters": {}}}],
+            require_tool=True,
+        )
+
+        self.assertTrue(turn.planning_only)
+        self.assertEqual("文本顾问回复", turn.content)
+        self.assertNotIn("tools", completions.calls[-1])
+
+    def test_model_adapter_extracts_text_content_blocks_and_dict_responses(self):
+        message = {
+            "content": [
+                {"type": "text", "text": "发展方向一：让主角先失败。"},
+                {"type": "text", "text": {"value": "发展方向二：让配角的选择制造代价。"}},
+            ],
+        }
+        response_data = {"choices": [{"message": message}], "usage": {"total_tokens": 12}}
+
+        turn = AgentModelAdapter._decode(response_data)
+
+        self.assertEqual(
+            "发展方向一：让主角先失败。\n发展方向二：让配角的选择制造代价。",
+            turn.content,
+        )
+        self.assertEqual(12, turn.usage["total_tokens"])
+
     def test_runtime_executes_tool_and_saves_checkpoint(self):
         with tempfile.TemporaryDirectory() as root:
             manager = NovelManager(bookshelf_root=root)
@@ -85,6 +114,31 @@ class AgentRuntimeTests(unittest.TestCase):
             restored = runtime.restore("book", run.run_id)
             self.assertIsNotNone(restored)
             self.assertEqual(run.run_id, restored.run_id)
+
+    def test_advisor_empty_final_response_is_reported_as_failure(self):
+        with tempfile.TemporaryDirectory() as root:
+            manager = NovelManager(bookshelf_root=root)
+            manager.create_book("book")
+            manifest = manager.ensure_workspace("book")
+            completions = FakeCompletions([
+                response(tool_calls=[("chapter.list", {})]),
+                response(),
+            ])
+            runtime = AgentRuntime(
+                novel_manager=manager,
+                client=FakeClient(completions),
+                tool_registry=build_domain_tool_registry(manager),
+            )
+            session = runtime.create_session("book", "writing_advisor")
+
+            run = runtime.run(AgentRunRequest(
+                manifest.book_id, session.session_id, "writing_advisor", "给我构思",
+                model="fake", book_title="book",
+            ))
+
+            self.assertEqual("failed", run.status)
+            self.assertEqual("empty_response", run.terminal_reason)
+            self.assertIn("未返回可显示", run.error)
 
     def test_runtime_reuses_user_message_already_saved_by_failed_backend(self):
         with tempfile.TemporaryDirectory() as root:

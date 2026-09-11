@@ -226,7 +226,8 @@ class WebUserContext:
         }
 
     def load_book_model_routes(self, book_title: str) -> dict:
-        if not book_title:
+        # Continuation can select a model before creating its destination book.
+        if not book_title or book_title not in self.novel_manager.list_books():
             return {}
         data = self.novel_manager.get_workspace(book_title).storage.read_json(
             ".deepseekass/model_routes.json", default={}
@@ -481,11 +482,18 @@ class WebRuntime:
     ) -> str:
         api_config = ctx.require_model(TaskStage.DRAFTING, title)
         lock = self._generation_locks.setdefault(ctx.username, threading.Lock())
-        if not lock.acquire(blocking=False):
+        if lock.locked():
             raise RuntimeError("当前账号已有生成任务在运行，请稍后再试")
 
         def target(handle):
+            if handle.cancelled:
+                return None
+            # Each execution, including retries, owns exactly one acquisition.
+            if not lock.acquire(blocking=False):
+                raise RuntimeError("当前账号已有生成任务在运行，请稍后再试")
             try:
+                if handle.cancelled:
+                    return None
                 return self._run_generation_task(
                     handle,
                     ctx=ctx,

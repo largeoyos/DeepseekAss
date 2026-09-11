@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from contextlib import redirect_stderr, redirect_stdout
 from datetime import datetime, timedelta
 from unittest.mock import patch
@@ -12,11 +13,14 @@ from unittest.mock import patch
 import core.auth_manager as auth_module
 from control_main import main as control_main
 from core.agent.changes import ChangeSetService
+from core.agent.backends import BackendStatus
 from core.agent.repository import AgentRepository
 from core.auth_manager import AuthManager
 from core.control_auth import ControlAuthError, ControlGrantStore
 from core.control_service import ControlPermissionError, ControlService, ControlValidationError
+from core.data_paths import resolve_data_root
 from core.novel_manager import NovelManager
+from core.settings_manager import SettingsManager
 from core.world_bible import dict_to_world_bible, world_bible_to_dict
 
 
@@ -75,6 +79,25 @@ class ControlInterfaceTests(unittest.TestCase):
         self.assertTrue(ControlGrantStore.revoke(self.username, self.password, self.grant_meta["grant_id"]))
         with self.assertRaises(ControlAuthError):
             ControlGrantStore.resolve(self.username, self.token)
+
+    def test_frozen_data_root_finds_project_users_outside_dist(self):
+        with tempfile.TemporaryDirectory() as root:
+            project = os.path.join(root, "project")
+            executable_dir = os.path.join(project, "dist", "DeepseekAssControl")
+            os.makedirs(os.path.join(project, "users"), exist_ok=True)
+            os.makedirs(executable_dir, exist_ok=True)
+            executable = os.path.join(executable_dir, "DeepseekAssControl.exe")
+            with (
+                patch("core.data_paths.sys.frozen", True, create=True),
+                patch("core.data_paths.sys.executable", executable),
+                patch.dict(os.environ, {"DEEPSEEKASS_DATA_DIR": ""}),
+            ):
+                self.assertEqual(os.path.abspath(project), resolve_data_root())
+
+    def test_data_root_environment_override_wins(self):
+        with tempfile.TemporaryDirectory() as root:
+            with patch.dict(os.environ, {"DEEPSEEKASS_DATA_DIR": root}):
+                self.assertEqual(os.path.abspath(root), resolve_data_root())
 
     def test_wrong_and_expired_tokens_are_rejected(self):
         with self.assertRaises(ControlAuthError):
@@ -191,6 +214,52 @@ class ControlInterfaceTests(unittest.TestCase):
         with self.assertRaises(ControlPermissionError):
             reader.propose_chapter_revision(self.title, "ch0001_v001", "标题", "正文")
 
+    def test_control_defaults_are_loaded_from_encrypted_settings(self):
+        settings_manager = SettingsManager(AuthManager.get_user_dir(self.username), AuthManager, self.enc_key)
+        settings = settings_manager.load()
+        settings.update({
+            "control_tree_page_size": 1,
+            "control_chapter_page_chars": 5,
+            "control_search_scope": "active",
+            "control_search_limit": 1,
+            "control_world_page_size": 1,
+            "control_include_summaries": True,
+        })
+        settings_manager.save(settings)
+        service = ControlService(ControlGrantStore.resolve(self.username, self.token))
+        defaults = service.invoke("get_control_settings")
+        self.assertEqual(1, defaults["defaults"]["tree_page_size"])
+        self.assertEqual(1, len(service.get_chapter_tree(self.title)["nodes"]))
+        self.assertEqual(5, len(service.read_chapter(self.title, "ch0001_v001")["content"]))
+        self.assertEqual([], service.search_chapters(self.title, "蓝月")["results"])
+
+    def test_writing_agent_requires_generate_scope_and_explicit_setting(self):
+        with self.assertRaises(ControlPermissionError):
+            self.service.run_writing_agent(self.title, "续写下一章")
+        token, _grant = ControlGrantStore.create(
+            self.username, self.password, name="writer", scopes={"read", "propose", "generate"}, expires_days=1
+        )
+        writer = ControlService(ControlGrantStore.resolve(self.username, token))
+        with self.assertRaises(ControlPermissionError):
+            writer.run_writing_agent(self.title, "续写下一章")
+
+        settings = writer.settings_manager.load()
+        settings["control_agent_enabled"] = True
+        writer.settings_manager.save(settings)
+        writer = ControlService(ControlGrantStore.resolve(self.username, token))
+        fake_session = SimpleNamespace(session_id="session-test")
+        fake_run = SimpleNamespace(
+            status="completed", error="", run_id="run-test", terminal_reason="model_completed",
+            change_set_ids=[], artifact_ids=[], messages=[{"role": "assistant", "content": "未提交提案"}],
+        )
+        fake_backend = SimpleNamespace(create_session=lambda *_args: fake_session, run=lambda _request: fake_run)
+        fake_status = BackendStatus(requested="legacy", active="legacy", fallback_reason="")
+        with patch("core.agent.backends.build_agent_backend", return_value=(fake_backend, fake_status)):
+            result = writer.run_writing_agent(self.title, "续写下一章", target_words=1800)
+        self.assertEqual("run-test", result["run_id"])
+        self.assertFalse(result["requires_human_approval"])
+        self.assertIn("未创建", result["warning"])
+
     def test_cli_returns_stable_json_envelope(self):
         old_token = os.environ.get("DEEPSEEKASS_CONTROL_TOKEN")
         os.environ["DEEPSEEKASS_CONTROL_TOKEN"] = self.token
@@ -251,7 +320,7 @@ class ControlInterfaceTests(unittest.TestCase):
         async def exercise():
             server = create_mcp_server(self.service)
             tools = await server.list_tools()
-            self.assertEqual(13, len(tools))
+            self.assertEqual(14, len(tools))
             self.assertTrue(all(item.input_schema for item in tools))
             self.assertTrue(all(item.output_schema for item in tools))
             patch_tool = next(item for item in tools if item.name == "propose_world_bible_patch")
@@ -259,10 +328,17 @@ class ControlInterfaceTests(unittest.TestCase):
             self.assertEqual(["create", "patch", "archive", "supersede", "merge"], operation_schema["properties"]["operation"]["enum"])
             async with Client(server) as client:
                 discovered = await client.list_tools()
-                self.assertEqual(13, len(discovered.tools))
+                self.assertEqual(14, len(discovered.tools))
+                resources = await client.list_resources()
+                self.assertTrue(any(str(item.uri) == "deepseekass://ai-control-guide" for item in resources.resources))
                 result = await client.call_tool("list_books", {})
                 self.assertFalse(result.is_error)
                 self.assertEqual(self.title, result.structured_content["books"][0]["title"])
+                chapter = await client.call_tool("read_chapter", {
+                    "book": self.title, "node_id": "ch0001_v001", "start": 0, "max_chars": 8,
+                })
+                self.assertFalse(chapter.is_error, chapter.content)
+                self.assertEqual(8, len(chapter.structured_content["content"]))
 
         asyncio.run(exercise())
 
@@ -290,7 +366,7 @@ class ControlInterfaceTests(unittest.TestCase):
             )
             async with Client(stdio_client(params), read_timeout_seconds=15) as client:
                 tools = await client.list_tools()
-                self.assertEqual(13, len(tools.tools))
+                self.assertEqual(14, len(tools.tools))
                 result = await client.call_tool("get_project", {"book": self.title})
                 self.assertFalse(result.is_error)
                 self.assertEqual(self.title, result.structured_content["project"]["title"])

@@ -35,7 +35,7 @@ class AgentModelAdapter:
         try:
             response = self.client.chat.completions.create(**kwargs)
         except Exception as exc:
-            if "tools" not in kwargs or not self._looks_like_tool_unsupported(exc):
+            if "tools" not in kwargs or not self._looks_like_tool_request_rejected(exc):
                 raise
             self.tool_capability = False
             kwargs.pop("tools", None)
@@ -49,24 +49,86 @@ class AgentModelAdapter:
 
     @staticmethod
     def _decode(response, planning_only: bool = False) -> ModelTurn:
-        message = response.choices[0].message
+        choices = AgentModelAdapter._value(response, "choices", []) or []
+        if not choices:
+            raise ValueError("模型响应中没有 choices")
+        message = AgentModelAdapter._value(choices[0], "message")
+        if message is None:
+            raise ValueError("模型响应中没有 message")
         calls = []
-        for call in getattr(message, "tool_calls", None) or []:
+        for call in AgentModelAdapter._value(message, "tool_calls", []) or []:
             try:
-                arguments = json.loads(call.function.arguments or "{}")
-            except json.JSONDecodeError:
+                function = AgentModelAdapter._value(call, "function", {}) or {}
+                raw_arguments = AgentModelAdapter._value(function, "arguments", "{}")
+                arguments = raw_arguments if isinstance(raw_arguments, dict) else json.loads(raw_arguments or "{}")
+            except (TypeError, json.JSONDecodeError):
                 arguments = {}
-            calls.append(ToolCallRequest(str(call.id), str(call.function.name), arguments))
-        usage = getattr(response, "usage", None)
+            calls.append(ToolCallRequest(
+                str(AgentModelAdapter._value(call, "id", "")),
+                str(AgentModelAdapter._value(function, "name", "")),
+                arguments,
+            ))
+        usage = AgentModelAdapter._value(response, "usage")
         if hasattr(usage, "model_dump"):
             usage = usage.model_dump()
         elif usage is None:
             usage = {}
         elif not isinstance(usage, dict):
-            usage = {"prompt_tokens": getattr(usage, "prompt_tokens", None), "completion_tokens": getattr(usage, "completion_tokens", None), "total_tokens": getattr(usage, "total_tokens", None)}
-        return ModelTurn(str(getattr(message, "content", "") or ""), calls, usage, planning_only)
+            usage = {
+                "prompt_tokens": AgentModelAdapter._value(usage, "prompt_tokens"),
+                "completion_tokens": AgentModelAdapter._value(usage, "completion_tokens"),
+                "total_tokens": AgentModelAdapter._value(usage, "total_tokens"),
+            }
+        return ModelTurn(AgentModelAdapter._message_text(message), calls, usage, planning_only)
 
     @staticmethod
-    def _looks_like_tool_unsupported(exc: Exception) -> bool:
+    def _value(source, key: str, default=None):
+        if isinstance(source, dict):
+            return source.get(key, default)
+        return getattr(source, key, default)
+
+    @classmethod
+    def _message_text(cls, message) -> str:
+        """Extract display text from common OpenAI-compatible message shapes."""
+        for key in ("content", "output_text", "text"):
+            text = cls._content_text(cls._value(message, key))
+            if text:
+                return text
+        parsed = cls._value(message, "parsed")
+        if isinstance(parsed, str):
+            return parsed.strip()
+        if isinstance(parsed, dict):
+            for key in ("answer", "content", "text", "output_text"):
+                text = cls._content_text(parsed.get(key))
+                if text:
+                    return text
+        return ""
+
+    @classmethod
+    def _content_text(cls, content) -> str:
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, (list, tuple)):
+            parts = [cls._content_text(item) for item in content]
+            return "\n".join(part for part in parts if part).strip()
+        if isinstance(content, dict) or hasattr(content, "__dict__"):
+            for key in ("text", "content", "value", "output_text"):
+                text = cls._content_text(cls._value(content, key))
+                if text:
+                    return text
+        return ""
+
+    @staticmethod
+    def _looks_like_tool_request_rejected(exc: Exception) -> bool:
+        """Identify providers that reject an otherwise valid tool-call request.
+
+        Some OpenAI-compatible gateways expose only a bare HTTP 400 instead of
+        naming the unsupported ``tools`` or ``tool_choice`` parameter.  Retrying
+        once without tools keeps the writing advisor usable as a text-only
+        consultant, while any second failure is still surfaced unchanged.
+        """
         text = str(exc).lower()
-        return any(token in text for token in ("tool", "function calling", "unknown parameter", "unsupported", "not support"))
+        return any(token in text for token in (
+            "tool", "function calling", "unknown parameter", "unsupported", "not support",
+            "error code: 400", "status code: 400", "status 400",
+        ))

@@ -16,6 +16,10 @@ from typing import Callable, Iterable
 
 STYLE_PROFILE_SCHEMA_VERSION = 2
 STYLE_STRENGTHS = ("reference", "standard", "strict")
+STYLE_CHUNK_MAX_TOKENS = 24000
+STYLE_AGGREGATION_MAX_TOKENS = 32000
+STYLE_RETRY_MIN_TOKENS = 48000
+STYLE_RETRY_MAX_TOKENS = 128000
 STYLE_STRENGTH_LABELS = {
     "reference": "参考",
     "standard": "标准",
@@ -391,16 +395,35 @@ def render_lexical_fingerprint(metrics: dict) -> str:
 
 
 def _parse_json_response(raw: str) -> dict:
-    value = str(raw or "").strip()
-    value = re.sub(r"^```(?:json)?\s*", "", value, flags=re.I)
-    value = re.sub(r"\s*```$", "", value)
-    try:
-        data = json.loads(value)
-    except json.JSONDecodeError:
-        start, end = value.find("{"), value.rfind("}")
-        if start < 0 or end <= start:
-            raise ValueError("模型未返回 JSON")
-        data = json.loads(value[start:end + 1])
+    value = str(raw or "").strip().lstrip("\ufeff\u200b\u200c\u200d")
+    if not value:
+        raise ValueError("模型返回空内容，未生成文风 JSON")
+    blocks = re.findall(r"```(?:json)?\s*(.*?)```", value, flags=re.I | re.S)
+    if blocks:
+        value = blocks[0].strip()
+    start, end = value.find("{"), value.rfind("}")
+    if start < 0:
+        preview = re.sub(r"\s+", " ", value)[:160]
+        raise ValueError(f"模型回复中没有 JSON 对象（前 160 字：{preview}）")
+    if end <= start:
+        preview = re.sub(r"\s+", " ", value[start:])[:160]
+        raise ValueError(f"模型返回的 JSON 不完整，缺少结束括号（前 160 字：{preview}）")
+    value = value[start:end + 1]
+    candidates = [value]
+    without_trailing_commas = re.sub(r",\s*([}\]])", r"\1", value)
+    if without_trailing_commas != value:
+        candidates.append(without_trailing_commas)
+    last_error: Exception | None = None
+    data = None
+    for candidate in candidates:
+        try:
+            data = json.loads(candidate)
+            break
+        except json.JSONDecodeError as exc:
+            last_error = exc
+    if data is None:
+        preview = re.sub(r"\s+", " ", value)[:160]
+        raise ValueError(f"模型返回的文风 JSON 无效（前 160 字：{preview}）：{last_error}")
     if not isinstance(data, dict):
         raise ValueError("模型返回的文风分析不是对象")
     return data
@@ -408,6 +431,44 @@ def _parse_json_response(raw: str) -> dict:
 
 def _completion_text(response) -> str:
     return str(response.choices[0].message.content or "")
+
+
+def _completion_finish_reason(response) -> str:
+    choices = getattr(response, "choices", None) or []
+    return str(getattr(choices[0], "finish_reason", "") or "") if choices else ""
+
+
+def _style_json_completion_options(model: str) -> dict:
+    """Use the structured, non-thinking path documented for DeepSeek V4."""
+    if str(model or "").strip().lower() not in {"deepseek-v4-flash", "deepseek-v4-pro"}:
+        return {}
+    return {
+        "response_format": {"type": "json_object"},
+        "extra_body": {"thinking": {"type": "disabled"}},
+    }
+
+
+_STYLE_JSON_EXAMPLE = """{
+  "narrative_person": "第三人称限知",
+  "viewpoint_distance": "贴近当前视角人物",
+  "sentence_rhythm": "长短句交替",
+  "dialogue_habits": "对白简短，并用动作承接",
+  "diction": "克制、具体",
+  "description_balance": "行动与感官描写为主",
+  "imagery": "使用少量可感知意象",
+  "emotion_expression": "通过动作和身体反应间接表达",
+  "transitions": "以动作或场景细节转场",
+  "endings": "用短句或未完成动作收束",
+  "stable_rules": ["每条规则必须具体、可执行"],
+  "scene_facets": {
+    "general": ["通用规则"],
+    "dialogue": ["对白规则"],
+    "action": ["动作规则"],
+    "psychology": ["心理规则"],
+    "environment": ["环境规则"]
+  },
+  "avoid_rules": ["要避免的写法"]
+}"""
 
 
 class StyleExtractionService:
@@ -512,43 +573,69 @@ class StyleExtractionService:
             "返回严格 JSON，字段为 narrative_person, viewpoint_distance, sentence_rhythm, dialogue_habits, "
             "diction, description_balance, imagery, emotion_expression, transitions, endings, "
             "stable_rules:[string], scene_facets:{general:[string],dialogue:[string],action:[string],psychology:[string],environment:[string]}, "
-            "avoid_rules:[string]。规则必须具体、可执行，不要文学评论。\n\n【样本文本】\n" + chunk
+            "avoid_rules:[string]。规则必须具体、可执行，不要文学评论。"
+            "只返回一个 JSON 对象，不要 Markdown 或解释。以下是 JSON 结构示例（示例值不可照抄）：\n"
+            + _STYLE_JSON_EXAMPLE + "\n\n【样本文本】\n" + chunk
         )
-        error: Exception | None = None
-        for _attempt in range(3):
-            try:
-                response = self.client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=0.1,
-                    max_tokens=2400,
-                )
-                return _parse_json_response(_completion_text(response))
-            except Exception as exc:
-                error = exc
-        raise RuntimeError(f"文风分块分析失败：{error}")
+        return self._request_json(
+            prompt, model,
+            max_tokens=STYLE_CHUNK_MAX_TOKENS,
+            failure_label="文风分块分析失败",
+        )
 
     def _aggregate(self, analyses: list[dict], metrics: dict, model: str) -> dict:
         prompt = (
             "你是文风归纳编辑。下面是同一文本各分块的形式分析。合并共同且稳定的特征，冲突项不要强行确定。"
             "禁止加入人物、地点、剧情、世界观或主题。返回与输入相同字段的严格 JSON；stable_rules 保留 6-12 条，"
-            "avoid_rules 保留 3-8 条，scene_facets 每类最多 6 条。\n\n"
+            "avoid_rules 保留 3-8 条，scene_facets 每类最多 6 条。只返回一个 JSON 对象，不要 Markdown 或解释。"
+            "以下是 JSON 结构示例（示例值不可照抄）：\n" + _STYLE_JSON_EXAMPLE + "\n\n"
             f"【全文统计】\n{json.dumps(metrics, ensure_ascii=False)}\n\n"
             f"【分块分析】\n{json.dumps(analyses, ensure_ascii=False)}"
         )
+        return self._request_json(
+            prompt, model,
+            max_tokens=STYLE_AGGREGATION_MAX_TOKENS,
+            failure_label="文风聚合失败",
+        )
+
+    def _request_json(self, prompt: str, model: str, *, max_tokens: int, failure_label: str) -> dict:
+        messages = [{"role": "user", "content": prompt}]
         error: Exception | None = None
-        for _attempt in range(3):
+        output_limit = max_tokens
+        for attempt in range(3):
             try:
                 response = self.client.chat.completions.create(
                     model=model,
-                    messages=[{"role": "user", "content": prompt}],
+                    messages=messages,
                     temperature=0.1,
-                    max_tokens=3200,
+                    max_tokens=output_limit,
+                    **_style_json_completion_options(model),
                 )
-                return _parse_json_response(_completion_text(response))
+                content = _completion_text(response)
+                finish_reason = _completion_finish_reason(response)
+                if finish_reason == "length":
+                    raise ValueError(
+                        f"模型输出达到 max_tokens={output_limit}，文风 JSON 可能被截断"
+                    )
+                if finish_reason == "insufficient_system_resource":
+                    raise ValueError("DeepSeek 推理资源不足，输出被中断")
+                return _parse_json_response(content)
             except Exception as exc:
                 error = exc
-        raise RuntimeError(f"文风聚合失败：{error}")
+                if "max_tokens=" in str(exc):
+                    output_limit = min(
+                        max(output_limit * 2, STYLE_RETRY_MIN_TOKENS),
+                        STYLE_RETRY_MAX_TOKENS,
+                    )
+                if attempt < 2:
+                    messages = [
+                        {"role": "user", "content": prompt},
+                        {"role": "user", "content": (
+                            "上一次未返回完整、合法的 JSON。请重新生成完整 JSON 对象；"
+                            "不要解释、Markdown 代码块或前后缀文字。"
+                        )},
+                    ]
+        raise RuntimeError(f"{failure_label}：{error}")
 
     @staticmethod
     def _profile_from_analysis(data: dict, *, name: str, source_kind: str, source_names: list[str],

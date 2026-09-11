@@ -13,6 +13,61 @@ from core.agent.skills import HUMANIZER_ZH_STYLE_BRIEF
 
 
 OUTLINE_STATUSES = {"fulfilled", "partial", "missing", "conflict"}
+
+
+class SupervisionCancelled(RuntimeError):
+    """Raised when the user stops an active supervision request."""
+
+
+def _raise_if_cancelled(cancelled: Callable[[], bool] | None) -> None:
+    if cancelled is not None and cancelled():
+        raise SupervisionCancelled("监督已取消")
+
+
+def _value(source, key: str, default=None):
+    if isinstance(source, dict):
+        return source.get(key, default)
+    return getattr(source, key, default)
+
+
+def _cancellable_completion_text(
+    client,
+    options: dict,
+    cancelled: Callable[[], bool] | None,
+) -> str:
+    """Collect a completion while allowing the current HTTP stream to be closed."""
+    _raise_if_cancelled(cancelled)
+    if cancelled is None:
+        response = client.chat.completions.create(**options)
+        choices = _value(response, "choices", []) or []
+        message = _value(choices[0], "message", {}) if choices else {}
+        return str(_value(message, "content", "") or "")
+
+    stream = client.chat.completions.create(**{**options, "stream": True})
+    # A few compatibility clients ignore stream=True and return a normal response.
+    choices = _value(stream, "choices")
+    if choices is not None:
+        _raise_if_cancelled(cancelled)
+        message = _value(choices[0], "message", {}) if choices else {}
+        return str(_value(message, "content", "") or "")
+
+    parts: list[str] = []
+    try:
+        for chunk in stream:
+            _raise_if_cancelled(cancelled)
+            chunk_choices = _value(chunk, "choices", []) or []
+            if chunk_choices:
+                delta = _value(chunk_choices[0], "delta", {}) or {}
+                text = str(_value(delta, "content", "") or "")
+                if text:
+                    parts.append(text)
+            _raise_if_cancelled(cancelled)
+    finally:
+        close = getattr(stream, "close", None)
+        if callable(close):
+            close()
+    _raise_if_cancelled(cancelled)
+    return "".join(parts)
 SUPERVISION_AUDIT_SYSTEM = """You are a fiction chapter compliance and prose-style supervisor.
 Split the user's chapter outline into minimal verifiable requirements. Each outline item status must be exactly fulfilled, partial, missing, or conflict. Mark fulfilled only when the chapter actually depicts the necessary process or outcome; a mention, memory, preview, or vague hint is insufficient.
 Also detect title mismatch, forbidden-content violations, ignored requirements, major plot deviations, and continuity errors involving time, place, motivation, character knowledge, world rules, foreshadowing, or causality.
@@ -244,6 +299,7 @@ def audit_chapter(
     content_lock: str = "",
     style_profile_metrics: dict | None = None,
     style_profile_name: str = "",
+    cancelled: Callable[[], bool] | None = None,
 ) -> SupervisionResult:
     """执行本地硬约束检查和模型语义审计；模型失败时安全降级。"""
     local_issues = _local_hard_constraint_issues(chapter_content, target_words)
@@ -266,16 +322,22 @@ def audit_chapter(
     if xp_mode:
         parts.append(Prompts.XP_MODE_SYSTEM)
     try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": SUPERVISION_AUDIT_SYSTEM},
-                {"role": "user", "content": "\n".join(parts)},
-            ],
-            max_tokens=4096,
-            temperature=0.1,
+        text = _cancellable_completion_text(
+            client,
+            {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": SUPERVISION_AUDIT_SYSTEM},
+                    {"role": "user", "content": "\n".join(parts)},
+                ],
+                "max_tokens": 4096,
+                "temperature": 0.1,
+            },
+            cancelled,
         )
-        data = _parse_json(response.choices[0].message.content or "")
+        data = _parse_json(text)
+    except SupervisionCancelled:
+        raise
     except Exception:
         data = None
     result = _normalize_audit(data, local_issues)
@@ -303,6 +365,7 @@ def repair_chapter(
     style_audit: str = "",
     content_lock: str = "",
     xp_mode: bool = False,
+    cancelled: Callable[[], bool] | None = None,
 ) -> str:
     """按未通过项最小化修订完整正文。输出异常时返回空字符串。"""
     parts = [
@@ -326,16 +389,22 @@ def repair_chapter(
     if xp_mode:
         parts.append(Prompts.XP_MODE_SYSTEM)
     try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[
-                {"role": "system", "content": SUPERVISION_REPAIR_SYSTEM},
-                {"role": "user", "content": "\n".join(parts)},
-            ],
-            max_tokens=min(max(len(chapter_content) * 2, target_words * 2, 8192), 32768),
-            temperature=temperature,
+        repaired = _cancellable_completion_text(
+            client,
+            {
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": SUPERVISION_REPAIR_SYSTEM},
+                    {"role": "user", "content": "\n".join(parts)},
+                ],
+                "max_tokens": min(max(len(chapter_content) * 2, target_words * 2, 8192), 32768),
+                "temperature": temperature,
+            },
+            cancelled,
         )
-        repaired = (response.choices[0].message.content or "").strip()
+        repaired = repaired.strip()
+    except SupervisionCancelled:
+        raise
     except Exception:
         return ""
     if len(repaired) < max(200, int(len(chapter_content.strip()) * 0.5)):
@@ -363,11 +432,13 @@ def supervise_chapter(
     style_profile_name: str = "",
     progress: Callable[[str], None] | None = None,
     repair_change_callback: Callable[[int, str], None] | None = None,
+    cancelled: Callable[[], bool] | None = None,
 ) -> tuple[str, SupervisionResult]:
     """运行审计—定向修订—复检质量闸门。"""
     content = chapter_content
     final_result = SupervisionResult(status="warning", audit_failed=True)
     for round_index in range(max_repair_rounds + 1):
+        _raise_if_cancelled(cancelled)
         if progress:
             progress("audit" if round_index == 0 else "reaudit")
         final_result = audit_chapter(
@@ -385,7 +456,9 @@ def supervise_chapter(
             content_lock=content_lock,
             style_profile_metrics=style_profile_metrics,
             style_profile_name=style_profile_name,
+            cancelled=cancelled,
         )
+        _raise_if_cancelled(cancelled)
         final_result.repair_rounds = round_index
         if not final_result.needs_repair:
             final_result.status = "passed" if not final_result.audit_failed else "warning"
@@ -395,6 +468,7 @@ def supervise_chapter(
             return content, final_result
         if progress:
             progress("repair")
+        _raise_if_cancelled(cancelled)
         repaired = repair_chapter(
             client_factory("repair"),
             chapter_content=content,
@@ -410,7 +484,9 @@ def supervise_chapter(
             xp_mode=xp_mode,
             style_audit=style_audit,
             content_lock=content_lock,
+            cancelled=cancelled,
         )
+        _raise_if_cancelled(cancelled)
         if not repaired:
             final_result.status = "warning"
             return content, final_result

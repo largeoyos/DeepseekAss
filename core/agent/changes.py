@@ -95,7 +95,12 @@ class ChangeSetService:
         change_set = self.repository.load_change_set(change_set_id)
         if change_set is None or change_set.status != "pending":
             raise ChangeSetError("待审批变更不存在")
-        approved = set(approved_operation_ids or [item.operation_id for item in change_set.operations])
+        known = {item.operation_id for item in change_set.operations}
+        approved = known if approved_operation_ids is None else set(approved_operation_ids)
+        if not approved:
+            raise ChangeSetError("未选择任何待批准操作")
+        if approved - known:
+            raise ChangeSetError("选择中包含不属于当前变更的操作")
         self._validate(change_set, approved)
         snapshot = self.manager.snapshot_service(self.book_title).create(f"应用 Agent 变更 {change_set_id} 前自动备份", source="rollback_backup")
         try:

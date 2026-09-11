@@ -9,20 +9,23 @@ import base64
 import json
 import os
 import shutil
+import threading
 import uuid
 from pathlib import Path
 
 from cryptography.fernet import Fernet, InvalidToken
+from core.data_paths import DATA_ROOT
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 # 用户数据根目录
-USERS_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "users")
+USERS_DIR = os.path.join(DATA_ROOT, "users")
 USERS_DB = os.path.join(USERS_DIR, "users.json")
 
 # PBKDF2 参数
 PBKDF2_ITERATIONS = 600000
 PBKDF2_LENGTH = 64  # 输出 64 字节: 前 32 → auth_hash, 后 32 → enc_key
+_AUTH_LOCK = threading.RLock()
 
 
 class AuthError(Exception):
@@ -49,9 +52,69 @@ class AuthManager:
     @staticmethod
     def _save_users(users: dict) -> None:
         """保存用户数据库"""
-        os.makedirs(USERS_DIR, exist_ok=True)
-        with open(USERS_DB, "w", encoding="utf-8") as f:
-            json.dump(users, f, ensure_ascii=False, indent=2)
+        AuthManager._atomic_write_bytes(
+            USERS_DB, json.dumps(users, ensure_ascii=False, indent=2).encode("utf-8")
+        )
+
+    @staticmethod
+    def _atomic_write_bytes(path: str, data: bytes) -> None:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        temporary = path + ".tmp-" + uuid.uuid4().hex
+        try:
+            with open(temporary, "wb") as handle:
+                handle.write(data)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, path)
+        finally:
+            if os.path.exists(temporary):
+                os.remove(temporary)
+
+    @staticmethod
+    def _password_transaction_dir(dir_id: str) -> str:
+        if not dir_id or any(c not in "0123456789abcdef" for c in dir_id):
+            raise AuthError("用户数据目录标识无效")
+        root = os.path.realpath(USERS_DIR)
+        target = os.path.realpath(os.path.join(root, ".password-change-" + dir_id))
+        if os.path.normcase(os.path.dirname(target)) != os.path.normcase(root):
+            raise AuthError("密码迁移目录越界")
+        return target
+
+    @staticmethod
+    def _recover_password_change(username: str) -> bool:
+        """Recover a prepared transaction; the atomic users DB write is its commit."""
+        record = AuthManager._load_users().get(username) or {}
+        if not record.get("dir_id"):
+            return False
+        transaction = AuthManager._password_transaction_dir(record["dir_id"])
+        journal_path = os.path.join(transaction, "journal.json")
+        if not os.path.isfile(journal_path):
+            # Staging was interrupted before any live file could be changed.
+            if os.path.isdir(transaction):
+                shutil.rmtree(transaction)
+            return False
+        with open(journal_path, encoding="utf-8") as handle:
+            journal = json.load(handle)
+        committed = all(record.get(key) == journal["new_record"].get(key)
+                        for key in ("salt", "auth_hash"))
+        if not committed and not journal.get("rolled_back"):
+            if any(record.get(key) != journal["old_record"].get(key)
+                   for key in ("salt", "auth_hash")):
+                raise AuthError("密码迁移记录与账号不一致，已保留原密文备份")
+            user_dir = os.path.realpath(AuthManager.get_user_dir(username))
+            for index, relative in enumerate(journal["files"]):
+                target = os.path.realpath(os.path.join(user_dir, relative))
+                if os.path.commonpath([user_dir, target]) != user_dir or target == user_dir:
+                    raise AuthError("密码迁移文件路径越界")
+                backup = os.path.join(transaction, f"{index}.old")
+                with open(backup, "rb") as handle:
+                    AuthManager._atomic_write_bytes(target, handle.read())
+            # If cleanup itself is interrupted after deleting some backups,
+            # future logins must not try restoring those backups again.
+            journal["rolled_back"] = True
+            AuthManager._atomic_write_bytes(journal_path, json.dumps(journal).encode("utf-8"))
+        shutil.rmtree(transaction)
+        return committed
 
     @staticmethod
     def user_exists(username: str) -> bool:
@@ -104,6 +167,15 @@ class AuthManager:
 
     @staticmethod
     def authenticate(username: str, password: str) -> tuple[bool, bytes | None]:
+        with _AUTH_LOCK:
+            try:
+                AuthManager._recover_password_change(username)
+            except Exception as exc:
+                raise AuthError(f"密码迁移恢复失败，原密文备份已保留：{exc}") from exc
+            return AuthManager._authenticate(username, password)
+
+    @staticmethod
+    def _authenticate(username: str, password: str) -> tuple[bool, bytes | None]:
         """
         验证用户密码
 
@@ -145,6 +217,11 @@ class AuthManager:
 
     @staticmethod
     def change_password(username: str, old_password: str, new_password: str) -> bytes:
+        with _AUTH_LOCK:
+            return AuthManager._change_password(username, old_password, new_password)
+
+    @staticmethod
+    def _change_password(username: str, old_password: str, new_password: str) -> bytes:
         """
         Change a user's password and re-encrypt all user data with the new key.
 
@@ -174,23 +251,41 @@ class AuthManager:
                 if fname.endswith(".enc"):
                     encrypted_files.append(os.path.join(root, fname))
 
-        rewritten: list[tuple[str, bytes]] = []
+        transaction = AuthManager._password_transaction_dir(record["dir_id"])
+        os.makedirs(transaction)
+        new_record = {**record, "salt": base64.b16encode(new_salt).decode(),
+                      "auth_hash": new_auth_hash}
+        journal = {"old_record": record, "new_record": new_record,
+                   "files": [os.path.relpath(path, user_dir) for path in encrypted_files]}
+        journal_path = os.path.join(transaction, "journal.json")
         try:
-            for path in encrypted_files:
+            for index, path in enumerate(encrypted_files):
                 with open(path, "rb") as f:
                     raw = f.read()
                 plaintext = AuthManager.decrypt(old_key, raw)
-                rewritten.append((path, AuthManager.encrypt(new_enc_key, plaintext)))
+                AuthManager._atomic_write_bytes(os.path.join(transaction, f"{index}.old"), raw)
+                AuthManager._atomic_write_bytes(os.path.join(transaction, f"{index}.new"),
+                                                AuthManager.encrypt(new_enc_key, plaintext))
+            AuthManager._atomic_write_bytes(journal_path, json.dumps(journal).encode("utf-8"))
+            for index, path in enumerate(encrypted_files):
+                os.replace(os.path.join(transaction, f"{index}.new"), path)
+            # Reload so registrations completed while staging are retained.
+            users = AuthManager._load_users()
+            users[username] = new_record
+            AuthManager._save_users(users)
         except Exception as exc:
+            try:
+                if AuthManager._recover_password_change(username):
+                    return new_enc_key
+            except Exception as recovery_exc:
+                raise AuthError(f"密码迁移中断，恢复记录与原密文已保留；重新登录可重试恢复：{recovery_exc}") from exc
             raise AuthError(f"数据重加密失败，密码未修改：{exc}") from exc
-
-        for path, data in rewritten:
-            with open(path, "wb") as f:
-                f.write(data)
-
-        record["salt"] = base64.b16encode(new_salt).decode()
-        record["auth_hash"] = new_auth_hash
-        AuthManager._save_users(users)
+        # Cleanup failure does not undo a committed password change. A later
+        # authentication recognizes the committed journal and retries cleanup.
+        try:
+            AuthManager._recover_password_change(username)
+        except OSError:
+            pass
         return new_enc_key
 
     @staticmethod

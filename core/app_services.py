@@ -117,6 +117,41 @@ class WorldBibleSyncService:
         return updated
 
 
+class ChapterBranchService:
+    """Keep the selected branch and its locally derived memory consistent."""
+
+    def __init__(self, novel_manager) -> None:
+        self.manager = novel_manager
+
+    def synchronize(self, title: str) -> dict:
+        self.manager.clear_compressed_cache(title)
+        self.manager.rebuild_plot_summary_from_tree(title)
+        return self.manager.rebuild_world_bible_from_active(None, title)
+
+    def activate_node(self, title: str, node_id: str) -> dict | None:
+        return self._change(title, lambda: self.manager.switch_active_node(title, node_id))
+
+    def activate_tree(self, title: str, tree_id: str) -> dict | None:
+        return self._change(title, lambda: self.manager.switch_active_tree(title, tree_id))
+
+    def _change(self, title: str, operation) -> dict | None:
+        storage = self.manager.get_workspace(title).storage
+        before = {path: storage.read_text(path) for path in
+                  ("meta.json", "plot_summary.txt", "world_bible.json")}
+        try:
+            if not operation():
+                return None
+            return self.synchronize(title)
+        except Exception:
+            for path, content in before.items():
+                if content is None:
+                    storage.delete(path)
+                else:
+                    storage.write_text(path, content)
+            self.manager.mark_retrieval_dirty(title)
+            raise
+
+
 class ChapterGenerationService:
     """Coordinates context and persistence while model generation stays injectable."""
 

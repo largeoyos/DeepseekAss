@@ -212,22 +212,27 @@ class OpenAIChatAdapter(BaseModelAdapter):
         reasoning: list[str] = []
         usage = Usage()
         finish_reason = ""
-        for chunk in stream:
-            if _get(chunk, "usage") is not None:
-                usage = _usage_from_openai(_get(chunk, "usage"))
-            choices = _get(chunk, "choices", []) or []
-            if not choices:
-                continue
-            finish_reason = str(_get(choices[0], "finish_reason", finish_reason) or finish_reason)
-            delta = _get(choices[0], "delta", {}) or {}
-            reasoning_delta = str(_get(delta, "reasoning_content", "") or "")
-            text_delta = str(_get(delta, "content", "") or "")
-            if reasoning_delta:
-                reasoning.append(reasoning_delta)
-                yield StreamEvent("reasoning_delta", reasoning_delta)
-            if text_delta:
-                content.append(text_delta)
-                yield StreamEvent("text_delta", text_delta)
+        try:
+            for chunk in stream:
+                if _get(chunk, "usage") is not None:
+                    usage = _usage_from_openai(_get(chunk, "usage"))
+                choices = _get(chunk, "choices", []) or []
+                if not choices:
+                    continue
+                finish_reason = str(_get(choices[0], "finish_reason", finish_reason) or finish_reason)
+                delta = _get(choices[0], "delta", {}) or {}
+                reasoning_delta = str(_get(delta, "reasoning_content", "") or "")
+                text_delta = str(_get(delta, "content", "") or "")
+                if reasoning_delta:
+                    reasoning.append(reasoning_delta)
+                    yield StreamEvent("reasoning_delta", reasoning_delta)
+                if text_delta:
+                    content.append(text_delta)
+                    yield StreamEvent("text_delta", text_delta)
+        finally:
+            close_stream = getattr(stream, "close", None)
+            if callable(close_stream):
+                close_stream()
         yield StreamEvent("completed", result=ModelResult(
             content="".join(content), reasoning_content="".join(reasoning),
             usage=usage, finish_reason=finish_reason,

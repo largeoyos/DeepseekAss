@@ -142,6 +142,9 @@ class NovelManager:
         return self._workspace_errors.get(title, "")
 
     def _assert_workspace_writable(self, title: str) -> None:
+        # Validate the source on every write, including through a fresh manager.
+        if self._encrypted_file_exists(self._meta_path(title)):
+            self.load_meta(title)
         if title in self._workspace_errors:
             raise RuntimeError(self._workspace_errors[title])
 
@@ -276,6 +279,19 @@ class NovelManager:
         """清除缓存，下次读取时重建"""
         self._book_cache = None
 
+    @staticmethod
+    def _validate_book_title(title: str) -> None:
+        if not isinstance(title, str) or not title.strip().rstrip(" ."):
+            raise ValueError("书名不能为空或为路径特殊名称")
+
+    def _resolve_book_directory(self, directory: str) -> str:
+        """Resolve one book directory, including junctions, inside the shelf."""
+        root = os.path.realpath(os.path.abspath(self._bookshelf_root))
+        target = os.path.realpath(os.path.join(root, directory))
+        if os.path.normcase(os.path.dirname(target)) != os.path.normcase(root):
+            raise ValueError("书籍路径必须是书架内的独立目录")
+        return target
+
     def _book_dir(self, title: str) -> str:
         """
         返回小说目录路径
@@ -283,20 +299,24 @@ class NovelManager:
         非加密模式：使用安全化的书名作为目录名
         加密模式：使用 UUID（新建时生成）或旧式书名（迁移数据）
         """
+        self._validate_book_title(title)
         if self._enc_key is None:
             safe = title.replace("/", "-").replace("\\", "-").replace(":", "：")
-            return os.path.join(self._bookshelf_root, safe)
+            return self._resolve_book_directory(safe)
 
         # 加密模式：从缓存查找 UUID
         if self._book_cache is None:
             self._rebuild_book_cache()
         cached = self._book_cache.get(title)
         if cached:
-            return os.path.join(self._bookshelf_root, cached)
+            return self._resolve_book_directory(cached)
 
-        # 新书（尚未有 UUID）或不命中 → 用旧式书名路径作为兜底
-        safe = title.replace("/", "-").replace("\\", "-").replace(":", "：")
-        return os.path.join(self._bookshelf_root, safe)
+        # Another process may have created/renamed a book since the last scan.
+        self._rebuild_book_cache()
+        cached = self._book_cache.get(title)
+        if cached:
+            return self._resolve_book_directory(cached)
+        raise FileNotFoundError(f"书籍不存在或元信息无法读取: {title}")
 
     # ========== 书架操作 ==========
 
@@ -333,6 +353,7 @@ class NovelManager:
 
     def create_book(self, title: str) -> str:
         """创建新小说目录，返回该书的目录路径"""
+        self._validate_book_title(title)
         book_id: str | None = None
         if self._enc_key is not None:
             # 加密模式：使用 UUID 作为目录名
@@ -342,14 +363,14 @@ class NovelManager:
             cached = self._book_cache.get(title)
             if cached:
                 # 已有该书，复用现有目录，只更新 meta
-                book_dir = os.path.join(self._bookshelf_root, cached)
+                book_dir = self._resolve_book_directory(cached)
                 os.makedirs(book_dir, exist_ok=True)
                 meta = self.load_meta(title)
                 self._save_meta(title, meta)
                 return book_dir
 
             book_id = uuid.uuid4().hex[:12]
-            book_dir = os.path.join(self._bookshelf_root, book_id)
+            book_dir = self._resolve_book_directory(book_id)
             self._book_cache[title] = book_id
         else:
             book_dir = self._book_dir(title)
@@ -376,8 +397,16 @@ class NovelManager:
 
     def delete_book(self, title: str) -> bool:
         """删除小说及其所有章节，不可恢复"""
-        book_dir = self._book_dir(title)
+        try:
+            self._validate_book_title(title)
+            if title not in self.list_books():
+                return False
+            book_dir = self._book_dir(title)
+        except (ValueError, FileNotFoundError):
+            return False
         if not os.path.isdir(book_dir):
+            return False
+        if not self._encrypted_file_exists(os.path.join(book_dir, "meta.json")):
             return False
         try:
             shutil.rmtree(book_dir)
@@ -392,6 +421,7 @@ class NovelManager:
 
     def rename_book(self, old_title: str, new_title: str) -> bool:
         """重命名小说，更新 meta.json 中的 title（加密模式下不重命名目录）"""
+        self._validate_book_title(new_title)
         old_dir = self._book_dir(old_title)
         if not os.path.isdir(old_dir):
             return False
@@ -426,11 +456,24 @@ class NovelManager:
         """加载小说元信息，若不存在则返回默认空 meta"""
         meta_path = self._meta_path(title)
         if not self._encrypted_file_exists(meta_path):
+            if title in self._workspace_errors:
+                raise RuntimeError(self._workspace_errors[title])
             return NovelMeta(title=title)
         try:
             data = self._read_encrypted_json(meta_path)
-            if data is None:
-                return NovelMeta(title=title)
+            if not isinstance(data, dict) or not isinstance(data.get("title"), str):
+                raise ValueError("元信息必须是包含书名的 JSON 对象")
+            for name, expected in (("chapter_versions", dict), ("chapter_nodes", dict),
+                                   ("active_path", list), ("active_paths", dict),
+                                   ("tree_roots", dict), ("chapter_titles", list)):
+                if name in data and not isinstance(data[name], expected):
+                    raise ValueError(f"元信息字段格式错误: {name}")
+            if any(not isinstance(node, dict) for node in data.get("chapter_nodes", {}).values()):
+                raise ValueError("章节节点格式错误")
+            for info in data.get("chapter_versions", {}).values():
+                if (not isinstance(info, dict) or not isinstance(info.get("versions"), list)
+                        or any(not isinstance(v, dict) for v in info["versions"])):
+                    raise ValueError("章节版本格式错误")
             valid_fields = NovelMeta.__dataclass_fields__
             filtered = {k: v for k, v in data.items() if k in valid_fields}
             meta = NovelMeta(**filtered)
@@ -440,8 +483,10 @@ class NovelManager:
                 # Keep legacy data readable while write protection remains active.
                 pass
             return meta
-        except Exception:
-            return NovelMeta(title=title)
+        except Exception as exc:
+            message = f"小说元信息损坏，已阻止写入；请从备份恢复 meta.json：{exc}"
+            self._workspace_errors[title] = message
+            raise RuntimeError(message) from exc
 
     def save_meta(self, title: str, **kwargs) -> NovelMeta:
         """更新小说元信息（部分字段）并保存"""
@@ -472,6 +517,14 @@ class NovelManager:
     def ensure_chapter_tree(self, title: str) -> NovelMeta:
         """Build tree metadata from legacy chapter_versions when needed."""
         meta = self.load_meta(title)
+        if meta.schema_version < 2 and not meta.chapter_nodes:
+            # The legacy summary describes only the versions active at migration
+            # time. Bind it once, before any branch can change that identity.
+            legacy = self._read_encrypted_text(self._summary_path(title)) or ""
+            for chapter, info in meta.chapter_versions.items():
+                for version in info.get("versions", []):
+                    if version.get("v") == info.get("active") and not version.get("summary"):
+                        version["summary"] = self._legacy_extract_chapter_summary(legacy, int(chapter))
         changed = self._ensure_tree_meta_from_versions(meta)
         changed = self._normalize_chapter_tree(meta) or changed
         if changed:
@@ -752,19 +805,14 @@ class NovelManager:
         return ""
 
     def _active_summary_entries(self, title: str) -> list[dict]:
-        """返回活跃路径上的摘要条目，旧书缺失节点摘要时从 plot_summary.txt 回退。"""
-        meta = self.ensure_chapter_tree(title)
-        legacy_summary = ""
+        """Read summaries bound to the selected nodes; never borrow another version."""
         entries = []
         for node in self.get_active_path_nodes(title):
             chapter_num = int(node.get("chapter_num", 0) or 0)
             version = int(node.get("version", 0) or 0)
             summary = (node.get("summary") or "").strip()
-            if not summary:
-                if not legacy_summary:
-                    summary_path = self._summary_path(title)
-                    legacy_summary = self._read_encrypted_text(summary_path) or ""
-                summary = self._legacy_extract_chapter_summary(legacy_summary, chapter_num)
+            if summary.startswith("[摘要生成失败:"):
+                summary = ""
             entries.append({
                 "chapter_num": chapter_num,
                 "version": version,
@@ -781,13 +829,14 @@ class NovelManager:
 
     def build_active_path_summary(self, title: str) -> str:
         """按当前活跃路径拼接章节节点摘要，作为剧情记忆权威来源。"""
-        entries = [e for e in self._active_summary_entries(title) if e.get("summary")]
+        entries = self._active_summary_entries(title)
         if not entries:
             return "故事刚刚开始。"
         parts = ["# 完整前情提要（基于章节树活跃路径）\n"]
         for entry in entries:
             label = entry.get("display_label") or f"第{entry['chapter_num']}章"
-            parts.append(f"\n{label}「{entry['title']}」摘要：{entry['summary']}\n")
+            summary = entry["summary"] or "[本版本尚无摘要，请补生成摘要]"
+            parts.append(f"\n{label}「{entry['title']}」摘要：{summary}\n")
         return "".join(parts).strip()
 
     def rebuild_plot_summary_from_tree(self, title: str) -> None:
@@ -856,7 +905,11 @@ class NovelManager:
         meta = self.ensure_chapter_tree(title)
         start = meta.chapter_nodes.get(start_node_id)
         end = meta.chapter_nodes.get(end_node_id)
-        return bool(start and end and end.get("parent_id") == start_node_id and start.get("tree_id") == end.get("tree_id"))
+        if not start or not end or start.get("tree_id") != end.get("tree_id"):
+            return False
+        if start_node_id == end_node_id:
+            return True
+        return end.get("parent_id") == start_node_id
 
     def _extra_content_path(self, node_id: str) -> str:
         return f".deepseekass/extra_chapters/{node_id}.txt"
@@ -887,9 +940,15 @@ class NovelManager:
         start = meta.chapter_nodes.get(start_node_id) if start_node_id else None
         end = meta.chapter_nodes.get(end_node_id) if end_node_id else None
         reference = meta.chapter_nodes.get(reference_node_id) if reference_node_id else None
+        same_boundary = bool(start_node_id and start_node_id == end_node_id)
         if extra_type in {"enrichment", "if_line"}:
-            if not start or not end or end.get("parent_id") != start_node_id:
-                raise ValueError("丰富内容和 IF 线必须选择同一路径中连续的两个节点")
+            if (
+                not start
+                or not end
+                or start.get("tree_id") != end.get("tree_id")
+                or (not same_boundary and end.get("parent_id") != start_node_id)
+            ):
+                raise ValueError("丰富内容和 IF 线必须选择同一路径中连续的两个节点，或将起点和终点设为同一节点")
         elif not reference:
             raise ValueError("前传或后传必须选择一个正传参考节点")
 
@@ -901,7 +960,7 @@ class NovelManager:
         counts = sum(1 for item in meta.chapter_nodes.values() if item.get("node_kind") == extra_type) + 1
         if extra_type == "enrichment":
             display_label = f"第{start.get('chapter_num', 0)}.5章·番外"
-            display_order = (start_order + end_order) / 2.0
+            display_order = start_order + 0.5 if same_boundary else (start_order + end_order) / 2.0
             parent_id = start_node_id
             tree_kind = str(start.get("tree_kind", "main"))
         elif extra_type == "if_line":
@@ -933,7 +992,7 @@ class NovelManager:
             "node_kind": extra_type,
             "tree_id": tree_id,
             "tree_kind": tree_kind,
-            "reference_node_ids": [item for item in (start_node_id, end_node_id, reference_node_id) if item],
+            "reference_node_ids": list(dict.fromkeys(item for item in (start_node_id, end_node_id, reference_node_id) if item)),
             "display_order": display_order,
             "display_label": display_label,
             "is_primary_tree": tree_id == "primary_tree",
@@ -953,13 +1012,30 @@ class NovelManager:
                 meta.active_paths[tree_id] = [node_id]
             if extra_type == "enrichment":
                 start_children = meta.chapter_nodes[start_node_id].setdefault("children_ids", [])
-                start_children[:] = [node_id if item == end_node_id else item for item in start_children]
-                meta.chapter_nodes[end_node_id]["parent_id"] = node_id
-                node["children_ids"] = [end_node_id]
-                if start_node_id in meta.active_path and end_node_id in meta.active_path:
-                    pos = meta.active_path.index(end_node_id)
-                    meta.active_path.insert(pos, node_id)
-                    meta.active_paths[meta.active_tree_id] = list(meta.active_path)
+                if same_boundary:
+                    # A same-node boundary means "insert after this chapter".
+                    # Keep the existing continuation(s) below the new node so
+                    # the chapter forest remains acyclic and active paths stay
+                    # connected.
+                    previous_children = [item for item in start_children if item != node_id]
+                    start_children[:] = [node_id]
+                    node["children_ids"] = previous_children
+                    for child_id in previous_children:
+                        child = meta.chapter_nodes.get(child_id)
+                        if child:
+                            child["parent_id"] = node_id
+                    if start_node_id in meta.active_path:
+                        pos = meta.active_path.index(start_node_id)
+                        meta.active_path.insert(pos + 1, node_id)
+                        meta.active_paths[meta.active_tree_id] = list(meta.active_path)
+                else:
+                    start_children[:] = [node_id if item == end_node_id else item for item in start_children]
+                    meta.chapter_nodes[end_node_id]["parent_id"] = node_id
+                    node["children_ids"] = [end_node_id]
+                    if start_node_id in meta.active_path and end_node_id in meta.active_path:
+                        pos = meta.active_path.index(end_node_id)
+                        meta.active_path.insert(pos, node_id)
+                        meta.active_paths[meta.active_tree_id] = list(meta.active_path)
             self._normalize_chapter_tree(meta)
             self._save_meta(title, meta)
             if generation_record is not None:
@@ -1092,6 +1168,8 @@ class NovelManager:
         Returns:
             (文件路径, 版本号)
         """
+        self._assert_workspace_writable(title)
+        self.ensure_chapter_tree(title)
         book_dir = self._book_dir(title)
         os.makedirs(book_dir, exist_ok=True)
 
@@ -1278,6 +1356,7 @@ class NovelManager:
         self, title: str, chapter_num: int, version: int
     ) -> bool:
         """删除某章节的指定版本（如果只剩一个版本则整个章节删除）"""
+        self._assert_workspace_writable(title)
         book_dir = self._book_dir(title)
         if not os.path.isdir(book_dir):
             return False
@@ -1333,6 +1412,7 @@ class NovelManager:
 
     def delete_chapter(self, title: str, chapter_num: int) -> bool:
         """删除某章节的所有版本"""
+        self._assert_workspace_writable(title)
         book_dir = self._book_dir(title)
         if not os.path.isdir(book_dir):
             return False
@@ -1520,6 +1600,7 @@ class NovelManager:
             "snapshot_count": 0,
             "snapshot_missing_count": 0,
             "snapshot_skipped_count": 0,
+            "missing_snapshots": [],
             "extracted_count": 0,
             "missing_chapters": [],
             "failed_chapters": [],
@@ -1554,6 +1635,7 @@ class NovelManager:
                 entry = snapshots.get(snapshot_key)
                 if not (isinstance(entry, dict) and isinstance(entry.get("data"), dict)):
                     report["snapshot_missing_count"] += 1
+                    report["missing_snapshots"].append(str(node["id"]))
             if not force_extract and isinstance(entry, dict) and isinstance(entry.get("data"), dict):
                 bible = merge_extracted_world_bible_data(
                     bible,
@@ -1602,8 +1684,6 @@ class NovelManager:
             summary = (node.get("summary") or "").strip()
             if summary.startswith("[摘要生成失败:"):
                 summary = ""
-            if not summary:
-                summary = self._legacy_extract_chapter_summary(self.load_summary(title), chapter_num)
             if not summary and content:
                 summary = content[:300]
             story_context_entries.append({
@@ -1620,6 +1700,13 @@ class NovelManager:
         current_node_id = active_node_ids[-1] if active_node_ids else ""
         apply_manual_overrides(bible, active_node_ids, current_node_id)
         bible.consistency_warnings = audit_world_bible_consistency(bible)
+
+        if report["snapshot_skipped_count"]:
+            bible.consistency_warnings.append({
+                "severity": "info", "type": "章节快照缺失",
+                "message": "当前分支部分章节尚未提取世界书；请补提取缺失快照。未沿用旧分支信息。",
+                "related": report["missing_snapshots"],
+            })
 
         for item in report["missing_chapters"]:
             bible.consistency_warnings.append({
@@ -1856,24 +1943,10 @@ class NovelManager:
         return result.strip() or full_summary
 
     def _extract_chapter_summary(self, title: str, chapter_num: int) -> str:
-        """
-        从章节树活跃路径提取指定章节摘要；找不到时兼容旧 plot_summary 文本。
-        """
-        try:
-            meta = self.ensure_chapter_tree(title)
-            for node_id in meta.active_path:
-                node = meta.chapter_nodes.get(node_id)
-                if node and int(node.get("chapter_num", 0) or 0) == chapter_num:
-                    summary = (node.get("summary") or "").strip()
-                    if summary:
-                        return summary
-                    break
-        except Exception:
-            pass
-        legacy_text = self._read_encrypted_text(self._summary_path(title)) or ""
-        legacy = self._legacy_extract_chapter_summary(legacy_text, chapter_num)
-        if legacy:
-            return legacy
+        """Read only the summary belonging to a node on the active path."""
+        for entry in self._active_summary_entries(title):
+            if entry["chapter_num"] == chapter_num:
+                return entry["summary"] or "[摘要不可用]"
         return "[摘要不可用]"
 
     def build_continuity_contract(

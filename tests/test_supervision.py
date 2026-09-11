@@ -3,6 +3,7 @@ import unittest
 from types import SimpleNamespace
 
 from utils.supervision import (
+    SupervisionCancelled,
     audit_chapter,
     collect_style_tic_counts,
     format_repair_diff,
@@ -36,6 +37,31 @@ class FakeClient:
         self.chat = SimpleNamespace(completions=self.completions)
 
 
+class CancellingStream:
+    def __init__(self, state):
+        self.state = state
+        self.closed = False
+
+    def __iter__(self):
+        self.state["cancelled"] = True
+        yield SimpleNamespace(choices=[SimpleNamespace(
+            delta=SimpleNamespace(content="partial"),
+        )])
+
+    def close(self):
+        self.closed = True
+
+
+class StreamingClient:
+    def __init__(self, state):
+        self.stream = CancellingStream(state)
+        self.chat = SimpleNamespace(completions=SimpleNamespace(create=self.create))
+
+    def create(self, **kwargs):
+        self.request = kwargs
+        return self.stream
+
+
 def audit_payload(status="fulfilled"):
     item = {
         "id": "1",
@@ -54,6 +80,47 @@ def audit_payload(status="fulfilled"):
 
 
 class SupervisionTests(unittest.TestCase):
+    def test_active_supervision_stream_closes_when_cancelled(self):
+        state = {"cancelled": False}
+        client = StreamingClient(state)
+
+        with self.assertRaises(SupervisionCancelled):
+            audit_chapter(
+                client,
+                chapter_content="正文" * 200,
+                chapter_title="第一章",
+                chapter_outline="推进主线",
+                requirements="",
+                continuity_context="",
+                target_words=0,
+                model="test",
+                cancelled=lambda: state["cancelled"],
+            )
+
+        self.assertTrue(client.request["stream"])
+        self.assertTrue(client.stream.closed)
+
+    def test_cancel_before_repair_prevents_second_api_call(self):
+        state = {"cancelled": False}
+        client = FakeClient([audit_payload("missing")])
+
+        def progress(stage):
+            if stage == "repair":
+                state["cancelled"] = True
+
+        with self.assertRaises(SupervisionCancelled):
+            supervise_chapter(
+                lambda action: client,
+                chapter_content="a" * 300,
+                chapter_title="Chapter 1",
+                chapter_outline="Open the sealed door",
+                model="test",
+                progress=progress,
+                cancelled=lambda: state["cancelled"],
+            )
+
+        self.assertEqual(1, client.completions.calls)
+
     def test_passed_outline_does_not_modify_content(self):
         original = "a" * 300
         client = FakeClient([audit_payload()])

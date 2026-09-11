@@ -654,6 +654,8 @@ class _UsageLoggingCompletionsProxy:
             raise
 
         if kwargs.get("stream"):
+            self._owner._client._current_stream = response
+
             def logged_stream():
                 content_parts: list[str] = []
                 reasoning_parts: list[str] = []
@@ -671,6 +673,11 @@ class _UsageLoggingCompletionsProxy:
                                 if getattr(delta, "reasoning_content", None): reasoning_parts.append(delta.reasoning_content)
                         yield chunk
                 finally:
+                    close = getattr(response, "close", None)
+                    if callable(close):
+                        close()
+                    if self._owner._client._current_stream is response:
+                        self._owner._client._current_stream = None
                     self._owner._finish_api_task(task_id)
                     self._owner._log_token_usage(
                         operation=self._operation, direction="send", content=prompt,
@@ -6065,7 +6072,12 @@ class DeepSeekChatGUI(QMainWindow):
         if hasattr(self, "_agent_ask_advisor_btn"):
             self._agent_ask_advisor_btn.setEnabled(True)
         self._last_advisor_result = result
-        answer = result.answer or "顾问未返回有效回答。"
+        answer = result.answer.strip()
+        no_answer = not answer
+        if no_answer:
+            answer = "顾问未返回有效回答。"
+            detail = result.error or f"运行状态：{result.status}。"
+            answer += f"\n\n原因：{detail}\n请检查 API 配置、所选模型是否可用，并换一个更具体的问题后重试。"
         source_lines = []
         answer_sources = []
         for source in result.sources:
@@ -6086,14 +6098,15 @@ class DeepSeekChatGUI(QMainWindow):
         self._assistant_text_buffer = [display_answer]
         self._render_assistant_stream(display_answer)
         self._agent_advisor_status.setText(
-            f"顾问完成；工具调用 {len(result.tool_calls)} 次，来源 {len(result.sources)} 项。"
+            (f"顾问未完成：{result.error or result.status}" if no_answer else
+             f"顾问完成；工具调用 {len(result.tool_calls)} 次，来源 {len(result.sources)} 项。")
         )
         self._agent_plan_preview.setPlainText(
             "【顾问回答】\n" + answer +
             ("\n\n【引用来源】\n" + "\n".join(source_lines) if source_lines else "")
         )
-        self._agent_save_advice_btn.setEnabled(bool(answer.strip()))
-        self._agent_add_world_btn.setEnabled(bool(answer.strip()))
+        self._agent_save_advice_btn.setEnabled(not no_answer)
+        self._agent_add_world_btn.setEnabled(not no_answer)
 
     def _on_agent_advisor_error(self, error: str) -> None:
         self._agent_advisor_running = False
@@ -6796,6 +6809,7 @@ class DeepSeekChatGUI(QMainWindow):
                 ),
                     progress=progress,
                     repair_change_callback=show_repair_changes,
+                    cancelled=lambda: bool(self._client._cancel_requested),
                 )
                 report = supervised.report
                 self._stream_signals.token.emit(
@@ -6825,6 +6839,7 @@ class DeepSeekChatGUI(QMainWindow):
                 max_repair_rounds=max_repair_rounds,
                 progress=progress,
                 repair_change_callback=show_repair_changes,
+                cancelled=lambda: bool(self._client._cancel_requested),
             )
             fulfilled = sum(1 for item in result.outline_items if item.get("status") == "fulfilled")
             total = len(result.outline_items)
@@ -6842,6 +6857,13 @@ class DeepSeekChatGUI(QMainWindow):
             show_local_evaluation(report)
             return final_content, report
         except Exception as e:
+            if self._client and self._client._cancel_requested:
+                self._stream_signals.token.emit("[Supervision] 已取消；原章节正文保持不变。\n")
+                return content, {
+                    "status": "cancelled", "audit_failed": False, "error": "监督已取消",
+                    "outline_items": [], "hard_constraint_issues": [],
+                    "continuity_issues": [], "style_issues": [], "repair_rounds": 0,
+                }
             self._stream_signals.token.emit(f"[Supervision] Skipped after error: {e}\n")
             return content, {
                 "status": "warning", "audit_failed": True, "error": str(e),

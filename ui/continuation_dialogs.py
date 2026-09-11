@@ -3,6 +3,7 @@
 提供分析结果展示、方向选择和续写参数设置等对话框
 """
 
+import json
 import os
 import re
 import threading
@@ -58,9 +59,19 @@ SUGGESTION_PROMPT = """你是一位资深小说编辑。请根据以下完整世
 【用户指定续写剧情（必须作为方向约束）】
 {requested_plot}
 
-请按以下格式输出（每行一个方向）：
-方向1：标题 | 核心看点 | 情节走向
-方向2：标题 | 核心看点 | 情节走向"""
+只输出一个合法 JSON 对象，不要使用 Markdown 代码块，不要添加解释文字。格式必须是：
+{
+  "directions": [
+    {
+      "title": "10字以内的方向标题",
+      "highlight": "核心看点或情绪基调",
+      "plot": "50字以内的大致情节走向",
+      "foreshadowing": ["本方向推进或回收的伏笔"]
+    }
+  ]
+}
+
+directions 必须包含 3-5 项；title、highlight、plot 必须是非空字符串；foreshadowing 必须是字符串数组，没有相关伏笔时使用空数组。"""
 
 
 def _safe_format(template: str, **kwargs) -> str:
@@ -70,6 +81,87 @@ def _safe_format(template: str, **kwargs) -> str:
         result = result.replace("{" + key + "}", value)
     result = result.replace("{{", "{").replace("}}", "}")
     return result
+
+
+def _request_direction_json(client, model: str, prompt: str) -> str:
+    """Request JSON output while retaining compatibility with simpler gateways."""
+    options = {
+        "model": model,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 1500,
+        "temperature": 0.8,
+        "response_format": {"type": "json_object"},
+    }
+    try:
+        response = client.chat.completions.create(**options)
+    except Exception as exc:
+        error = str(exc).lower()
+        if not any(token in error for token in (
+            "response_format", "json_object", "unknown parameter", "unsupported",
+            "not support", "error code: 400", "status code: 400", "status 400",
+        )):
+            raise
+        options.pop("response_format", None)
+        response = client.chat.completions.create(**options)
+    return str(response.choices[0].message.content or "").strip()
+
+
+def parse_direction_suggestions(raw: str) -> list[str]:
+    """Validate direction JSON and convert it to readable selection entries."""
+    payload = str(raw or "").strip()
+    payload = re.sub(r"^```(?:json)?\s*", "", payload, flags=re.IGNORECASE)
+    payload = re.sub(r"\s*```$", "", payload)
+    try:
+        data = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"发展方向不是合法 JSON：{exc.msg}") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("directions"), list):
+        raise ValueError("发展方向 JSON 必须包含 directions 数组")
+    items = data["directions"]
+    if not 3 <= len(items) <= 5:
+        raise ValueError("directions 必须包含 3-5 个发展方向")
+
+    result: list[str] = []
+    for index, item in enumerate(items, 1):
+        if not isinstance(item, dict):
+            raise ValueError(f"第 {index} 个发展方向必须是 JSON 对象")
+        if any(not isinstance(item.get(key), str) for key in ("title", "highlight", "plot")):
+            raise ValueError(f"第 {index} 个发展方向的 title、highlight、plot 必须是字符串")
+        title = item["title"].strip()
+        highlight = item["highlight"].strip()
+        plot = item["plot"].strip()
+        foreshadowing = item.get("foreshadowing", [])
+        if not title or not highlight or not plot:
+            raise ValueError(f"第 {index} 个发展方向缺少 title、highlight 或 plot")
+        if not isinstance(foreshadowing, list) or any(not isinstance(value, str) for value in foreshadowing):
+            raise ValueError(f"第 {index} 个发展方向的 foreshadowing 必须是字符串数组")
+        lines = [f"方向{index}：{title}", f"核心看点：{highlight}", f"情节走向：{plot}"]
+        clues = [value.strip() for value in foreshadowing if value.strip()]
+        if clues:
+            lines.append("关联伏笔：" + "、".join(clues))
+        result.append("\n".join(lines))
+    return result
+
+
+def generate_direction_suggestions(client, model: str, prompt: str) -> list[str]:
+    """Generate validated JSON directions, with one format-repair attempt."""
+    raw = _request_direction_json(client, model, prompt)
+    try:
+        return parse_direction_suggestions(raw)
+    except ValueError as first_error:
+        repair_prompt = (
+            prompt
+            + "\n\n你上一次的输出未通过 JSON 校验。请根据原要求重新输出完整 JSON；"
+            "不要解释，不要复述错误内容。\n"
+            + f"校验错误：{first_error}\n"
+            + "上一次输出：\n"
+            + raw[:4000]
+        )
+        repaired = _request_direction_json(client, model, repair_prompt)
+        try:
+            return parse_direction_suggestions(repaired)
+        except ValueError as second_error:
+            raise ValueError(f"发展方向 JSON 两次校验失败：{second_error}") from second_error
 
 
 def _theme_name(widget) -> str:
@@ -326,17 +418,9 @@ def suggest_directions(client, setting: str, plot: str, model: str,
     if xp_mode:
         prompt += f"\n\n{Prompts.XP_MODE_SYSTEM}\n\n{Prompts.XP_SUGGESTION_GUIDE}"
     try:
-        resp = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=1500,
-            temperature=0.8,
-        )
-        text = resp.choices[0].message.content or ""
-        directions = [line.strip() for line in text.split("\n") if line.strip() and ("方向" in line or "：" in line)]
-        return directions[:5] if directions else [text[:200]]
-    except Exception:
-        return ["建议生成失败，请手动指定剧情"]
+        return generate_direction_suggestions(client, model, prompt)
+    except Exception as exc:
+        raise RuntimeError(f"建议生成失败：{exc}。请重试或手动指定剧情") from exc
 
 
 class ContinuationAnalysisDialog(QDialog):

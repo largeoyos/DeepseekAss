@@ -494,22 +494,25 @@ class ChapterTreeDialog(QDialog):
         node = self._selected_node()
         if not node:
             return
-        if self._novel_manager.switch_active_node(self._book_title, node["id"]):
-            self._load_tree()
-            self._switch_btn.setEnabled(False)
-            self._rebuild_success_message = "剧情记忆和世界书已按活跃路径同步。"
-            self._details.setPlainText("正在按活跃路径同步剧情记忆和世界书，请稍候...")
-            threading.Thread(target=self._run_rebuild_memory, daemon=True).start()
+        from core.app_services import ChapterBranchService
+        node_id = node["id"]
+        self._switch_btn.setEnabled(False)
+        self._rebuild_success_message = "剧情记忆和世界书已按活跃路径同步。"
+        self._details.setPlainText("正在按活跃路径同步剧情记忆和世界书，请稍候...")
+        def switch():
+            try:
+                report = ChapterBranchService(self._novel_manager).activate_node(self._book_title, node_id)
+                if report is None:
+                    raise ValueError("章节节点不存在")
+                self.rebuild_done.emit(report)
+            except Exception as exc:
+                self.rebuild_failed.emit(str(exc))
+        threading.Thread(target=switch, daemon=True).start()
 
     def _run_rebuild_memory(self) -> None:
         try:
-            self._novel_manager.rebuild_plot_summary_from_tree(self._book_title)
-            report = self._novel_manager.rebuild_world_bible_from_active(
-                self._api_client("chapter_tree_world_bible") if self._client else None,
-                self._book_title,
-                model=self._client.model if self._client else "deepseek-v4-flash",
-                global_user_prompt=self._client.global_user_prompt if self._client else "",
-            )
+            from core.app_services import ChapterBranchService
+            report = ChapterBranchService(self._novel_manager).synchronize(self._book_title)
             self.rebuild_done.emit(report)
         except Exception as exc:
             self.rebuild_failed.emit(str(exc))

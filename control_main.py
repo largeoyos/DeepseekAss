@@ -113,6 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
     grant.add_argument("--name", default="AI control")
     grant.add_argument("--expires-days", type=int, default=90)
     grant.add_argument("--read-only", action="store_true")
+    grant.add_argument("--allow-agent", action="store_true", help="allow invoking the configured writing Agent")
     auth_sub.add_parser("list")
     revoke = auth_sub.add_parser("revoke")
     revoke.add_argument("grant_id")
@@ -129,18 +130,18 @@ def build_parser() -> argparse.ArgumentParser:
     tree_show.add_argument("--book", required=True)
     tree_show.add_argument("--tree-id", default="")
     tree_show.add_argument("--offset", type=int, default=0)
-    tree_show.add_argument("--limit", type=int, default=500)
-    tree_show.add_argument("--include-summaries", action="store_true")
+    tree_show.add_argument("--limit", type=int, default=None)
+    tree_show.add_argument("--include-summaries", action=argparse.BooleanOptionalAction, default=None)
     tree_show.add_argument("--output", choices=("json", "tree"), default="json")
 
     chapter = commands.add_parser("chapter")
     chapter_sub = chapter.add_subparsers(dest="chapter_command", required=True, parser_class=JsonArgumentParser)
     chapter_read = chapter_sub.add_parser("read")
     chapter_read.add_argument("--book", required=True); chapter_read.add_argument("--node-id", required=True)
-    chapter_read.add_argument("--start", type=int, default=0); chapter_read.add_argument("--max-chars", type=int, default=20000)
+    chapter_read.add_argument("--start", type=int, default=0); chapter_read.add_argument("--max-chars", type=int, default=None)
     chapter_search = chapter_sub.add_parser("search")
     chapter_search.add_argument("--book", required=True); chapter_search.add_argument("--query", required=True)
-    chapter_search.add_argument("--scope", choices=("active", "all"), default="all"); chapter_search.add_argument("--limit", type=int, default=20)
+    chapter_search.add_argument("--scope", choices=("active", "all"), default=""); chapter_search.add_argument("--limit", type=int, default=None)
     chapter_propose = chapter_sub.add_parser("propose-revision")
     chapter_propose.add_argument("--book", required=True); chapter_propose.add_argument("--base-node-id", required=True)
     chapter_propose.add_argument("--title", default=""); chapter_propose.add_argument("--input", required=True); chapter_propose.add_argument("--reason", default="")
@@ -149,10 +150,10 @@ def build_parser() -> argparse.ArgumentParser:
     world_sub = world.add_subparsers(dest="world_command", required=True, parser_class=JsonArgumentParser)
     world_show = world_sub.add_parser("show")
     world_show.add_argument("--book", required=True); world_show.add_argument("--category", default="")
-    world_show.add_argument("--offset", type=int, default=0); world_show.add_argument("--limit", type=int, default=100)
+    world_show.add_argument("--offset", type=int, default=0); world_show.add_argument("--limit", type=int, default=None)
     world_search = world_sub.add_parser("search")
     world_search.add_argument("--book", required=True); world_search.add_argument("--query", required=True)
-    world_search.add_argument("--entity-type", default=""); world_search.add_argument("--limit", type=int, default=20)
+    world_search.add_argument("--entity-type", default=""); world_search.add_argument("--limit", type=int, default=None)
     world_audit = world_sub.add_parser("audit"); world_audit.add_argument("--book", required=True)
     world_patch = world_sub.add_parser("propose-patch")
     world_patch.add_argument("--book", required=True); world_patch.add_argument("--input", required=True); world_patch.add_argument("--reason", default="")
@@ -163,6 +164,14 @@ def build_parser() -> argparse.ArgumentParser:
     changes_show = changes_sub.add_parser("show"); changes_show.add_argument("--book", required=True); changes_show.add_argument("change_set_id")
     changes_approve = changes_sub.add_parser("approve"); changes_approve.add_argument("--book", required=True); changes_approve.add_argument("change_set_id")
     changes_reject = changes_sub.add_parser("reject"); changes_reject.add_argument("--book", required=True); changes_reject.add_argument("change_set_id")
+
+    agent = commands.add_parser("agent")
+    agent_run = agent.add_subparsers(dest="agent_command", required=True, parser_class=JsonArgumentParser).add_parser("run")
+    agent_run.add_argument("--book", required=True)
+    agent_run.add_argument("--input", required=True, help="instruction file, or - for stdin")
+    agent_run.add_argument("--chapter-title", default="")
+    agent_run.add_argument("--target-words", type=int, default=None)
+    agent_run.add_argument("--reference", action="append", default=[])
 
     commands.add_parser("mcp")
     return parser
@@ -176,6 +185,10 @@ def execute(args) -> dict | None:
         password = _password()
         if args.auth_command == "grant":
             scopes = {"read"} if args.read_only else {"read", "propose"}
+            if args.allow_agent:
+                if args.read_only:
+                    raise ControlValidationError("--read-only 不能与 --allow-agent 同时使用")
+                scopes.add("generate")
             token, grant = ControlGrantStore.create(username, password, name=args.name, scopes=scopes, expires_days=args.expires_days)
             return {"grant": grant, "token": token, "token_shown_once": True}
         if args.auth_command == "list":
@@ -202,6 +215,14 @@ def execute(args) -> dict | None:
         return None
     if args.command == "books":
         return service.invoke("list_books")
+    if args.command == "agent":
+        return service.invoke("run_writing_agent", {
+            "book": args.book,
+            "instruction": _read_input(args.input),
+            "chapter_title": args.chapter_title,
+            "target_words": args.target_words,
+            "manual_references": args.reference,
+        })
     if args.command == "project":
         return service.invoke("get_project", {"book": args.book})
     if args.command == "tree":
@@ -237,8 +258,12 @@ def execute(args) -> dict | None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    if hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(encoding="utf-8")
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8")
     parser = build_parser()
     pretty = False
     try:

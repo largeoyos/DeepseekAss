@@ -40,7 +40,7 @@ class ControlGrant:
 
 class ControlGrantStore:
     TOKEN_PREFIX = "dsa"
-    VALID_SCOPES = {"read", "propose"}
+    VALID_SCOPES = {"read", "propose", "generate"}
 
     @staticmethod
     def _registry_path(username: str) -> str:
@@ -108,7 +108,7 @@ class ControlGrantStore:
             raise ControlAuthError("用户名或密码错误")
         selected = set(scopes or {"read", "propose"})
         if not selected or not selected.issubset(cls.VALID_SCOPES):
-            raise ControlAuthError("授权范围只能包含 read 和 propose")
+            raise ControlAuthError("授权范围只能包含 read、propose 和 generate")
         if expires_days < 1 or expires_days > 3650:
             raise ControlAuthError("授权有效期必须在 1 到 3650 天之间")
 

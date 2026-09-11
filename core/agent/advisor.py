@@ -78,6 +78,8 @@ class WritingAdvisorService:
                 break
         sources = self._extract_sources(run.tool_calls)
         error = run.error or (f"已回退到现有运行时：{backend_status.fallback_reason}" if backend_status.fallback_reason else "")
+        if not answer and not error:
+            error = f"顾问运行未产生文本回答（状态：{run.status}，结束原因：{run.terminal_reason or '未知'}）。"
         return AdvisorResult(run.run_id, session.session_id, answer, run.status, run.tool_calls, sources, run.artifact_ids, error)
 
     def save_advice(self, book_title: str, run_id: str, text: str, title: str = "写作构思") -> str:

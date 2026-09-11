@@ -67,6 +67,17 @@ DEFAULT_SETTINGS = {
     "embedding_timeout_seconds": 20,
     "embedding_max_retries": 1,
     "framework_auto_fallback": True,
+    # Local MCP/CLI control defaults.  Secrets and automation tokens are never
+    # stored here; these values only tune paging, search, and internal Agent use.
+    "control_tree_page_size": 500,
+    "control_chapter_page_chars": 20000,
+    "control_search_scope": "all",
+    "control_search_limit": 20,
+    "control_world_page_size": 100,
+    "control_include_summaries": False,
+    "control_agent_enabled": False,
+    "control_agent_target_words": 3000,
+    "control_agent_instruction_prefix": "",
 }
 
 

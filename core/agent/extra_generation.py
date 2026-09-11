@@ -199,7 +199,7 @@ class AgentExtraGenerationService:
     def _validate_request(self, request: AgentExtraRequest) -> None:
         if request.extra_type in {"enrichment", "if_line"}:
             if not self.manager.are_direct_path_neighbors(request.book_title, request.start_node_id, request.end_node_id):
-                raise ValueError("丰富内容和 IF 线必须选择同一路径中连续两个节点")
+                raise ValueError("丰富内容和 IF 线必须选择同一路径中连续两个节点，或将起点和终点设为同一节点")
         elif request.extra_type in {"prequel", "sequel"}:
             if not self._node(request.book_title, request.reference_node_id):
                 raise ValueError("前传或后传必须选择参考节点")
@@ -240,6 +240,12 @@ class AgentExtraGenerationService:
     def _boundary_context(self, request, start, end, reference, path) -> str:
         if request.extra_type in {"enrichment", "if_line"}:
             start_content = self.manager.read_chapter_node(request.book_title, start.get("id", "")) or ""
+            if request.start_node_id == request.end_node_id:
+                return (
+                    "【同章插入边界】\n"
+                    "番外插入在起点章节之后；不得改写起点章节既有事实。\n"
+                    f"【起点章节正文】\n{start_content[-5000:]}"
+                )
             end_content = self.manager.read_chapter_node(request.book_title, end.get("id", "")) or ""
             end_label = "后续连续性边界" if request.extra_type == "enrichment" else "原路线对照（不得视为 IF 已发生事实）"
             return f"【起点正文结尾】\n{start_content[-5000:]}\n\n【{end_label}】\n{end_content[:5000]}"
@@ -250,17 +256,25 @@ class AgentExtraGenerationService:
 
     def _type_contract(self, extra_type: str) -> str:
         return {
-            "enrichment": "填补连续节点之间的过程，结尾必须自然衔接终点节点，不改变终点既有事实。",
-            "if_line": "从起点作出不同选择，终点节点仅是原路线对照，IF 线不得强行回归原路线。",
+            "enrichment": "填补连续节点之间的过程；若起点与终点相同，则作为该章节之后的同章插入，结尾不得改写该章节既有事实。",
+            "if_line": "从起点作出不同选择；若起点与终点相同，则创建该章节之后的 IF 分支，不得改写该章节既有事实。",
             "prequel": "发生在参考节点之前，不得让角色预知未来。",
             "sequel": "发生在参考节点之后，把参考路径视为历史。",
         }[extra_type]
 
     def _insertion_report(self, request, start, end, reference) -> dict:
         if request.extra_type == "enrichment":
-            description = f"{start.get('id')} → 新番外 → {end.get('id')}"
+            description = (
+                f"在 {start.get('id')} 之后插入新番外（同章起止）"
+                if request.start_node_id == request.end_node_id
+                else f"{start.get('id')} → 新番外 → {end.get('id')}"
+            )
         elif request.extra_type == "if_line":
-            description = f"从 {start.get('id')} 分叉；{end.get('id')} 仅作原路线对照"
+            description = (
+                f"从 {start.get('id')} 之后创建同章 IF 分支"
+                if request.start_node_id == request.end_node_id
+                else f"从 {start.get('id')} 分叉；{end.get('id')} 仅作原路线对照"
+            )
         else:
             description = f"创建独立{request.extra_type}树；参考节点 {reference.get('id')}"
         return {"description": description, "start_node_id": request.start_node_id, "end_node_id": request.end_node_id, "reference_node_id": request.reference_node_id}

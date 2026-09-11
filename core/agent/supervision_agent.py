@@ -52,7 +52,15 @@ class AgentSupervisionService:
         request: SupervisionRequest,
         progress=None,
         repair_change_callback=None,
+        cancelled=None,
     ) -> SupervisionResult:
+        from utils.supervision import SupervisionCancelled
+
+        def ensure_not_cancelled() -> None:
+            if cancelled is not None and cancelled():
+                raise SupervisionCancelled("监督已取消")
+
+        ensure_not_cancelled()
         workspace = self.manager.get_workspace(request.book_title)
         manifest = workspace.ensure_manifest()
         repository = AgentRepository(workspace)
@@ -76,6 +84,7 @@ class AgentSupervisionService:
         ]
         allowed = [name for name, _args in calls]
         for index, (name, arguments) in enumerate(calls, 1):
+            ensure_not_cancelled()
             result = registry.execute(ToolCallRequest(f"{run_id}_{index}", name, arguments), context, allowed)
             item = {
                 "tool_name": name,
@@ -89,6 +98,7 @@ class AgentSupervisionService:
             if result.success and result.content:
                 evidence.append(f"【{name}】\n{result.content[:6000]}")
         skills = self._select_skills(repository, request)
+        ensure_not_cancelled()
         combined_context = "\n\n".join(filter(None, [
             request.continuity_context,
             "【监督 Agent 只读工具证据】\n" + "\n\n".join(evidence) if evidence else "",
@@ -115,7 +125,9 @@ class AgentSupervisionService:
             max_repair_rounds=max(0, min(2, int(request.max_repair_rounds))),
             progress=progress,
             repair_change_callback=repair_change_callback,
+            cancelled=cancelled,
         )
+        ensure_not_cancelled()
         report = result.to_dict()
         report.update({
             "schema_version": 1,

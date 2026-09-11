@@ -33,8 +33,8 @@ COMMON_READ_TOOLS = [
 AGENT_PROFILES = {
     "writing_orchestrator": AgentProfile(
         "writing_orchestrator", "\u5199\u4f5c\u603b\u7ba1", "writing_orchestrator",
-        COMMON_READ_TOOLS + ["agent.todo", "chapter.write_draft"],
-        "draft_write", 30, 70000,
+        COMMON_READ_TOOLS + ["agent.todo", "chapter.write_draft", "chapter.propose"],
+        "confirmed_write", 30, 70000,
     ),
     "writing_advisor": AgentProfile(
         "writing_advisor", "\u5199\u4f5c\u987e\u95ee", "writing_advisor",
