@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "book": {
+    "book_id": "94dd64d97a2f",
+    "title": "最后一班潮汐邮船（CLI实测-6d3119）"
+  },
+  "entities": [
+    {
+      "id": "test_shenyan",
+      "type": "character",
+      "data": {
+        "id": "test_shenyan",
+        "name": "沈砚",
+        "aliases": [],
+        "traits": "临时邮差，擅长辨认旧邮戳和维修机械",
+        "relationships": [],
+        "status": "alive",
+        "importance": "normal",
+        "first_appearance": 0,
+        "notes": "",
+        "key_details": [],
+        "key_dialogues": [],
+        "motivation": "",
+        "arc": "",
+        "birth_date": "",
+        "current_age": "",
+        "age_basis": "",
+        "life_stage": "",
+        "current_location": "",
+        "current_goal": "",
+        "current_emotion": "",
+        "recent_action": "",
+        "knowledge_state": "",
+        "unresolved_conflicts": [],
+        "source_chapter": 0,
+        "source_version": 0,
+        "last_updated_chapter": 0,
+        "last_updated_version": 0,
+        "hidden": false,
+        "fact_sources": {},
+        "knowledge_type": "canon",
+        "confidence": 1.0,
+        "source_refs": [],
+        "locked": false
+      }
+    }
+  ],
+  "missing_ids": []
+}

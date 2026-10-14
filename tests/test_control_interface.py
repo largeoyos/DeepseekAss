@@ -80,6 +80,17 @@ class ControlInterfaceTests(unittest.TestCase):
         with self.assertRaises(ControlAuthError):
             ControlGrantStore.resolve(self.username, self.token)
 
+    def test_world_audit_checks_snapshots_of_current_branch(self):
+        report = self.service.audit_world_bible(self.title)
+        self.assertEqual(["ch0001_v001"], report["missing_snapshot_node_ids"])
+        self.assertTrue(any(w["type"] == "章节快照缺失" for w in report["warnings"]))
+        bible = self.manager.load_world_bible(self.title)
+        bible.chapter_snapshots["ch0001_v001"] = {"chapter": 1, "version": 1, "data": {}}
+        self.manager.save_world_bible(self.title, bible)
+        self.assertEqual([], self.service.audit_world_bible(self.title)["missing_snapshot_node_ids"])
+        self.manager.switch_active_node(self.title, "ch0001_v002")
+        self.assertEqual(["ch0001_v002"], self.service.audit_world_bible(self.title)["missing_snapshot_node_ids"])
+
     def test_frozen_data_root_finds_project_users_outside_dist(self):
         with tempfile.TemporaryDirectory() as root:
             project = os.path.join(root, "project")
@@ -312,6 +323,39 @@ class ControlInterfaceTests(unittest.TestCase):
         payload = json.loads(output.getvalue())
         self.assertFalse(payload["ok"])
         self.assertEqual("invalid_arguments", payload["error"]["code"])
+
+    def test_current_chapter_uses_active_version_and_paginates(self):
+        result = self.service.read_current_chapter(self.title, start=2, max_chars=5)
+        self.assertEqual("ch0001_v001", result["node"]["id"])
+        self.assertEqual(self.manager.read_chapter_node(self.title, "ch0001_v001")[2:7], result["content"])
+        self.assertEqual(7, result["page"]["next_start"])
+
+    def test_image_read_requires_generate_before_accessing_files(self):
+        with patch("pathlib.Path.open") as opened:
+            with self.assertRaises(ControlPermissionError):
+                self.service.describe_images(["private.png"])
+        opened.assert_not_called()
+
+    def test_write_cli_injects_chinese_instruction_and_image_reference(self):
+        output = io.StringIO()
+        def invoke(tool, arguments):
+            if tool == "describe_images":
+                return {"content": "图中是一座钟楼"}
+            self.assertEqual("run_writing_agent", tool)
+            self.assertIn("保留秘密", arguments["instruction"])
+            self.assertIn("非已发生剧情", arguments["instruction"])
+            self.assertIn("图中是一座钟楼", arguments["instruction"])
+            return {"status": "waiting_approval", "change_set_ids": ["pending"]}
+        with patch("control_main._service", return_value=self.service), patch.object(self.service, "invoke", side_effect=invoke), redirect_stdout(output):
+            code = control_main(["write", "chapter", "--book", self.title, "--instruction", "保留秘密", "--image", "scene.png"])
+        self.assertEqual(0, code)
+        self.assertEqual(["pending"], json.loads(output.getvalue())["data"]["change_set_ids"])
+
+    def test_write_cli_rejects_blank_instruction_before_image_call(self):
+        with patch("control_main._service", return_value=self.service), patch.object(self.service, "invoke") as invoke, redirect_stdout(io.StringIO()):
+            code = control_main(["write", "chapter", "--book", self.title, "--instruction", "  ", "--image", "scene.png"])
+        self.assertEqual(2, code)
+        invoke.assert_not_called()
 
     def test_mcp_discovers_strict_tools_and_calls_structured_result(self):
         from mcp import Client

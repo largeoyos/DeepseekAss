@@ -1,0 +1,160 @@
+{
+  "schema_version": 1,
+  "models": [
+    {
+      "model_id": "model_40843939b698",
+      "model": "deepseek-flash",
+      "provider_id": "provider_278d1697844f",
+      "enabled": true,
+      "provider_enabled": true,
+      "capabilities": {
+        "streaming": true,
+        "tools": true,
+        "native_web_search": false,
+        "reasoning": true,
+        "structured_output": true,
+        "supported_reasoning_levels": [
+          "off",
+          "high",
+          "max"
+        ],
+        "verified": false,
+        "vision": false
+      },
+      "local_service": false,
+      "api_key_configured": true
+    },
+    {
+      "model_id": "model_3f9108575fc1",
+      "model": "deepseek-v4-flash",
+      "provider_id": "provider_278d1697844f",
+      "enabled": true,
+      "provider_enabled": true,
+      "capabilities": {
+        "streaming": true,
+        "tools": true,
+        "native_web_search": false,
+        "reasoning": true,
+        "structured_output": true,
+        "supported_reasoning_levels": [
+          "off",
+          "high",
+          "max"
+        ],
+        "verified": false,
+        "vision": false
+      },
+      "local_service": false,
+      "api_key_configured": true
+    },
+    {
+      "model_id": "model_755c0bdc761a",
+      "model": "deepseek-v4-pro",
+      "provider_id": "provider_278d1697844f",
+      "enabled": true,
+      "provider_enabled": true,
+      "capabilities": {
+        "streaming": true,
+        "tools": true,
+        "native_web_search": false,
+        "reasoning": true,
+        "structured_output": true,
+        "supported_reasoning_levels": [
+          "off",
+          "high",
+          "max"
+        ],
+        "verified": false,
+        "vision": false
+      },
+      "local_service": false,
+      "api_key_configured": true
+    }
+  ],
+  "routes": {
+    "interactive": {
+      "primary_model_id": "model_40843939b698",
+      "fallback_model_ids": [],
+      "overrides": {
+        "reasoning_level": null,
+        "web_search": null,
+        "context_window": null,
+        "max_output_tokens": null,
+        "temperature": null,
+        "top_p": null,
+        "frequency_penalty": null
+      },
+      "inherit": false
+    },
+    "drafting": {
+      "primary_model_id": "model_40843939b698",
+      "fallback_model_ids": [],
+      "overrides": {
+        "reasoning_level": null,
+        "web_search": null,
+        "context_window": null,
+        "max_output_tokens": null,
+        "temperature": null,
+        "top_p": null,
+        "frequency_penalty": null
+      },
+      "inherit": false
+    },
+    "planning": {
+      "primary_model_id": "model_40843939b698",
+      "fallback_model_ids": [],
+      "overrides": {
+        "reasoning_level": null,
+        "web_search": null,
+        "context_window": null,
+        "max_output_tokens": null,
+        "temperature": null,
+        "top_p": null,
+        "frequency_penalty": null
+      },
+      "inherit": false
+    },
+    "extraction": {
+      "primary_model_id": "model_40843939b698",
+      "fallback_model_ids": [],
+      "overrides": {
+        "reasoning_level": null,
+        "web_search": null,
+        "context_window": null,
+        "max_output_tokens": null,
+        "temperature": null,
+        "top_p": null,
+        "frequency_penalty": null
+      },
+      "inherit": false
+    },
+    "review": {
+      "primary_model_id": "model_40843939b698",
+      "fallback_model_ids": [],
+      "overrides": {
+        "reasoning_level": null,
+        "web_search": null,
+        "context_window": null,
+        "max_output_tokens": null,
+        "temperature": null,
+        "top_p": null,
+        "frequency_penalty": null
+      },
+      "inherit": false
+    },
+    "agent": {
+      "primary_model_id": "model_40843939b698",
+      "fallback_model_ids": [],
+      "overrides": {
+        "reasoning_level": null,
+        "web_search": null,
+        "context_window": null,
+        "max_output_tokens": null,
+        "temperature": null,
+        "top_p": null,
+        "frequency_penalty": null
+      },
+      "inherit": false
+    }
+  }
+}

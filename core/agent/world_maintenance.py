@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 from dataclasses import asdict, dataclass, field
 
 from core.agent.types import now_iso
@@ -30,7 +31,7 @@ class WorldBibleMaintenanceService:
     def __init__(self, novel_manager) -> None:
         self.manager = novel_manager
 
-    def maintain(self, client, book_title: str, chapter_num: int, version: int, *, model: str, global_user_prompt: str = "", xp_mode: bool = False, plan: dict | None = None) -> WorldMaintenanceResult:
+    def maintain(self, client, book_title: str, chapter_num: int, version: int, *, model: str, global_user_prompt: str = "", xp_mode: bool = False, plan: dict | None = None, force: bool = False) -> WorldMaintenanceResult:
         task_id = self._task_id(chapter_num, version)
         workspace = self.manager.get_workspace(book_title)
         snapshot = self.manager.snapshot_service(book_title).create(f"第{chapter_num}章 v{version} 世界书维护前备份", source="chapter")
@@ -40,12 +41,24 @@ class WorldBibleMaintenanceService:
             from core.world_bible import _chapter_world_entry_key
             key = _chapter_world_entry_key(chapter_num, version)
             existing_snapshots = getattr(before, "chapter_snapshots", {}) or {}
-            if key in existing_snapshots:
+            node_id = self.manager._node_id(chapter_num, version)
+            content = self.manager.read_chapter_node(book_title, node_id)
+            content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            entry = existing_snapshots.get(key)
+            reusable = (
+                isinstance(entry, dict) and isinstance(entry.get("data"), dict)
+                and entry.get("extraction_complete", True)
+                and entry.get("content_hash", content_hash) == content_hash
+            )
+            if reusable and not force:
                 rebuild = self.manager.rebuild_world_bible_from_active(client, book_title, model=model, global_user_prompt=global_user_prompt, xp_mode=xp_mode)
             else:
-                node_id = self.manager._node_id(chapter_num, version)
                 rebuild = self.manager.extract_world_bible_for_node(client, book_title, node_id, model=model, global_user_prompt=global_user_prompt, xp_mode=xp_mode)
             bible = self.manager.load_world_bible(book_title)
+            refreshed = bible.chapter_snapshots.get(key, {})
+            if refreshed.get("extraction_complete") is False:
+                raise RuntimeError("世界书仅完成部分正文提取，请重试维护")
+            rebuild["reused_snapshot"] = bool(reusable and not force)
             archival = self._archive_obsolete(book_title, bible)
             self.manager.save_world_bible(book_title, bible)
             after_view = self._entity_map(bible)
@@ -73,6 +86,7 @@ class WorldBibleMaintenanceService:
                 "schema_version": 1, "task_id": task_id, "book_title": book_title,
                 "chapter_num": chapter_num, "version": version, "model": model,
                 "global_user_prompt": global_user_prompt, "xp_mode": xp_mode,
+                "force": force,
                 "plan": plan or {}, "error": error, "created_at": now_iso(),
             })
             self._write_result(workspace, result, plan)
@@ -87,6 +101,7 @@ class WorldBibleMaintenanceService:
             client, book_title, int(task["chapter_num"]), int(task["version"]),
             model=str(task["model"]), global_user_prompt=str(task.get("global_user_prompt", "")),
             xp_mode=bool(task.get("xp_mode", False)), plan=task.get("plan") or {},
+            force=bool(task.get("force", False)),
         )
 
     def list_pending(self, book_title: str) -> list[dict]:

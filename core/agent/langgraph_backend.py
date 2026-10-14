@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 import threading
+import time
 import uuid
 from dataclasses import asdict
 from typing import Any, Iterator
@@ -191,6 +192,8 @@ class LangGraphAgentBackend:
         self._cancelled: set[str] = set()
         self._paused: set[str] = set()
         self._sequence: dict[str, int] = {}
+        self._stream_parts: dict[str, list[str]] = {}
+        self._stream_started: set[str] = set()
         self._lock = threading.Lock()
 
     def create_session(self, book_title: str, agent_kind: str, title: str = ""):
@@ -225,8 +228,15 @@ class LangGraphAgentBackend:
         session.active_run_id = run.run_id
         session.run_ids.append(run.run_id)
         append_request_user_message(session, request)
+        preparation_started = time.monotonic()
+        self._emit(repository, run.run_id, "context_preparing", {})
         skills = SkillService(repository).render_for_agent(request.agent_kind) if self.skills_enabled else ""
-        context = self.contexts.assemble(request.book_title, request.manual_references)
+        context = self.contexts.assemble_for_request(request)
+        self._emit(repository, run.run_id, "context_ready", {
+            "duration_ms": int((time.monotonic() - preparation_started) * 1000),
+            "chars": context.total_chars,
+            "sources": context.sources,
+        })
         run.messages = [
             {"role": "system", "content": "当前书籍事实上下文：\n" + context.content},
             *[{"role": item["role"], "content": item["content"]} for item in session.messages],
@@ -244,16 +254,24 @@ class LangGraphAgentBackend:
             )
             self._apply_graph_result(run, repository, result)
         except Exception as exc:
-            if self._is_interrupt(exc):
+            from core.agent.runtime import AgentCancelled
+            if self._stream_parts.get(run.run_id):
+                run.messages.append({"role": "assistant", "content": "".join(self._stream_parts[run.run_id]), "partial": True})
+            if isinstance(exc, AgentCancelled):
+                run.status, run.terminal_reason = "cancelled", "user_cancelled"
+                self._emit(repository, run.run_id, "run_cancelled", {})
+            elif self._is_interrupt(exc):
                 run.status = "waiting_approval"
                 run.terminal_reason = "approval_required"
                 self._emit(repository, run.run_id, "approval_required", {"backend": "langgraph"})
             else:
                 run.status = "failed"
                 run.error = str(exc) or repr(exc)
-                run.terminal_reason = "runtime_error"
+                run.terminal_reason = "stream_error" if run.run_id in self._stream_started else "runtime_error"
                 self._emit(repository, run.run_id, "run_failed", {"error": str(exc)})
         finally:
+            self._stream_parts.pop(run.run_id, None)
+            self._stream_started.discard(run.run_id)
             repository.save_run(run)
             repository.save_checkpoint(run, "langgraph_terminal")
             if session.active_run_id == run.run_id and run.status != "waiting_approval":
@@ -299,6 +317,21 @@ class LangGraphAgentBackend:
             self._cancelled.add(run_id)
         return True
 
+    def _check_stream_cancel(self, run_id):
+        from core.agent.runtime import AgentCancelled
+        cancelled = self.services.get("cancel_requested")
+        if run_id in self._cancelled or (callable(cancelled) and cancelled()):
+            raise AgentCancelled()
+
+    def _stream_turn(self, repository, run_id):
+        self._stream_parts[run_id] = []
+        self._emit(repository, run_id, "model_turn_started", {})
+
+    def _stream_text(self, run_id, text):
+        self._stream_started.add(run_id)
+        self._stream_parts.setdefault(run_id, []).append(text)
+        self.event_sink(AgentEvent(run_id, 0, "model_delta", payload={"text": text}))
+
     def _build_graph(self, run, repository, profile, skills):
         from langchain.agents import create_agent
         from langchain_core.tools import StructuredTool
@@ -316,10 +349,15 @@ class LangGraphAgentBackend:
                 client=raw_client,
                 model=run.model,
                 temperature=float(getattr(self.client, "temperature", 0.3) or 0.3),
+                on_text=(lambda text: self._stream_text(run.run_id, text))
+                        if self.services.get("stream_model") else None,
+                on_turn=lambda: self._stream_turn(repository, run.run_id),
+                check_cancel=lambda: self._check_stream_cancel(run.run_id),
             )
         tools = []
         for spec in self.tool_registry.specs_for(profile.allowed_tools):
             def invoke_tool(_spec=spec, **arguments):
+                self._check_stream_cancel(run.run_id)
                 if run.run_id in self._cancelled:
                     raise RuntimeError("用户已取消 Agent Run")
                 if run.run_id in self._paused:

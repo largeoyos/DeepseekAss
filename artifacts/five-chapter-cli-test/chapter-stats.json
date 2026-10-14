@@ -1,0 +1,42 @@
+[
+  {
+    "chapter": 1,
+    "node_id": "ch0001_v001",
+    "parent_id": "ch0000_v000",
+    "title": "没有收件人的信",
+    "chars": 1604,
+    "chinese_chars": 1293
+  },
+  {
+    "chapter": 2,
+    "node_id": "ch0002_v002",
+    "parent_id": "ch0001_v001",
+    "title": "被改写的潮汐",
+    "chars": 2258,
+    "chinese_chars": 1764
+  },
+  {
+    "chapter": 3,
+    "node_id": "ch0003_v001",
+    "parent_id": "ch0002_v002",
+    "title": "船工的绳结",
+    "chars": 1751,
+    "chinese_chars": 1353
+  },
+  {
+    "chapter": 4,
+    "node_id": "ch0004_v001",
+    "parent_id": "ch0003_v001",
+    "title": "最后一次靠岸",
+    "chars": 2135,
+    "chinese_chars": 1669
+  },
+  {
+    "chapter": 5,
+    "node_id": "ch0005_v001",
+    "parent_id": "ch0004_v001",
+    "title": "天亮之后投递",
+    "chars": 2335,
+    "chinese_chars": 1859
+  }
+]

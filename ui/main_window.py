@@ -14,6 +14,7 @@ import sys
 import threading
 import time
 import copy
+import html
 from dataclasses import asdict
 
 from PyQt6.QtCore import Qt, pyqtSignal, QObject, QTimer
@@ -61,6 +62,8 @@ from core.model_gateway import ModelGateway, format_citations_markdown
 from core.model_types import ProviderProtocol, TaskStage
 from core.novel_manager import NovelManager
 from core.conversation_manager import ConversationManager
+from core.display_history import DisplayHistoryStore
+from ui.display_history_view import DisplayHistoryView
 from core.character_book import (
     CharacterBookManager,
     CharacterProfile,
@@ -97,6 +100,7 @@ from core.app_services import (
 )
 from core.agent.skills import HUMANIZER_ZH_STYLE_BRIEF
 from core.world_bible_diff import diff_world_bibles
+from core.task_manager import current_task_handle, report_task_failure, task_cancel_requested
 from core.settings_manager import SettingsManager
 from core.initial_novel_settings import (
     select_missing_initial_setting_updates,
@@ -217,6 +221,7 @@ class StreamSignals(QObject):
     agent_chapter_plan_error = pyqtSignal(str)
     agent_maintenance_changed = pyqtSignal(str)
     agent_advisor_ready = pyqtSignal(object)
+    agent_advisor_event = pyqtSignal(object)
     agent_advisor_error = pyqtSignal(str)
     agent_world_plan_ready = pyqtSignal(object)
     agent_world_plan_error = pyqtSignal(str)
@@ -648,7 +653,7 @@ class _UsageLoggingCompletionsProxy:
         except Exception as exc:
             self._owner._finish_api_task(task_id)
             self._owner._log_token_usage(
-                operation=self._operation, direction="send", content=prompt,
+                operation=self._operation, direction="request", content="", prompt_content=prompt,
                 usage=None, model=kwargs.get("model"), final_failure_reason=str(exc),
             )
             raise
@@ -680,13 +685,9 @@ class _UsageLoggingCompletionsProxy:
                         self._owner._client._current_stream = None
                     self._owner._finish_api_task(task_id)
                     self._owner._log_token_usage(
-                        operation=self._operation, direction="send", content=prompt,
-                        usage=usage, model=kwargs.get("model"), gateway_result=gateway_result,
-                    )
-                    self._owner._log_token_usage(
-                        operation=self._operation, direction="receive", content="".join(content_parts),
+                        operation=self._operation, direction="request", content="".join(content_parts),
                         reasoning_content="".join(reasoning_parts), usage=usage,
-                        model=kwargs.get("model"), gateway_result=gateway_result,
+                        prompt_content=prompt, model=kwargs.get("model"), gateway_result=gateway_result,
                     )
             return logged_stream()
 
@@ -702,18 +703,11 @@ class _UsageLoggingCompletionsProxy:
         gateway_result = getattr(response, "gateway_result", None)
         self._owner._log_token_usage(
             operation=self._operation,
-            direction="send",
-            content=prompt,
-            usage=usage,
-            model=kwargs.get("model"),
-            gateway_result=gateway_result,
-        )
-        self._owner._log_token_usage(
-            operation=self._operation,
-            direction="receive",
+            direction="request",
             content=content,
             reasoning_content=reasoning,
             usage=usage,
+            prompt_content=prompt,
             model=kwargs.get("model"),
             gateway_result=gateway_result,
         )
@@ -770,6 +764,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._stream_signals.agent_chapter_plan_error.connect(self._on_agent_chapter_plan_error)
         self._stream_signals.agent_maintenance_changed.connect(self._on_agent_maintenance_changed)
         self._stream_signals.agent_advisor_ready.connect(self._on_agent_advisor_ready)
+        self._stream_signals.agent_advisor_event.connect(self._on_agent_advisor_event)
         self._stream_signals.agent_advisor_error.connect(self._on_agent_advisor_error)
         self._stream_signals.agent_world_plan_ready.connect(self._on_agent_world_plan_ready)
         self._stream_signals.agent_world_plan_error.connect(self._on_agent_world_plan_error)
@@ -806,6 +801,11 @@ class DeepSeekChatGUI(QMainWindow):
         self._last_mode: str = ""
         self._agent_chapter_planning = False
         self._agent_advisor_running = False
+        self._agent_advisor_buffer = []
+        self._agent_advisor_render_timer = QTimer(self)
+        self._agent_advisor_render_timer.setSingleShot(True)
+        self._agent_advisor_render_timer.setInterval(80)
+        self._agent_advisor_render_timer.timeout.connect(self._flush_agent_advisor_render)
         self._agent_world_running = False
         self._last_advisor_result = None
         self._agent_maintenance_running = False
@@ -838,6 +838,8 @@ class DeepSeekChatGUI(QMainWindow):
         os.makedirs(os.path.join(user_dir, "bookshelf"), exist_ok=True)
 
         self._user_dir = user_dir
+        self._display_history = DisplayHistoryStore(
+            os.path.join(user_dir, "display_history"), crypto=self._auth, enc_key=self._enc_key)
         self._novel_manager = NovelManager(
             bookshelf_root=os.path.join(user_dir, "bookshelf"),
             crypto=self._auth, enc_key=self._enc_key,
@@ -1713,6 +1715,17 @@ class DeepSeekChatGUI(QMainWindow):
             if clicked != discard_button and clicked != save_button:
                 event.ignore()
                 return
+        try:
+            if self._agent_advisor_running:
+                self._cancel_agent_advisor()
+                self._flush_agent_advisor_render()
+            elif self._streaming:
+                self._flush_stream_render()
+            self._display_history.save()
+        except Exception as exc:
+            QMessageBox.warning(self, "显示记录保存失败", f"右侧内容尚未保存，窗口将保持打开。\n{exc}")
+            event.ignore()
+            return
         event.accept()
 
     @staticmethod
@@ -2306,6 +2319,9 @@ class DeepSeekChatGUI(QMainWindow):
         self._plot_edit.setMaximumHeight(120)
         self._plot_edit.setMinimumHeight(80)
         layout.addWidget(self._plot_edit)
+        image_reference_btn = QPushButton("从图片提取写作参考")
+        image_reference_btn.clicked.connect(lambda: self._open_image_reference(self._plot_edit))
+        layout.addWidget(image_reference_btn)
 
         # ── 目标字数 ──
         word_row = QHBoxLayout()
@@ -2418,6 +2434,10 @@ class DeepSeekChatGUI(QMainWindow):
         self._agent_advisor_history_btn = QPushButton("管理顾问会话")
         self._agent_advisor_history_btn.clicked.connect(self._show_agent_advisor_history)
         advisor_ask_row.addWidget(self._agent_ask_advisor_btn)
+        self._agent_stop_advisor_btn = QPushButton("停止回答")
+        self._agent_stop_advisor_btn.setVisible(False)
+        self._agent_stop_advisor_btn.clicked.connect(self._cancel_agent_advisor)
+        advisor_ask_row.addWidget(self._agent_stop_advisor_btn)
         advisor_ask_row.addWidget(self._agent_advice_library_btn)
         advisor_ask_row.addWidget(self._agent_advisor_history_btn)
         agent_layout.addLayout(advisor_ask_row)
@@ -2895,7 +2915,17 @@ class DeepSeekChatGUI(QMainWindow):
         layout.setSpacing(0)
 
         # Markdown 渲染显示区
-        self._display = QWebEngineView()
+        history_bar = QHBoxLayout()
+        history_label = QLabel("显示记录自动保存")
+        history_label.setToolTip("关闭后自动保存，下次打开恢复；查看历史不会改变模型上下文。")
+        history_bar.addWidget(history_label)
+        history_bar.addStretch()
+        history_button = QPushButton("显示历史")
+        history_button.clicked.connect(self._show_display_history)
+        history_bar.addWidget(history_button)
+        layout.addLayout(history_bar)
+        self._display = DisplayHistoryView(self._display_history, lambda: CURRENT_HTML_STYLE, REPLY_JUMP_NAV_SCRIPT)
+        self._display.save_error.connect(lambda error: self.statusBar().showMessage("显示记录自动保存失败：" + error, 8000))
         self._display.settings().setAttribute(
             QWebEngineSettings.WebAttribute.JavascriptEnabled, True
         )
@@ -2917,6 +2947,9 @@ class DeepSeekChatGUI(QMainWindow):
         self._input_box.setMinimumHeight(64)
         self._input_box.send_requested.connect(self._on_send)
         input_layout.addWidget(self._input_box, stretch=1)
+        image_btn = QPushButton("图片参考")
+        image_btn.clicked.connect(lambda: self._open_image_reference(self._input_box))
+        input_layout.addWidget(image_btn)
 
         send_btn = QPushButton("发 送")
         send_btn.setMinimumHeight(64)
@@ -3000,6 +3033,8 @@ class DeepSeekChatGUI(QMainWindow):
             if hasattr(self, "_display"):
                 self._display.page().setBackgroundColor(QColor("#1e1e2e"))
         INITIAL_HTML = initial_html()
+        if isinstance(getattr(self, "_display", None), DisplayHistoryView):
+            self._display.refresh_style()
 
     def _apply_dark_theme(self) -> None:
         """应用现代化深色主题样式"""
@@ -3603,7 +3638,11 @@ class DeepSeekChatGUI(QMainWindow):
     def _on_stop(self) -> None:
         """停止按钮点击处理"""
         self._stop_btn.setVisible(False)
-        if self._client:
+        tasks = [record for record in self._task_runner.active_records()
+                 if record.metadata.get("desktop_stream")]
+        for record in tasks:
+            self._task_runner.cancel(record.task_id)
+        if not tasks and self._client:
             self._client.cancel()
 
     def _on_mode_changed(self, text: str) -> None:
@@ -3781,6 +3820,40 @@ class DeepSeekChatGUI(QMainWindow):
     def _reset_display(self) -> None:
         self._display.setHtml(INITIAL_HTML)
 
+    def _show_display_history(self) -> None:
+        try:
+            self._display_history.save()
+            records = self._display_history.list_sessions()
+        except Exception as exc:
+            QMessageBox.warning(self, "显示历史", str(exc))
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("显示历史")
+        dialog.resize(900, 700)
+        layout = QVBoxLayout(dialog)
+        layout.addWidget(QLabel("按保存时间查看右侧记录；当前书籍和模型上下文保持不变。"))
+        selector = QComboBox()
+        for record in records:
+            selector.addItem(f"{record['updated_at'].replace('T', ' ')} · {record['message_count']} 条", record["id"])
+        layout.addWidget(selector)
+        preview = QTextBrowser()
+        preview.setOpenExternalLinks(True)
+        layout.addWidget(preview)
+        def show_record(_index=0):
+            session_id = selector.currentData()
+            if not session_id:
+                preview.setPlainText("暂无显示记录。")
+                return
+            try:
+                record = self._display_history.load_session(session_id)
+                body = "".join(DisplayHistoryView.entry_html(item) for item in record.get("entries", []))
+                preview.setHtml(f"<html><head>{CURRENT_HTML_STYLE}</head><body>{body}</body></html>")
+            except Exception as exc:
+                preview.setPlainText("读取显示记录失败：" + str(exc))
+        selector.currentIndexChanged.connect(show_record)
+        show_record()
+        dialog.exec()
+
     def _current_book_for_status(self) -> str:
         try:
             if isinstance(self._client.strategy, NovelStrategy):
@@ -3890,8 +3963,31 @@ class DeepSeekChatGUI(QMainWindow):
         if self._cont_bookshelf_combo.currentText() == title:
             self._on_cont_book_selected(title)
 
+    def _start_background_task(self, name, target, *, args=(), kwargs=None, cancellable=False):
+        """Register legacy workers without replaying stale UI state on retry."""
+        client = self._client
+
+        def run(handle):
+            handle.progress(name, stage=name)
+            try:
+                return target(*args, **(kwargs or {}))
+            except Exception as exc:
+                # Existing workers report handled failures through their own signals.
+                # Unexpected failures still need to release the main generation UI.
+                if cancellable:
+                    task_cancel_requested(bool(client and client._cancel_requested))
+                self._stream_signals.error.emit(str(exc))
+                raise
+
+        return self._task_runner.start(
+            name, run, cancellable=cancellable,
+            cancel_callback=client.cancel if cancellable and client else None,
+            metadata={"desktop_worker": True, "desktop_stream": cancellable},
+        )
+
     def _on_application_task_event(self, event) -> None:
-        if event.type == "failed":
+        record = self._task_runner.get_record(event.task_id)
+        if event.type == "failed" and not (record and record.metadata.get("desktop_worker")):
             self._stream_signals.error.emit(event.message)
         elif event.type == "started":
             self._stream_signals.token.emit(f"\n[{event.message}] started...\n")
@@ -3938,6 +4034,9 @@ class DeepSeekChatGUI(QMainWindow):
         return operation.replace("_", " ") or "模型请求"
 
     def _begin_api_task(self, label: str) -> str:
+        handle = current_task_handle()
+        if handle is not None:
+            handle.progress(label, stage=label)
         task_id = new_id("api")
         self._stream_signals.api_task_started.emit(task_id, label)
         return task_id
@@ -4004,6 +4103,7 @@ class DeepSeekChatGUI(QMainWindow):
         direction: str,
         content: str,
         usage,
+        prompt_content: str = "",
         reasoning_content: str = "",
         reasoning_tokens: int | None = None,
         model: str | None = None,
@@ -4018,10 +4118,10 @@ class DeepSeekChatGUI(QMainWindow):
     ) -> None:
         try:
             usage_dict = DeepSeekChatClient._usage_to_dict(usage)
-            if direction == "receive" and reasoning_tokens is None:
+            if direction in {"receive", "request"} and reasoning_tokens is None:
                 details = (usage_dict or {}).get("completion_tokens_details") or {}
                 reasoning_tokens = details.get("reasoning_tokens")
-            result = gateway_result or getattr(self._client, "last_gateway_result", None)
+            result = gateway_result
             gateway_metadata = {"final_failure_reason": final_failure_reason}
             if result is not None:
                 provider = self._model_config.providers.get(getattr(result, "provider_id", ""))
@@ -4043,6 +4143,7 @@ class DeepSeekChatGUI(QMainWindow):
                 strategy=strategy or self._client.strategy.get_name(),
                 model=model or self._client.model,
                 content=content,
+                prompt=prompt_content,
                 reasoning_content=reasoning_content,
                 reasoning_tokens=reasoning_tokens,
                 usage=usage_dict,
@@ -4058,21 +4159,6 @@ class DeepSeekChatGUI(QMainWindow):
 
     def _count_hanzi(self, text: str) -> int:
         return len(re.findall(r"[\u4e00-\u9fff]", text or ""))
-
-    def _usage_for_direction(self, usage: dict | None, direction: str) -> dict | None:
-        if not usage:
-            return None
-        if direction == "send":
-            return {
-                "prompt_tokens": usage.get("prompt_tokens"),
-                "completion_tokens": None,
-                "total_tokens": usage.get("prompt_tokens"),
-            }
-        return {
-            "prompt_tokens": None,
-            "completion_tokens": usage.get("completion_tokens"),
-            "total_tokens": usage.get("total_tokens"),
-        }
 
     def _format_chapter_stats_block(self, stats: dict) -> str:
         usage = stats.get("usage") or {}
@@ -4118,7 +4204,9 @@ class DeepSeekChatGUI(QMainWindow):
         reasoning_chunks: list[str] = []
         gateway_result = None
         stream = None
+        stream_error = None
         task_id = self._begin_api_task(self._api_operation_label(operation))
+        book_title = self._get_current_book_title() or ""
 
         body_model = self._body_generation_model()
         kwargs = {
@@ -4132,19 +4220,16 @@ class DeepSeekChatGUI(QMainWindow):
         }
         routed_client = self._client.client_for(
             operation,
-            book_title=self._get_current_book_title() or "",
+            book_title=book_title,
         )
         try:
-            try:
-                stream = routed_client.chat.completions.create(
-                    **kwargs,
-                    stream_options={"include_usage": True},
-                )
-            except Exception:
-                stream = routed_client.chat.completions.create(**kwargs)
+            stream = routed_client.chat.completions.create(
+                **kwargs,
+                stream_options={"include_usage": True},
+            )
 
             for chunk in stream:
-                if self._client._cancel_requested:
+                if task_cancel_requested(self._client._cancel_requested):
                     close = getattr(stream, "close", None)
                     if callable(close):
                         close()
@@ -4169,7 +4254,16 @@ class DeepSeekChatGUI(QMainWindow):
                     reasoning_token = "".join(str(item) for item in reasoning_token)
                 if reasoning_token:
                     reasoning_chunks.append(str(reasoning_token))
+        except Exception as exc:
+            stream_error = exc
         finally:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                try:
+                    close()
+                except Exception as exc:
+                    if stream_error is None:
+                        stream_error = exc
             finished_at = time.strftime("%Y-%m-%d %H:%M:%S")
             self._finish_api_task(task_id)
 
@@ -4198,43 +4292,28 @@ class DeepSeekChatGUI(QMainWindow):
         }
         # 供主线程在流结束后保留最终统计；实时标签不应在完成时直接消失。
         self._last_generation_stats = stats
-        cancelled = bool(self._client._cancel_requested)
-        if cancelled:
-            self._log_token_usage(
-                operation=operation,
-                direction="send",
-                content=prompt_text,
-                usage=self._usage_for_direction(usage_dict, "send"),
-                started_at=started_at,
-                finished_at=finished_at,
-                duration_ms=duration_ms,
-                char_count=len(prompt_text or ""),
-                hanzi_count=self._count_hanzi(prompt_text),
-                model=body_model,
-                gateway_result=gateway_result,
-            )
-            return content, stats, True
-
+        cancelled = bool(task_cancel_requested(self._client._cancel_requested))
+        failure_reason = str(stream_error) if stream_error else ""
+        recovery_note = ""
+        if stream_error is not None and (content or reasoning):
+            try:
+                draft_path = self._novel_manager.save_interrupted_generation(book_title, {
+                    "operation": operation, "prompt": prompt_text, "messages": messages,
+                    "content": content, "reasoning_content": reasoning,
+                    "stats": stats, "error": failure_reason,
+                })
+                recovery_note = f"中断草稿已保存至当前书籍的 {draft_path}。"
+            except Exception as save_error:
+                recovery_note = f"中断草稿保存失败：{save_error}。"
+            failure_reason += "\n" + recovery_note
         self._log_token_usage(
             operation=operation,
-            direction="send",
-            content=prompt_text,
-            usage=self._usage_for_direction(usage_dict, "send"),
-            started_at=started_at,
-            finished_at=finished_at,
-            duration_ms=duration_ms,
-            char_count=len(prompt_text or ""),
-            hanzi_count=self._count_hanzi(prompt_text),
-            model=body_model,
-            gateway_result=gateway_result,
-        )
-        self._log_token_usage(
-            operation=operation,
-            direction="receive",
+            direction="request",
             content=content,
+            prompt_content=prompt_text,
             reasoning_content=reasoning,
             reasoning_tokens=reasoning_tokens,
-            usage=self._usage_for_direction(usage_dict, "receive"),
+            usage=usage_dict,
             started_at=started_at,
             finished_at=finished_at,
             duration_ms=duration_ms,
@@ -4242,7 +4321,15 @@ class DeepSeekChatGUI(QMainWindow):
             hanzi_count=self._count_hanzi(content),
             model=body_model,
             gateway_result=gateway_result,
+            final_failure_reason=failure_reason,
         )
+        if stream_error is not None and not cancelled:
+            raise RuntimeError(
+                f"生成连接中断或请求失败：{stream_error}\n{recovery_note}"
+                "可在 Token 日志双击本次记录查看已收到的正文和推理，随后重新生成。"
+            ) from stream_error
+        if cancelled:
+            return content, stats, True
         if emit_tokens:
             self._stream_signals.token.emit(self._format_chapter_stats_block(stats))
         return content, stats, False
@@ -4393,6 +4480,7 @@ class DeepSeekChatGUI(QMainWindow):
 
     def _on_password_changed(self, new_key: bytes) -> None:
         self._enc_key = new_key
+        self._display_history.storage.enc_key = new_key
         self._novel_manager._enc_key = new_key
         self._conversation_manager._enc_key = new_key
         self._character_book_manager._enc_key = new_key
@@ -4823,6 +4911,9 @@ class DeepSeekChatGUI(QMainWindow):
                     temperature=self._client.temperature,
                     max_tokens=self._client.max_tokens,
                 )
+                if task_cancel_requested(self._client._cancel_requested):
+                    self._stream_signals.finished.emit()
+                    return
                 raw = response.choices[0].message.content or ""
                 name_to_id = {speaker_name: speaker_id}
                 messages = parse_structured_reply(
@@ -4841,9 +4932,10 @@ class DeepSeekChatGUI(QMainWindow):
                 )
                 self._stream_signals.finished.emit()
             except Exception as error:
+                report_task_failure(str(error))
                 self._stream_signals.error.emit(str(error))
 
-        threading.Thread(target=run, daemon=True).start()
+        self._start_background_task('重生成角色发言', target=run, cancellable=True)
 
     def _update_role_session_label(self) -> None:
         if not hasattr(self, "_role_session_label"):
@@ -5025,6 +5117,9 @@ class DeepSeekChatGUI(QMainWindow):
             extensions=["fenced_code", "tables", "codehilite", "nl2br", "sane_lists"],
         )
         escaped = self._escape_for_js(notice_html)
+        if isinstance(self._display, DisplayHistoryView):
+            self._display.append_block("system", notice_html)
+            return
         self._display.page().runJavaScript(f"""
             (function() {{
                 var div = document.createElement('div');
@@ -5726,14 +5821,14 @@ class DeepSeekChatGUI(QMainWindow):
         )
         self._active_cont_style = self._resolve_generation_style(book_title, continuation=True)
 
-        threading.Thread(
+        self._start_background_task('生成续写章节',
             target=self._run_continuation,
             args=(
                 book_title, chapter_num, chapter_title, source_text,
                 requirement, word_count, plot, "", generation_target,
             ),
-            daemon=True,
-        ).start()
+            cancellable=True,
+        )
 
     def _on_cont_novel_imported(self, title: str) -> None:
         """续写面板：导入完成后刷新书架并加载设定到 UI"""
@@ -5829,7 +5924,7 @@ class DeepSeekChatGUI(QMainWindow):
             hasattr(self, "_agent_advisor_mode_check")
             and self._agent_advisor_mode_check.isChecked()
         )
-        return not advisor_checked and not self._agent_chapter_planning and not self._streaming
+        return not advisor_checked and not self._agent_chapter_planning and not self._streaming and not self._agent_advisor_running
 
     def _agent_chapter_regeneration_enabled(self) -> bool:
         request = getattr(self, "_current_agent_chapter_request", None)
@@ -5870,6 +5965,8 @@ class DeepSeekChatGUI(QMainWindow):
             )
 
     def _ask_agent_advisor_from_panel(self) -> None:
+        if self._agent_advisor_running or self._streaming:
+            return
         if not hasattr(self, "_agent_advisor_input"):
             return
         if self._novel_generation_mode != "agent":
@@ -6035,8 +6132,19 @@ class DeepSeekChatGUI(QMainWindow):
             QMessageBox.warning(self, "Agent 顾问", "请先选择或创建一本小说。")
             return
         self._create_book_with_defaults(title)
+        advisor_client = self._usage_logged_client("agent_advisor")
+        advisor_model = self._client.model
+        advisor_settings = dict(self._settings)
         self._agent_advisor_running = True
-        self._agent_advisor_status.setText("顾问正在读取章节、世界书和作者规划……")
+        self._last_advisor_result = None
+        self._agent_advisor_buffer = []
+        self._assistant_text_buffer = []
+        self._agent_advisor_render_timer.stop()
+        self._agent_stop_advisor_btn.setVisible(True)
+        self._agent_stop_advisor_btn.setEnabled(True)
+        self._agent_plan_preview.setPlainText("顾问正在读取资料……")
+        self._render_assistant_stream("顾问正在读取资料……")
+        self._agent_advisor_status.setText("顾问正在准备本地设定，其他资料将按需读取……")
         if hasattr(self, "_agent_ask_advisor_btn"):
             self._agent_ask_advisor_btn.setEnabled(False)
         self._agent_save_advice_btn.setEnabled(False)
@@ -6046,33 +6154,78 @@ class DeepSeekChatGUI(QMainWindow):
             if hasattr(self, "_agent_advisor_fiction_check") else True
         )
 
-        def run_advisor() -> None:
+        def run_advisor(handle) -> None:
             try:
                 from core.agent.advisor import AdvisorRequest, WritingAdvisorService
                 service = WritingAdvisorService(
                     self._novel_manager,
-                    self._usage_logged_client("agent_advisor"),
+                    advisor_client,
                     self._conversation_manager,
                 )
                 result = service.ask(AdvisorRequest(
                     book_title=title,
                     message=message,
-                    model=self._client.model,
-                    settings=dict(self._settings),
+                    model=advisor_model,
+                    settings=advisor_settings,
                     fiction_context=fiction_context,
-                ))
+                ), event_sink=self._stream_signals.agent_advisor_event.emit,
+                    cancel_requested=lambda: handle.cancelled)
+                if result.status == "failed":
+                    report_task_failure(result.error or "顾问回答失败")
                 self._stream_signals.agent_advisor_ready.emit(result)
             except Exception as exc:
+                report_task_failure(str(exc))
                 self._stream_signals.agent_advisor_error.emit(str(exc))
 
-        threading.Thread(target=run_advisor, daemon=True).start()
+        self._agent_advisor_handle = self._task_runner.start(
+            "Agent 写作顾问", run_advisor, cancellable=True, metadata={"desktop_worker": True})
+
+    def _cancel_agent_advisor(self) -> None:
+        if self._agent_advisor_running:
+            self._task_runner.cancel(self._agent_advisor_handle.task_id)
+            self._agent_stop_advisor_btn.setEnabled(False)
+            self._agent_advisor_status.setText("正在停止回答……")
+
+    def _on_agent_advisor_event(self, event) -> None:
+        if not self._agent_advisor_running:
+            return
+        if event.event_type == "context_preparing":
+            self._agent_advisor_status.setText("顾问正在准备本地设定与指定参考……")
+        elif event.event_type == "context_ready":
+            elapsed = int(event.payload.get("duration_ms", 0)) / 1000
+            chars = int(event.payload.get("chars", 0))
+            self._agent_advisor_status.setText(f"资料准备完成（{chars} 字，{elapsed:.1f} 秒），等待模型回答……")
+        elif event.event_type == "model_turn_started":
+            if self._agent_advisor_buffer and isinstance(getattr(self, "_display", None), DisplayHistoryView):
+                self._flush_agent_advisor_render()
+                self._display.begin_reply()
+            self._agent_advisor_buffer = []
+            self._agent_advisor_render_timer.stop()
+            self._agent_advisor_status.setText("顾问正在组织回答……")
+        elif event.event_type == "model_delta":
+            self._agent_advisor_buffer.append(event.payload.get("text", ""))
+            if not self._agent_advisor_render_timer.isActive():
+                self._agent_advisor_render_timer.start()
+            self._agent_advisor_status.setText("顾问正在回答……")
+        elif event.event_type == "tool_started":
+            self._agent_advisor_status.setText(f"顾问正在读取资料：{event.payload.get('tool_name', '')}")
+
+    def _flush_agent_advisor_render(self) -> None:
+        if self._agent_advisor_buffer:
+            text = "".join(self._agent_advisor_buffer)
+            self._assistant_text_buffer = [text]
+            self._render_assistant_stream(text)
+            self._agent_plan_preview.setPlainText("【顾问回答】\n" + text)
 
     def _on_agent_advisor_ready(self, result) -> None:
         self._agent_advisor_running = False
+        self._agent_advisor_render_timer.stop()
+        self._agent_stop_advisor_btn.setVisible(False)
         if hasattr(self, "_agent_ask_advisor_btn"):
             self._agent_ask_advisor_btn.setEnabled(True)
         self._last_advisor_result = result
-        answer = result.answer.strip()
+        answer = (result.answer or "".join(self._agent_advisor_buffer)).strip()
+        completed = result.status == "completed"
         no_answer = not answer
         if no_answer:
             answer = "顾问未返回有效回答。"
@@ -6095,21 +6248,30 @@ class DeepSeekChatGUI(QMainWindow):
             "\n\n### 引用来源\n" + "\n".join(answer_sources)
             if answer_sources else ""
         )
+        if not completed:
+            display_answer += "\n\n> " + ("回答已停止，以上内容未完成。" if result.status == "cancelled" else
+                                      "回答中断：" + (result.error or result.status))
         self._assistant_text_buffer = [display_answer]
         self._render_assistant_stream(display_answer)
         self._agent_advisor_status.setText(
-            (f"顾问未完成：{result.error or result.status}" if no_answer else
+            ("顾问已停止" if result.status == "cancelled" else
+             f"顾问未完成：{result.error or result.status}" if no_answer or not completed else
              f"顾问完成；工具调用 {len(result.tool_calls)} 次，来源 {len(result.sources)} 项。")
         )
         self._agent_plan_preview.setPlainText(
             "【顾问回答】\n" + answer +
             ("\n\n【引用来源】\n" + "\n".join(source_lines) if source_lines else "")
         )
-        self._agent_save_advice_btn.setEnabled(not no_answer)
-        self._agent_add_world_btn.setEnabled(not no_answer)
+        self._agent_save_advice_btn.setEnabled(not no_answer and completed)
+        self._agent_add_world_btn.setEnabled(not no_answer and completed)
 
     def _on_agent_advisor_error(self, error: str) -> None:
         self._agent_advisor_running = False
+        self._agent_advisor_render_timer.stop()
+        self._agent_stop_advisor_btn.setVisible(False)
+        self._flush_agent_advisor_render()
+        partial = "".join(self._agent_advisor_buffer)
+        self._render_assistant_stream((partial + "\n\n" if partial else "") + "回答中断：" + error)
         if hasattr(self, "_agent_ask_advisor_btn"):
             self._agent_ask_advisor_btn.setEnabled(True)
         self._agent_advisor_status.setText(f"顾问失败：{error}")
@@ -6152,9 +6314,10 @@ class DeepSeekChatGUI(QMainWindow):
                 ))
                 self._stream_signals.agent_world_plan_ready.emit(plan)
             except Exception as exc:
+                report_task_failure(str(exc))
                 self._stream_signals.agent_world_plan_error.emit(str(exc))
 
-        threading.Thread(target=run_world_plan, daemon=True).start()
+        self._start_background_task('Agent 世界书分析', target=run_world_plan, cancellable=False)
 
     def _on_agent_world_plan_ready(self, plan) -> None:
         self._agent_world_running = False
@@ -6322,9 +6485,10 @@ class DeepSeekChatGUI(QMainWindow):
                 plan = service.prepare(request)
                 self._stream_signals.agent_chapter_plan_ready.emit(request, plan, generation_target)
             except Exception as exc:
+                report_task_failure(str(exc))
                 self._stream_signals.agent_chapter_plan_error.emit(str(exc))
 
-        threading.Thread(target=run_plan, daemon=True).start()
+        self._start_background_task('Agent 章节规划', target=run_plan, cancellable=False)
 
     def _on_agent_chapter_plan_ready(self, request, plan, generation_target) -> None:
         self._agent_chapter_planning = False
@@ -6393,7 +6557,7 @@ class DeepSeekChatGUI(QMainWindow):
         self._append_user_message(
             f"Agent {action}第{request.chapter_num}章：{request.chapter_title}"
         )
-        threading.Thread(
+        self._start_background_task('Agent 章节生成',
             target=self._run_chapter_generation,
             args=(request.book_title, request.chapter_title, request.plot, request.target_words, generation_target),
             kwargs={
@@ -6401,8 +6565,8 @@ class DeepSeekChatGUI(QMainWindow):
                 "agent_plan": plan,
                 "agent_regeneration": regeneration,
             },
-            daemon=True,
-        ).start()
+            cancellable=True,
+        )
 
     def _on_agent_regenerate_current_plan(self) -> None:
         if not self._agent_chapter_regeneration_enabled():
@@ -6489,15 +6653,18 @@ class DeepSeekChatGUI(QMainWindow):
                 result = WorldBibleMaintenanceService(self._novel_manager).retry(
                     self._usage_logged_client("agent_world_maintenance_retry"), title, task_id
                 )
+                if result.status != "completed":
+                    report_task_failure(result.error or result.status)
                 self._stream_signals.token.emit(
                     "\n世界书维护重试" + ("成功。\n" if result.status == "completed" else f"仍待处理：{result.error}\n")
                 )
             except Exception as exc:
+                report_task_failure(exc)
                 self._stream_signals.token.emit(f"\n世界书维护重试失败：{exc}\n")
             finally:
                 self._stream_signals.agent_maintenance_changed.emit(title)
 
-        threading.Thread(target=retry, daemon=True).start()
+        self._start_background_task('重试世界书维护', target=retry, cancellable=False)
 
     def _on_agent_maintenance_changed(self, title: str) -> None:
         self._agent_maintenance_running = False
@@ -6570,11 +6737,11 @@ class DeepSeekChatGUI(QMainWindow):
         plot_content = self._plot_edit.toPlainText().strip()
         target_words = self._chapter_word_count.value()
 
-        threading.Thread(
+        self._start_background_task('生成小说章节',
             target=self._run_chapter_generation,
             args=(title, chapter_title, plot_content, target_words, generation_target),
-            daemon=True,
-        ).start()
+            cancellable=True,
+        )
 
     def _build_chapter_prompt(
         self,
@@ -6809,7 +6976,7 @@ class DeepSeekChatGUI(QMainWindow):
                 ),
                     progress=progress,
                     repair_change_callback=show_repair_changes,
-                    cancelled=lambda: bool(self._client._cancel_requested),
+                    cancelled=lambda: bool(task_cancel_requested(self._client._cancel_requested)),
                 )
                 report = supervised.report
                 self._stream_signals.token.emit(
@@ -6839,7 +7006,7 @@ class DeepSeekChatGUI(QMainWindow):
                 max_repair_rounds=max_repair_rounds,
                 progress=progress,
                 repair_change_callback=show_repair_changes,
-                cancelled=lambda: bool(self._client._cancel_requested),
+                cancelled=lambda: bool(task_cancel_requested(self._client._cancel_requested)),
             )
             fulfilled = sum(1 for item in result.outline_items if item.get("status") == "fulfilled")
             total = len(result.outline_items)
@@ -6857,7 +7024,7 @@ class DeepSeekChatGUI(QMainWindow):
             show_local_evaluation(report)
             return final_content, report
         except Exception as e:
-            if self._client and self._client._cancel_requested:
+            if self._client and task_cancel_requested(self._client._cancel_requested):
                 self._stream_signals.token.emit("[Supervision] 已取消；原章节正文保持不变。\n")
                 return content, {
                     "status": "cancelled", "audit_failed": False, "error": "监督已取消",
@@ -7074,7 +7241,7 @@ class DeepSeekChatGUI(QMainWindow):
             )
             if style_selection_report:
                 supervision_report["style_candidate_selection"] = style_selection_report
-            if self._client._cancel_requested:
+            if task_cancel_requested(self._client._cancel_requested):
                 self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
                 self._stream_signals.finished.emit()
                 return
@@ -7129,7 +7296,7 @@ class DeepSeekChatGUI(QMainWindow):
                     f"\n⚡ 该章节已有旧版本 v{old_active}。请点击右侧「⚙ 章节管理」按钮选择使用哪个版本。\n"
                 )
 
-            if self._client._cancel_requested and agent_plan is None:
+            if agent_plan is None and task_cancel_requested(self._client._cancel_requested):
                 self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
                 self._stream_signals.finished.emit()
                 return
@@ -7175,7 +7342,7 @@ class DeepSeekChatGUI(QMainWindow):
                         f"⚠️ 卷级导演状态更新跳过：{director_error}\n"
                     )
 
-            if self._client._cancel_requested and agent_plan is None:
+            if agent_plan is None and task_cancel_requested(self._client._cancel_requested):
                 self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
                 self._stream_signals.finished.emit()
                 return
@@ -7289,6 +7456,7 @@ class DeepSeekChatGUI(QMainWindow):
                     workspace.storage.write_json(run_path, run_record)
                 except Exception:
                     pass
+            report_task_failure(f"章节生成失败: {e}")
             self._stream_signals.error.emit(f"章节生成失败: {e}")
 
     # ========== 📄 续写小说事件 ==========
@@ -7476,14 +7644,14 @@ class DeepSeekChatGUI(QMainWindow):
         )
         self._active_cont_style = self._resolve_generation_style(book_title, continuation=True)
 
-        threading.Thread(
+        self._start_background_task('续写小说',
             target=self._run_continuation,
             args=(
                 book_title, chapter_num, chapter_title, source_text,
                 requirement, word_count, plot, "", generation_target,
             ),
-            daemon=True,
-        ).start()
+            cancellable=True,
+        )
 
     def _run_continuation(
         self,
@@ -7699,7 +7867,7 @@ class DeepSeekChatGUI(QMainWindow):
             if style_selection_report:
                 supervision_report["style_candidate_selection"] = style_selection_report
 
-            if self._client._cancel_requested:
+            if task_cancel_requested(self._client._cancel_requested):
                 self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
                 self._stream_signals.finished.emit()
                 return
@@ -7741,7 +7909,7 @@ class DeepSeekChatGUI(QMainWindow):
                 style_strength=resolved_style.strength,
             )
 
-            if self._client._cancel_requested:
+            if task_cancel_requested(self._client._cancel_requested):
                 self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
                 self._stream_signals.finished.emit()
                 return
@@ -7757,7 +7925,7 @@ class DeepSeekChatGUI(QMainWindow):
             self._novel_manager.rebuild_plot_summary_from_tree(book_title)
             self._stream_signals.token.emit("📋 剧情摘要已绑定至章节树。\n")
 
-            if self._client._cancel_requested:
+            if task_cancel_requested(self._client._cancel_requested):
                 self._stream_signals.token.emit("\n\n⏹️ 已取消\n")
                 self._stream_signals.finished.emit()
                 return
@@ -7794,11 +7962,22 @@ class DeepSeekChatGUI(QMainWindow):
             )
             self._stream_signals.finished.emit()
         except Exception as e:
+            report_task_failure(f"续写失败: {e}")
             self._stream_signals.error.emit(f"续写失败: {e}")
 
     # ========== 发送消息 ==========
 
+    def _open_image_reference(self, target) -> None:
+        from ui.image_reference_dialog import ImageReferenceDialog
+        dialog = ImageReferenceDialog(self._model_gateway, self)
+        if dialog.exec() == QDialog.DialogCode.Accepted:
+            reference = dialog.content.toPlainText().strip()
+            if reference:
+                target.setPlainText(target.toPlainText().rstrip() + "\n\n【图片参考（非已发生剧情）】\n" + reference)
+
     def _on_send(self) -> None:
+        if self._agent_advisor_running:
+            return
         """发送按钮点击处理"""
         if self._streaming:
             # streaming 卡死超过 180 秒则强制复位，允许重新发送
@@ -7866,33 +8045,31 @@ class DeepSeekChatGUI(QMainWindow):
         self._assistant_text_buffer = []
         self._last_chat_user_input = user_input
 
-        threading.Thread(
+        self._start_background_task('生成聊天回复',
             target=self._run_stream,
             args=(user_input,),
-            daemon=True,
-        ).start()
+            cancellable=True,
+        )
 
     def _run_stream(self, user_input: str) -> None:
         """后台线程：调用流式 API"""
         task_id = self._begin_api_task(self._api_operation_label("chat"))
         try:
+            reply_parts = []
             for token in self._client.chat_stream(user_input):
+                reply_parts.append(token)
                 self._stream_signals.token.emit(token)
+            task_cancel_requested(self._client._cancel_requested)
             usage = self._client.last_usage
             strategy_name = self._client.strategy.get_name()
-            self._token_log_manager.add_entry(
-                operation="chat",
-                direction="send",
-                strategy=strategy_name,
-                model=self._client.model,
-                content=user_input,
-                usage=usage,
+            assistant_content = "".join(reply_parts)
+            self._log_token_usage(
+                operation="chat", direction="request", strategy=strategy_name,
+                model=self._client.model, content=assistant_content,
+                prompt_content=user_input, usage=usage,
+                gateway_result=self._client.last_gateway_result,
+                reasoning_content=getattr(self._client.last_gateway_result, "reasoning_content", "") or "",
             )
-            assistant_messages = [
-                m.get("content", "") for m in self._client.export_messages()
-                if m.get("role") == "assistant"
-            ]
-            assistant_content = assistant_messages[-1] if assistant_messages else ""
             if isinstance(self._client.strategy, RolePlayStrategy):
                 branch = self._chat_state.active_branch()
                 message_count_before_parse = len(branch.messages)
@@ -7918,14 +8095,6 @@ class DeepSeekChatGUI(QMainWindow):
                     self._stream_signals.token.emit(
                         f"\n\n⚠️ 结构化群聊处理失败，已按原文显示：{responder_error}\n"
                     )
-            self._token_log_manager.add_entry(
-                operation="chat",
-                direction="receive",
-                strategy=strategy_name,
-                model=self._client.model,
-                content=assistant_content,
-                usage=usage,
-            )
             should_sync_character_book = (
                 isinstance(self._client.strategy, RolePlayStrategy)
                 and bool(self._participant_character_ids)
@@ -7955,12 +8124,14 @@ class DeepSeekChatGUI(QMainWindow):
                 }
             self._stream_signals.finished.emit()
             if sync_context:
-                threading.Thread(
+                self._start_background_task('同步人物书',
                     target=self._sync_character_book_after_chat,
                     args=(user_input, assistant_content, sync_context),
-                    daemon=True,
-                ).start()
+                    cancellable=False,
+                )
         except Exception as e:
+            task_cancel_requested(self._client._cancel_requested)
+            report_task_failure(str(e))
             self._stream_signals.error.emit(str(e))
         finally:
             self._finish_api_task(task_id)
@@ -8374,6 +8545,8 @@ class DeepSeekChatGUI(QMainWindow):
         """主线程：接收一个 token"""
         if not self._assistant_text_buffer:
             self._assistant_char_count = 0
+            if isinstance(self._display, DisplayHistoryView):
+                self._display.begin_reply()
         self._assistant_text_buffer.append(token)
         self._assistant_char_count += len(token)
         if not (
@@ -8515,6 +8688,9 @@ class DeepSeekChatGUI(QMainWindow):
         """追加用户消息到显示区域"""
         escaped = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         escaped = escaped.replace("\n", "<br>")
+        if isinstance(self._display, DisplayHistoryView):
+            self._display.append_block("user", f"<strong>🧑 {html.escape(self._sender_name or '你')}：</strong><br>{escaped}")
+            return
         js_safe = self._escape_for_js(escaped)
         script = f"""
             (function() {{
@@ -8538,6 +8714,9 @@ class DeepSeekChatGUI(QMainWindow):
             text,
             extensions=["fenced_code", "tables", "codehilite", "nl2br", "sane_lists"],
         )
+        if isinstance(self._display, DisplayHistoryView):
+            self._display.update_reply(f"<strong>💬 {html.escape(self._assistant_display_name())}：</strong><br>{html_body}")
+            return
         escaped_body = self._escape_for_js(html_body)
 
         script = f"""
@@ -8567,6 +8746,9 @@ class DeepSeekChatGUI(QMainWindow):
             text,
             extensions=["fenced_code", "tables", "codehilite", "nl2br", "sane_lists"],
         )
+        if isinstance(self._display, DisplayHistoryView):
+            self._display.update_reply(f"<strong>💬 {html.escape(self._assistant_display_name())}：</strong><br>{html_body}", callback)
+            return
         escaped_body = self._escape_for_js(html_body)
 
         script = f"""
@@ -8591,6 +8773,7 @@ class DeepSeekChatGUI(QMainWindow):
 
     def _render_structured_conversation(self, messages: list[ChatMessage], callback=None) -> None:
         body_parts = []
+        history_blocks = []
         for message in messages[-100:]:
             content = message.content or ""
             if message.action:
@@ -8621,6 +8804,11 @@ class DeepSeekChatGUI(QMainWindow):
                 f'<div class="{css_class}" data-message-id="{message.message_id}">'
                 f"<strong>{icon} {speaker}：</strong><br>{html_body}</div>"
             )
+            kind = {"user-msg": "user", "system-msg": "system", "sender-behavior-msg": "behavior"}.get(css_class, "assistant")
+            history_blocks.append((kind, f"<strong>{icon} {speaker}：</strong><br>{html_body}", f"structured:{message.message_id}"))
+        if isinstance(self._display, DisplayHistoryView):
+            self._display.merge_blocks(history_blocks, callback)
+            return
         full_html = (
             f"<html><head>{CURRENT_HTML_STYLE}</head><body>{''.join(body_parts)}"
             f"<script>{REPLY_JUMP_NAV_SCRIPT}rebuildReplyJumpNav();</script></body></html>"
@@ -8913,12 +9101,12 @@ class DeepSeekChatGUI(QMainWindow):
             self._append_user_message(f"📂 批量导入章节 → {title}")
             self._cont_analysis_source = source_text
             self._cont_analysis_source_path = source_folder
-            threading.Thread(
+            self._start_background_task('批量导入章节',
                 target=self._run_batch_folder_import,
                 args=(title, source_folder, self._client.model, self._usage_logged_client("batch_import_analysis")),
                 kwargs={"files_list": result["files"], "xp_mode": self._cont_xp_mode_check.isChecked()},
-                daemon=True,
-            ).start()
+                cancellable=True,
+            )
             return
 
         # 文件模式：使用确认后的段落直接进入分析
@@ -9008,7 +9196,7 @@ class DeepSeekChatGUI(QMainWindow):
                 world_bible = WorldBible()
                 meta = self._novel_manager.load_meta(title)
                 for idx, (section_title, content) in enumerate(sections, 1):
-                    if self._client._cancel_requested:
+                    if task_cancel_requested(self._client._cancel_requested):
                         si.token.emit(f"\n⏹️ 已取消（已处理 {idx - 1}/{len(sections)} 个章节节点）\n")
                         si.finished.emit()
                         return
@@ -9144,9 +9332,10 @@ class DeepSeekChatGUI(QMainWindow):
                 import traceback
                 self._stream_signals.token.emit(f"\n❌ 分析失败: {e}\n")
                 self._stream_signals.token.emit(f"\n```\n{traceback.format_exc()}\n```\n")
+                report_task_failure(f"分析失败: {e}")
                 self._stream_signals.error.emit(f"分析失败: {e}")
 
-        threading.Thread(target=_run, daemon=True).start()
+        self._start_background_task('分析文档并导入', target=_run, cancellable=True)
 
     # ========== 📂 批量导入章节（文件夹模式） ==========
 
@@ -9211,6 +9400,7 @@ class DeepSeekChatGUI(QMainWindow):
 
                 if not raw_files:
                     si.token.emit("❌ 文件夹中没有找到数字命名的文本文件（如 1.txt, 2.txt...）\n")
+                    report_task_failure("文件夹中未找到数字命名的文件")
                     self._stream_signals.error.emit("文件夹中未找到数字命名的文件")
                     return
 
@@ -9234,6 +9424,7 @@ class DeepSeekChatGUI(QMainWindow):
 
             if not chapter_files:
                 si.token.emit("❌ 没有可处理的章节文件。\n")
+                report_task_failure("没有可处理的章节文件")
                 self._stream_signals.error.emit("没有可处理的章节文件")
                 return
 
@@ -9242,7 +9433,7 @@ class DeepSeekChatGUI(QMainWindow):
             world_bible = WorldBible()
 
             for idx, (chapter_num, fname, content) in enumerate(chapter_files, 1):
-                if self._client._cancel_requested:
+                if task_cancel_requested(self._client._cancel_requested):
                     si.token.emit(f"\n⏹️ 批量导入已取消（已处理 {idx-1}/{total} 章）\n")
                     break
 
@@ -9295,7 +9486,7 @@ class DeepSeekChatGUI(QMainWindow):
 
                 si.token.emit(f"    ✅ 世界书已更新 | 摘要已绑定章节树\n")
 
-            if self._client._cancel_requested:
+            if task_cancel_requested(self._client._cancel_requested):
                 si.token.emit(f"\n⏹️ 已取消（已处理 {total} 章中的部分章节）\n")
                 self._stream_signals.novel_imported.emit(title)
                 return
@@ -9360,6 +9551,7 @@ class DeepSeekChatGUI(QMainWindow):
             import traceback
             self._stream_signals.token.emit(f"\n❌ 批量导入失败: {e}\n")
             self._stream_signals.token.emit(f"\n```\n{traceback.format_exc()}\n```\n")
+            report_task_failure(f"批量导入失败: {e}")
             self._stream_signals.error.emit(f"批量导入失败: {e}")
         else:
             self._stream_signals.finished.emit()
@@ -9412,7 +9604,7 @@ class DeepSeekChatGUI(QMainWindow):
 
         def _run():
             try:
-                if self._client._cancel_requested:
+                if task_cancel_requested(self._client._cancel_requested):
                     self._stream_signals.finished.emit()
                     return
                 if self._agent_continuation_enabled():
@@ -9444,9 +9636,10 @@ class DeepSeekChatGUI(QMainWindow):
                 self._stream_signals.finished.emit()
                 self._stream_signals.directions_ready.emit(directions, setting, plot_outline, word_count)
             except Exception as e:
+                report_task_failure(f"方向建议失败: {e}")
                 self._stream_signals.error.emit(f"方向建议失败: {e}")
 
-        threading.Thread(target=_run, daemon=True).start()
+        self._start_background_task('分析续写方向', target=_run, cancellable=True)
 
     def _show_direction_selector(self, directions: list, setting: str, plot_outline: str, word_count: int):
         """在主线程显示方向选择对话框"""
@@ -9511,14 +9704,14 @@ class DeepSeekChatGUI(QMainWindow):
         self._assistant_text_buffer = []
         self._append_user_message(f"📝 续写第{chapter_num}章：{chapter_title}")
 
-        threading.Thread(
+        self._start_background_task('生成续写章节',
             target=self._run_continuation,
             args=(
                 book_title, chapter_num, chapter_title, source_text,
                 requirement, word_count, plot, setting, generation_target,
             ),
-            daemon=True,
-        ).start()
+            cancellable=True,
+        )
 
     # ========== 📋 左侧面板续写辅助按钮（替代弹窗中的功能） ==========
 
@@ -9750,7 +9943,7 @@ class DeepSeekChatGUI(QMainWindow):
                 )
                 self._close_btn.setText("⏳ 同步记忆中...")
                 self._close_btn.setEnabled(False)
-                threading.Thread(target=self._do_rebuild_summary, daemon=True).start()
+                self.parent()._start_background_task('同步章节记忆', target=self._do_rebuild_summary, cancellable=False)
 
             def _do_rebuild_summary(self):
                 try:
@@ -9762,6 +9955,7 @@ class DeepSeekChatGUI(QMainWindow):
                     )
                     self._rebuild_done_signal.emit()
                 except Exception as e:
+                    report_task_failure(str(e))
                     self._rebuild_error_signal.emit(str(e))
 
             def _on_rebuild_done(self):
@@ -9792,7 +9986,7 @@ class DeepSeekChatGUI(QMainWindow):
                 self._rebuild_success_message = "世界书已从全部活跃路径正文重新提取。"
                 self._close_btn.setText("⏳ 重提世界书中...")
                 self._close_btn.setEnabled(False)
-                threading.Thread(target=self._do_force_extract_all_world_bible, daemon=True).start()
+                self.parent()._start_background_task('提取全部世界书', target=self._do_force_extract_all_world_bible, cancellable=False)
 
             def _do_force_extract_all_world_bible(self):
                 try:
@@ -9805,6 +9999,7 @@ class DeepSeekChatGUI(QMainWindow):
                     )
                     self._rebuild_done_signal.emit()
                 except Exception as e:
+                    report_task_failure(str(e))
                     self._rebuild_error_signal.emit(str(e))
 
             def _on_force_extract_current_world_bible(self):
@@ -9827,11 +10022,11 @@ class DeepSeekChatGUI(QMainWindow):
                 )
                 self._close_btn.setText("⏳ 重提当前章节中...")
                 self._close_btn.setEnabled(False)
-                threading.Thread(
+                self.parent()._start_background_task('提取章节世界书',
                     target=self._do_force_extract_current_world_bible,
                     args=(node_id,),
-                    daemon=True,
-                ).start()
+                    cancellable=False,
+                )
 
             def _do_force_extract_current_world_bible(self, node_id: str):
                 try:
@@ -9844,6 +10039,7 @@ class DeepSeekChatGUI(QMainWindow):
                     )
                     self._rebuild_done_signal.emit()
                 except Exception as e:
+                    report_task_failure(str(e))
                     self._rebuild_error_signal.emit(str(e))
 
             def _on_regenerate(self):
@@ -9889,7 +10085,7 @@ class DeepSeekChatGUI(QMainWindow):
                 _global_prompt = self._client.global_user_prompt
                 _xp_mode = bool(self._novel_mgr.load_meta(self._book_title).xp_mode)
 
-                threading.Thread(target=self._do_regenerate, args=(data, _bg, _bio, _demand, _global_prompt, _xp_mode), daemon=True).start()
+                self.parent()._start_background_task('重写章节', target=self._do_regenerate, args=(data, _bg, _bio, _demand, _global_prompt, _xp_mode), cancellable=True)
 
             def _do_regenerate(self, data: dict, bg: str, bio: str, demand: str, global_prompt: str = "", xp_mode: bool = False) -> None:
                 try:
@@ -10026,6 +10222,7 @@ class DeepSeekChatGUI(QMainWindow):
                     if cancelled:
                         parent._stream_signals.token.emit("\n\n⏹️ 已取消\n")
                         parent._stream_signals.finished.emit()
+                        report_task_failure("已取消生成。")
                         self._regenerate_error_signal.emit("已取消生成。")
                         return
 
@@ -10105,6 +10302,7 @@ class DeepSeekChatGUI(QMainWindow):
                     self._regenerate_done_signal.emit(chapter_num, saved_version, file_path)
 
                 except Exception as e:
+                    report_task_failure(str(e))
                     self._regenerate_error_signal.emit(str(e))
 
             def _on_regenerate_done(self, chapter_num: int, saved_version: int, file_path: str) -> None:
@@ -10153,7 +10351,7 @@ class DeepSeekChatGUI(QMainWindow):
                     self._rebuild_success_message = "版本已删除，剧情记忆和世界书已按剩余活跃路径同步。"
                     self._close_btn.setText("⏳ 同步记忆中...")
                     self._close_btn.setEnabled(False)
-                    threading.Thread(target=self._do_rebuild_summary, daemon=True).start()
+                    self.parent()._start_background_task('重建章节记忆', target=self._do_rebuild_summary, cancellable=False)
 
         dialog = ChapterTreeDialog(
             self, self._novel_manager, title, self._client,
@@ -10627,8 +10825,9 @@ class DeepSeekChatGUI(QMainWindow):
     def _render_full_conversation(self, messages: list[dict]) -> None:
         """拼接完整 HTML 后一次性渲染，避免 setHtml + runJavaScript 时序问题"""
         body_parts = []
+        history_blocks = []
         display_messages = messages[-50:] if len(messages) > 50 else messages
-        for msg in display_messages:
+        for index, msg in enumerate(display_messages):
             role = msg.get("role", "")
             content = msg.get("content", "")
             if role == "system":
@@ -10651,6 +10850,14 @@ class DeepSeekChatGUI(QMainWindow):
                     .replace(">", "&gt;")
                 )
                 body_parts.append(f'<div class="assistant-msg"><strong>💬 {assistant_name}：</strong><br>{html_body}</div>')
+
+            if role in {"user", "assistant", "system"}:
+                body = body_parts[-1].split(">", 1)[1].rsplit("</div>", 1)[0]
+                history_blocks.append((role, body, f"conversation:{self._current_conversation_id}:{len(messages) - len(display_messages) + index}"))
+
+        if isinstance(self._display, DisplayHistoryView):
+            self._display.merge_blocks(history_blocks)
+            return
 
         full_html = (
             f"<html><head>{CURRENT_HTML_STYLE}</head><body>{''.join(body_parts)}"

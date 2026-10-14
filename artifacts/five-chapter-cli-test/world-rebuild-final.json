@@ -1,0 +1,24 @@
+{
+  "schema_version": 1,
+  "book": {
+    "book_id": "94dd64d97a2f",
+    "title": "最后一班潮汐邮船（CLI实测-6d3119）"
+  },
+  "report": {
+    "active_chapters": 5,
+    "snapshot_count": 4,
+    "snapshot_missing_count": 1,
+    "snapshot_skipped_count": 1,
+    "missing_snapshots": [
+      "ch0005_v001"
+    ],
+    "extracted_count": 0,
+    "missing_chapters": [],
+    "failed_chapters": [],
+    "override_count": 2,
+    "fact_count": 116,
+    "warning_count": 6,
+    "duplicate_candidate_count": 0,
+    "schema_version": 2
+  }
+}

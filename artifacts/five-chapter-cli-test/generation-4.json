@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "book": {
+    "book_id": "94dd64d97a2f",
+    "title": "最后一班潮汐邮船（CLI实测-6d3119）"
+  },
+  "session_id": "session_e50551754dec4f7ea6c27d357b90d6b3",
+  "run_id": "run_6f50464d3d5442c5a2c8a03f0cc52ed8",
+  "status": "waiting_approval",
+  "terminal_reason": "approval_required",
+  "backend": {
+    "requested": "legacy",
+    "active": "legacy",
+    "fallback_reason": ""
+  },
+  "model": "deepseek-flash",
+  "target": {
+    "chapter_title": "最后一次靠岸",
+    "target_words": 1600
+  },
+  "change_set_ids": [
+    "changes_35dc6bf8e460403f804cd32abde806d0"
+  ],
+  "artifact_ids": [
+    "artifact_6bc61a8d1ad2460185bfe76f56faa029"
+  ],
+  "requires_human_approval": true,
+  "final_text": "Draft saved. Let me verify the constraints before proposing.",
+  "warning": ""
+}

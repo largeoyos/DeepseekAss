@@ -39,9 +39,10 @@ class TaskManagerTests(unittest.TestCase):
         def task(handle):
             calls["count"] += 1
             handle.cancel()
+            self.assertTrue(handle.cancelled)
             return "cancelled"
 
-        first = runner.start("retryable", task, retryable=True)
+        first = runner.start("retryable", task, retryable=True, cancellable=True)
         self.wait_done(runner, first.task_id)
         self.assertEqual("cancelled", runner.get_record(first.task_id).status)
         second = runner.retry(first.task_id)
@@ -57,7 +58,7 @@ class TaskManagerTests(unittest.TestCase):
                 time.sleep(0.005)
             raise RuntimeError("stream interrupted after cancellation")
 
-        handle = runner.start("cancellable", task)
+        handle = runner.start("cancellable", task, cancellable=True)
         self.assertTrue(runner.cancel(handle.task_id))
         self.wait_done(runner, handle.task_id)
         self.assertEqual("cancelled", runner.get_record(handle.task_id).status)

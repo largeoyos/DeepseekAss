@@ -204,7 +204,11 @@ class OpenAIChatAdapter(BaseModelAdapter):
         client = self.client_factory(request)
         try:
             stream = client.chat.completions.create(**self._kwargs(request, stream=True))
-        except Exception:
+        except Exception as exc:
+            # Only remove usage options when the provider explicitly rejects them.
+            # Connection failures belong to the gateway's bounded retry policy.
+            if getattr(exc, "status_code", None) not in {400, 422} or "stream_options" not in str(exc).lower():
+                raise
             kwargs = self._kwargs(request, stream=True)
             kwargs.pop("stream_options", None)
             stream = client.chat.completions.create(**kwargs)
@@ -212,6 +216,7 @@ class OpenAIChatAdapter(BaseModelAdapter):
         reasoning: list[str] = []
         usage = Usage()
         finish_reason = ""
+        tool_fragments = {}
         try:
             for chunk in stream:
                 if _get(chunk, "usage") is not None:
@@ -221,6 +226,13 @@ class OpenAIChatAdapter(BaseModelAdapter):
                     continue
                 finish_reason = str(_get(choices[0], "finish_reason", finish_reason) or finish_reason)
                 delta = _get(choices[0], "delta", {}) or {}
+                for call in _get(delta, "tool_calls", []) or []:
+                    index = _get(call, "index", 0)
+                    item = tool_fragments.setdefault(index, {"id": "", "name": "", "arguments": ""})
+                    item["id"] += str(_get(call, "id", "") or "")
+                    function = _get(call, "function", {}) or {}
+                    item["name"] += str(_get(function, "name", "") or "")
+                    item["arguments"] += str(_get(function, "arguments", "") or "")
                 reasoning_delta = str(_get(delta, "reasoning_content", "") or "")
                 text_delta = str(_get(delta, "content", "") or "")
                 if reasoning_delta:
@@ -235,6 +247,8 @@ class OpenAIChatAdapter(BaseModelAdapter):
                 close_stream()
         yield StreamEvent("completed", result=ModelResult(
             content="".join(content), reasoning_content="".join(reasoning),
+            tool_calls=[ToolCall(item["id"], item["name"], json.loads(item["arguments"] or "{}"))
+                        for _, item in sorted(tool_fragments.items())],
             usage=usage, finish_reason=finish_reason,
         ))
 
@@ -275,7 +289,18 @@ def _responses_input(messages: list[dict]) -> tuple[str, list[dict]]:
                 "output": str(item.get("content") or ""),
             })
             continue
-        content = str(item.get("content") or "")
+        content = item.get("content") or ""
+        if isinstance(content, list):
+            parts = []
+            for part in content:
+                if part.get("type") == "text":
+                    parts.append({"type": "input_text", "text": part.get("text", "")})
+                elif part.get("type") == "image_url":
+                    image = part["image_url"]
+                    parts.append({"type": "input_image", "image_url": image["url"], "detail": image.get("detail", "auto")})
+                else:
+                    raise ModelCapabilityError("Responses 不支持该消息内容类型")
+            content = parts
         if content:
             inputs.append({"role": role, "content": content})
         for call in item.get("tool_calls") or []:
@@ -386,17 +411,24 @@ class OpenAIResponsesAdapter(BaseModelAdapter):
         content: list[str] = []
         reasoning: list[str] = []
         completed = None
-        for event in stream:
-            event_type = str(_get(event, "type", "") or "")
-            delta = str(_get(event, "delta", "") or "")
-            if event_type == "response.output_text.delta" and delta:
-                content.append(delta)
-                yield StreamEvent("text_delta", delta)
-            elif "reasoning" in event_type and event_type.endswith(".delta") and delta:
-                reasoning.append(delta)
-                yield StreamEvent("reasoning_delta", delta)
-            elif event_type == "response.completed":
-                completed = _get(event, "response")
+        try:
+            for event in stream:
+                event_type = str(_get(event, "type", "") or "")
+                delta = str(_get(event, "delta", "") or "")
+                if event_type == "response.output_text.delta" and delta:
+                    content.append(delta)
+                    yield StreamEvent("text_delta", delta)
+                elif "reasoning" in event_type and event_type.endswith(".delta") and delta:
+                    reasoning.append(delta)
+                    yield StreamEvent("reasoning_delta", delta)
+                elif event_type == "response.completed":
+                    completed = _get(event, "response")
+                elif event_type in {"response.failed", "error"}:
+                    raise RuntimeError(str(_get(event, "error", None) or "流式响应失败"))
+        finally:
+            close = getattr(stream, "close", None)
+            if callable(close):
+                close()
         result = self._decode(completed, request) if completed is not None else ModelResult()
         if not result.content:
             result.content = "".join(content)
@@ -431,6 +463,20 @@ class OllamaNativeAdapter(BaseModelAdapter):
             normalized = {key: value for key, value in item.items() if key in {
                 "role", "content", "thinking", "tool_calls", "tool_name"
             }}
+            if isinstance(normalized.get("content"), list):
+                texts, images = [], []
+                for part in normalized["content"]:
+                    if part.get("type") == "text":
+                        texts.append(part.get("text", ""))
+                    elif part.get("type") == "image_url":
+                        url = part["image_url"]["url"]
+                        if not url.startswith("data:image/") or ";base64," not in url:
+                            raise ModelCapabilityError("Ollama 图片必须使用本地图片的 base64 数据")
+                        images.append(url.split(";base64,", 1)[1])
+                    else:
+                        raise ModelCapabilityError("Ollama 不支持该消息内容类型")
+                normalized["content"] = "\n".join(texts)
+                normalized["images"] = images
             if item.get("role") == "tool" and item.get("tool_call_id"):
                 normalized.setdefault("tool_name", str(item.get("name") or item.get("tool_call_id")))
             messages.append(normalized)
@@ -505,6 +551,7 @@ class OllamaNativeAdapter(BaseModelAdapter):
         content: list[str] = []
         reasoning: list[str] = []
         final_data: dict = {}
+        tool_calls = []
         with self.client_factory(request) as client:
             with client.stream("POST", "/api/chat", json=self._payload(request, stream=True)) as response:
                 response.raise_for_status()
@@ -514,6 +561,7 @@ class OllamaNativeAdapter(BaseModelAdapter):
                     data = json.loads(line)
                     final_data = data
                     message = dict(data.get("message") or {})
+                    tool_calls.extend(message.get("tool_calls") or [])
                     thinking = str(message.get("thinking") or "")
                     text = str(message.get("content") or "")
                     if thinking:
@@ -522,9 +570,9 @@ class OllamaNativeAdapter(BaseModelAdapter):
                     if text:
                         content.append(text)
                         yield StreamEvent("text_delta", text)
+        final_data["message"] = {**dict(final_data.get("message") or {}), "tool_calls": tool_calls}
         result = self._decode(final_data, request)
-        if not result.content:
-            result.content = "".join(content)
+        result.content = "".join(content)
         if not result.reasoning_content:
             result.reasoning_content = "".join(reasoning)
         yield StreamEvent("completed", result=result)

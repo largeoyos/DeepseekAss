@@ -1,0 +1,130 @@
+{
+  "schema_version": 1,
+  "book": {
+    "book_id": "94dd64d97a2f",
+    "title": "最后一班潮汐邮船（CLI实测-6d3119）"
+  },
+  "query": "沈砚",
+  "results": [
+    {
+      "id": "char_a569f45147f55416",
+      "type": "character",
+      "name": "沈砚",
+      "snippet": "{\"id\": \"char_a569f45147f55416\", \"name\": \"沈砚\", \"aliases\": [\"小沈\"], \"traits\": \"二十九岁，雾港邮局的临时邮差，干了两年仍是临时。习惯回避争执，擅长辨认旧邮戳和维修机械。手指在信封边缘上滑过去，像摸惯了的活。性格内敛，不接话，不抬头，但会默默行动。对父亲的事敏感，不愿被人劝阻。\\n二十九岁，雾港邮局的临时邮差。习惯回避争执，擅长辨认旧邮戳和维修机械。身上带着一封旧信，邮戳缺了一齿。在冲突中会先一步行动保护证据，即使受伤也不松手。\\n二十九岁，雾港邮局的临时邮差。习惯回避争执，擅长辨认旧邮戳和维修机械。左手肋骨受伤，行动时护着左边肋骨。做事果断，能迅速判断优先级（如放弃拍片子直接找周伯）。\\n二十九岁，雾港邮局的临时邮差。习惯回避争执，擅长辨认…"
+    },
+    {
+      "id": "char_63bc736ac51d5e65",
+      "type": "character",
+      "name": "老赵",
+      "snippet": "{\"id\": \"char_63bc736ac51d5e65\", \"name\": \"老赵\", \"aliases\": [], \"traits\": \"邮局同事，拎着饭盒，说话直接，劝沈砚别管死信和旧码头的事。\", \"relationships\": [{\"target\": \"沈砚\", \"target_id\": \"char_a569f45147f55416\", \"type\": \"ally\", \"description\": \"邮局同事，劝他别凑热闹\"}], \"status\": \"alive\", \"importance\": \"minor\", \"first_appearance\": 1, \"notes\": \"\", \"key_details\": [\"“十年前的信，什么流程都过期了。”老赵把饭盒搁在台面上，“我跟你说个事，旧码头那…"
+    },
+    {
+      "id": "char_597bd0183e525030",
+      "type": "character",
+      "name": "周伯",
+      "snippet": "{\"id\": \"char_597bd0183e525030\", \"name\": \"周伯\", \"aliases\": [\"老周\"], \"traits\": \"六十一岁，退休船工，穿旧棉袄，蹲着收扳手。以前跑旧码头这条线，退休后还常来帮着看船。掌握旧航线记录。\\n六十一岁，退休船工。掌握旧航线记录。今晚帮沈砚上了船，没问为什么。\\n六十一岁，退休船工，掌握旧航线记录。披着棉袄，家中有账册和系缆绳。曾因怕丢饭碗而隐瞒证词，现决定说出真相。\\n六十一岁，退休船工，掌握旧航线记录。年纪大，躲得慢，但熟悉水闸结构和旧通风口位置。\", \"relationships\": [{\"target\": \"沈砚\", \"target_id\": \"char_a569f45147f55416\", \"type\": \"ally\", \"descript…"
+    },
+    {
+      "id": "char_ef49bc9786105db6",
+      "type": "character",
+      "name": "沈衡",
+      "snippet": "{\"id\": \"char_ef49bc9786105db6\", \"name\": \"沈衡\", \"aliases\": [], \"traits\": \"沈砚父亲，十年前在水闸事故中被认定失职，已故。\\n十年前在水闸事故中被认定失职。\\n沈砚父亲，十年前水闸事故中被认定失职。值班时先到码头换缆绳结，再上水闸。\", \"relationships\": [{\"target\": \"沈砚\", \"target_id\": \"char_a569f45147f55416\", \"type\": \"family\", \"description\": \"父子，沈砚为其翻案\\n父子关系\"}, {\"target\": \"周伯\", \"target_id\": \"char_597bd0183e525030\", \"type\": \"friend\", \"descrip…"
+    },
+    {
+      "id": "char_6a34b36476d95623",
+      "type": "character",
+      "name": "叶青",
+      "snippet": "{\"id\": \"char_6a34b36476d95623\", \"name\": \"叶青\", \"aliases\": [], \"traits\": \"三十二岁，水文测绘员，坚持证据胜于传闻。未在本章出场。\\n三十二岁，水文测绘员。短发，袖口卷到小臂。坚持证据胜于传闻。工作认真，用铁夹子压图纸，用尺子比曲线。在冲突中冷静，趁机保护数据。\\n三十二岁，水文测绘员，坚持证据胜于传闻。背着测绘筒，携带复印件。理性冷静，但会配合沈砚的紧急判断。\\n三十二岁，水文测绘员，坚持证据胜于传闻。携带测绘筒，做事冷静，不劝沈砚停，只在他脚步乱时放慢等他匀气。\", \"relationships\": [{\"target\": \"沈砚\", \"target_id\": \"char_a569f45147f55416\", \"type\": \"ally\",…"
+    },
+    {
+      "id": "char_64599e6c50625e0b",
+      "type": "character",
+      "name": "陆岑",
+      "snippet": "{\"id\": \"char_64599e6c50625e0b\", \"name\": \"陆岑\", \"aliases\": [\"陆主管\"], \"traits\": \"四十六岁，港务主管，参与过十年前隐瞒水闸隐患的决定。未在本章出场。\\n四十六岁，港务主管。参与过十年前隐瞒水闸隐患的决定。\\n四十六岁，港务主管，参与过十年前隐瞒水闸隐患的决定。穿深色外套，拎公文包，行动果断，直接动手抢夺。\", \"relationships\": [{\"target\": \"沈砚\", \"target_id\": \"char_a569f45147f55416\", \"type\": \"enemy\", \"description\": \"未在本章出场\\n对立者，阻止沈砚等人进入水闸\"}, {\"target\": \"沈衡\", \"target_id\": \"char_…"
+    },
+    {
+      "id": "test_shenyan",
+      "type": "character",
+      "name": "沈砚",
+      "snippet": "{\"id\": \"test_shenyan\", \"name\": \"沈砚\", \"aliases\": [], \"traits\": \"临时邮差，擅长辨认旧邮戳和维修机械\", \"relationships\": [], \"status\": \"alive\", \"importance\": \"normal\", \"first_appearance\": 0, \"notes\": \"\", \"key_details\": [], \"key_dialogues\": [], \"motivation\": \"\", \"arc\": \"\", \"birth_date\": \"\", \"current_age\": \"\", \"age_basis\": \"\", \"life_stage\": \"\", \"current_location\": \"\", \"current_goa…"
+    },
+    {
+      "id": "char_3345b6bea7585ae4",
+      "type": "character",
+      "name": "值班员",
+      "snippet": "{\"id\": \"char_3345b6bea7585ae4\", \"name\": \"值班员\", \"aliases\": [], \"traits\": \"被陆岑捆住并塞住嘴，嗓子哑，能走。\", \"relationships\": [{\"target\": \"陆岑\", \"target_id\": \"char_64599e6c50625e0b\", \"type\": \"enemy\", \"description\": \"被陆岑捆绑并锁在控制室内\"}, {\"target\": \"沈砚\", \"target_id\": \"char_a569f45147f55416\", \"type\": \"ally\", \"description\": \"被沈砚救出\"}], \"status\": \"alive\", \"importance\": \"minor\", \"first…"
+    },
+    {
+      "id": "loc_37b4a086c59e540a",
+      "type": "location",
+      "name": "雾港邮局分拣室",
+      "snippet": "{\"id\": \"loc_37b4a086c59e540a\", \"name\": \"雾港邮局分拣室\", \"description\": \"晚上七点以后只剩一盏灯。墙上贴着褪色的排班表，沈砚的名字用铅笔写着。窗外风一阵紧过一阵，玻璃缝里塞着旧报纸，还是漏进咸味。台面上有饭盒，抽屉最底下有邮戳登记册。\", \"significance\": \"故事起点，沈砚发现缺齿邮戳死信的地方。\", \"first_appearance\": 1, \"key_details\": [\"雾港邮局的分拣室在晚上七点以后就只剩一盏灯。沈砚把灯罩往下压了压，让光落在台面上，省得照见墙上那张褪色的排班表。\", \"窗外风一阵紧过一阵。玻璃缝里塞着旧报纸，还是漏进咸味。\"], \"atmosphere\": \"昏暗、安静、咸味渗入，只有一盏灯。\", \"sourc…"
+    },
+    {
+      "id": "loc_01d833966e2a5409",
+      "type": "location",
+      "name": "旧码头",
+      "snippet": "{\"id\": \"loc_01d833966e2a5409\", \"name\": \"旧码头\", \"description\": \"天还没亮，码头上只剩两盏灯，一盏在售票窗口上方，一盏挂在货运入口，光都发黄。拆雨棚的工人夜里收了工，铁架子和塑料布堆在一边，风一吹，塑料布贴着地皮跑。寄存柜那排铁皮还在，暗红色，一扇挨着一扇。\", \"significance\": \"故事核心地点，即将封闭拆除，隐藏着旧邮戳和维护记录。\", \"first_appearance\": 1, \"key_details\": [\"旧码头的售票窗口已经关了。铁栅栏拉下来一半，里面黑着。风把栈桥上的塑料布吹得啪啪响，几个工人正拆附属的雨棚，螺丝掉在铁板上，滚出很远。\", \"那排寄存柜还在，铁皮锈成暗红色，柜门一扇挨着一扇，没被搬走。他数了数，从东边数第三扇…"
+    },
+    {
+      "id": "loc_abac1a2dbf1a5c87",
+      "type": "location",
+      "name": "旧邮船",
+      "snippet": "{\"id\": \"loc_abac1a2dbf1a5c87\", \"name\": \"旧邮船\", \"description\": \"甲板上人很少。风从船头压过来，船身一离栈桥就开始晃。船舱的灯从侧面照过来。船驶进雾里，旧码头的灯在身后一点点变小，最后只剩一点黄。\", \"significance\": \"退役邮船，沈砚随船前往旧码头。\", \"first_appearance\": 1, \"key_details\": [\"甲板上人很少。风从船头压过来，船身一离栈桥就开始晃。沈砚扶着栏杆站了一会儿，等腿上的劲稳了，才把信掏出来。\", \"船已经驶进雾里，旧码头的灯在身后一点点变小，最后只剩一点黄。\"], \"atmosphere\": \"摇晃、风大、雾中航行，孤独感。\", \"source_chapter\": 1, \"source_ve…"
+    },
+    {
+      "id": "loc_cbed903a3e2b59db",
+      "type": "location",
+      "name": "退役邮船",
+      "snippet": "{\"id\": \"loc_cbed903a3e2b59db\", \"name\": \"退役邮船\", \"description\": \"旧邮船今晚退役。甲板上有风，船舱入口灯亮着，门半开。工作区不大，一张长桌，两把椅子，墙角堆着旧航标灯和卷起来的缆绳。船绕主港一圈，最后才靠旧码头，中间有一个多钟头。\", \"significance\": \"故事主要发生地，沈砚与叶青在此相遇并发现潮汐表被篡改。\", \"first_appearance\": 2, \"key_details\": [\"甲板上的风比刚上船时更硬。\", \"船舱入口的灯亮着，门半开。里面有人伏在长桌上，面前摊着一卷图纸，纸边用两只铁夹子压住，风一过就哗啦响。\", \"工作区不大，一张长桌，两把椅子，墙角堆着旧航标灯和卷起来的缆绳。\", \"船还在雾里走，旧码头的方向什么都看…"
+    },
+    {
+      "id": "loc_dff20249584a5a61",
+      "type": "location",
+      "name": "控制室",
+      "snippet": "{\"id\": \"loc_dff20249584a5a61\", \"name\": \"控制室\", \"description\": \"内有控制台、配电箱。一股潮气。值班员被捆在控制台后面。配电箱内几根线头断着，铜芯露在外面。\", \"significance\": \"操作水闸的核心位置，沈砚在此修复线路并准备开闸。\", \"first_appearance\": 4, \"key_details\": [\"控制室里一股潮气。值班员缩在控制台后面，手脚被一根尼龙绳捆着，嘴里塞着布。\", \"沈砚打开配电箱。里面几根线头断着，铜芯露在外面。\"], \"atmosphere\": \"潮湿、封闭、紧迫\", \"source_chapter\": 4, \"source_version\": 1, \"last_updated_chapter\": 4, \"l…"
+    },
+    {
+      "id": "event_ebcef29d37d65281",
+      "type": "timeline",
+      "name": "event_ebcef29d37d65281",
+      "snippet": "{\"id\": \"event_ebcef29d37d65281\", \"chapter\": 1, \"event\": \"沈砚在分拣室发现一封十年前的发黄死信，背面邮戳缺一齿，与父亲事故卷宗回执上的邮戳缺口一致。\", \"significance\": \"触发沈砚追查父亲事故真相的线索。\", \"occurrence_count\": 1, \"key_passages\": [\"那枚邮戳缺了一齿。不是磨损，是戳模本身缺角，压出来的圆环在左下断开一小段，像被咬掉一口。沈砚见过这个缺口。十年前父亲的水闸事故卷宗，他翻过不止一次——卷宗封皮上贴着事故当日的挂号信回执，回执上的邮戳，缺的是同一个位置。\"], \"foreshadowing_hints\": [\"缺齿邮戳与父亲事故卷宗回执一致，暗示两件事有关联。\"], \"source_ver…"
+    },
+    {
+      "id": "event_4ca784cf5d0d51b1",
+      "type": "timeline",
+      "name": "event_4ca784cf5d0d51b1",
+      "snippet": "{\"id\": \"event_4ca784cf5d0d51b1\", \"chapter\": 1, \"event\": \"沈砚在邮戳登记册上查到旧码头代办所戳模在事故后第九天因“缺损”报废。\", \"significance\": \"确认缺齿邮戳来自旧码头代办所，时间与事故紧密相关。\", \"occurrence_count\": 1, \"key_passages\": [\"他一行行看下去，在“旧码头代办所”那一栏停住：戳模报废，原因栏写着“缺损”，日期是事故后第九天。\"], \"foreshadowing_hints\": [\"戳模在事故后第九天报废，暗示事故后有人急于销毁证据。\"], \"source_version\": 1, \"knowledge_type\": \"canon\", \"confidence\": 1.0, \"sourc…"
+    },
+    {
+      "id": "event_42fd604e09ac5426",
+      "type": "timeline",
+      "name": "event_42fd604e09ac5426",
+      "snippet": "{\"id\": \"event_42fd604e09ac5426\", \"chapter\": 1, \"event\": \"沈砚到旧码头，被执勤人员阻拦，周伯帮他说情后登上旧邮船。\", \"significance\": \"沈砚开始主动行动，前往旧码头追查线索。\", \"occurrence_count\": 1, \"key_passages\": [\"周伯没问为什么。他把扳手塞进箱子，站起来往执勤那边走，说了几句。风大，沈砚只听见“邮局的”“随船”几个词。执勤的人皱着眉，最后挥了下手。\"], \"foreshadowing_hints\": [\"周伯未多问就帮忙，暗示他知道更多内情。\"], \"source_version\": 1, \"knowledge_type\": \"canon\", \"confidence\": 1.0, \"sour…"
+    },
+    {
+      "id": "event_4b33ceaca1975792",
+      "type": "timeline",
+      "name": "event_4b33ceaca1975792",
+      "snippet": "{\"id\": \"event_4b33ceaca1975792\", \"chapter\": 1, \"event\": \"沈砚在船上确认信封地址“雾港旧码头 三号”对应寄存柜编号，从东边数第三扇门缝里塞着东西。\", \"significance\": \"将信件与寄存柜直接关联，指向具体调查目标。\", \"occurrence_count\": 1, \"key_passages\": [\"他把信封举到光下，又看了一遍那半行地址：雾港旧码头 三号。三号。寄存柜那一排，编号就是从三号开始的。\"], \"foreshadowing_hints\": [\"三号寄存柜门缝里塞着东西，可能是关键证据。\"], \"source_version\": 1, \"knowledge_type\": \"canon\", \"confidence\": 1.0, \"so…"
+    },
+    {
+      "id": "event_a1c825a1010051fe",
+      "type": "timeline",
+      "name": "event_a1c825a1010051fe",
+      "snippet": "{\"id\": \"event_a1c825a1010051fe\", \"chapter\": 2, \"event\": \"沈砚在退役邮船上找到叶青，询问旧码头潮汐记录。叶青出示原始记录与事故报告不符，报告潮位被刮改。港务人员试图没收复印件，沈砚阻止并受伤，叶青趁机藏起部分复印件。\", \"significance\": \"沈砚与叶青建立合作关系，发现潮汐表被篡改的关键证据，沈砚受伤。\", \"occurrence_count\": 1, \"key_passages\": [\"“不是差一点。”叶青说，“是差一整段。报告里那天夜里最高水位一米八，我这份原始记录，同一时段是两米七。”\", \"报告上的潮汐表是手抄的，数字用钢笔写，工整。叶青指着二十三点那一格：纸面有一层浅浅的刮痕，原来的墨被刮掉，新数字压在上面，笔画比旁边的粗。\", \"…"
+    },
+    {
+      "id": "event_b053cdcef2785c90",
+      "type": "timeline",
+      "name": "event_b053cdcef2785c90",
+      "snippet": "{\"id\": \"event_b053cdcef2785c90\", \"chapter\": 3, \"event\": \"沈砚和叶青在旧码头找到寄存柜，锁芯锈死，需要周伯的钥匙。\", \"significance\": \"引出周伯和后续证据。\", \"occurrence_count\": 1, \"key_passages\": [\"锁芯锈成这样，撬不开。得找周伯，他有钥匙。\"], \"foreshadowing_hints\": [\"寄存柜内可能有更多证据\"], \"source_version\": 1, \"knowledge_type\": \"canon\", \"confidence\": 1.0, \"source_refs\": [{\"chapter\": 3, \"version\": 1, \"snapshot_key\": \"ch0003_…"
+    },
+    {
+      "id": "event_024c9ba5f3fd5217",
+      "type": "timeline",
+      "name": "event_024c9ba5f3fd5217",
+      "snippet": "{\"id\": \"event_024c9ba5f3fd5217\", \"chapter\": 4, \"event\": \"周伯带沈砚和叶青走碎石小径前往水闸，途中叶青确认今夜涨潮实测趋势约两米七，与十年前那晚相同。\", \"significance\": \"建立当前危机与十年前事故的数值关联。\", \"occurrence_count\": 1, \"key_passages\": [\"“今夜涨潮的实测趋势，跟这上面记的差不多。”她把纸递过去一角，“两米七上下。十年前那晚，就是这个数。”\"], \"foreshadowing_hints\": [\"十年前那晚的涨潮数据与今夜相同，暗示历史可能重演\"], \"source_version\": 1, \"knowledge_type\": \"canon\", \"confidence\": 1.0, …"
+    }
+  ]
+}

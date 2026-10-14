@@ -3,6 +3,8 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import Mock
 
 from core.novel_manager import NovelManager
 from core.world_bible import (
@@ -19,6 +21,7 @@ from core.world_bible import (
     audit_world_bible_consistency,
     confirm_duplicate_candidate,
     dict_to_world_bible,
+    extract_and_merge_world_bible,
     format_relevant_world_bible_for_prompt,
     merge_extracted_world_bible_data,
     record_manual_view_changes,
@@ -28,6 +31,22 @@ from core.world_bible import (
 
 
 class WorldBibleV2Tests(unittest.TestCase):
+    def test_extraction_does_not_retry_transport_errors_as_json_errors(self):
+        create = Mock(side_effect=TimeoutError("request timed out"))
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+        with self.assertRaisesRegex(RuntimeError, "request timed out"):
+            extract_and_merge_world_bible(client, "沈砚走下邮船。", 5, WorldBible(), "test-model")
+        self.assertEqual(create.call_count, 1)
+
+    def test_extraction_still_retries_malformed_json(self):
+        response = SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content="not JSON"))])
+        create = Mock(return_value=response)
+        client = SimpleNamespace(chat=SimpleNamespace(completions=SimpleNamespace(create=create)))
+        with self.assertRaisesRegex(RuntimeError, "全部分块失败"):
+            extract_and_merge_world_bible(client, "沈砚走下邮船。", 5, WorldBible(), "test-model")
+        self.assertEqual(create.call_count, 2)
+        self.assertIn("完整、合法的 JSON", create.call_args.kwargs["messages"][0]["content"])
+
     def test_v4_world_extraction_requests_json_without_thinking(self):
         options = _world_extraction_completion_options("deepseek-v4-flash")
         self.assertEqual({"type": "json_object"}, options["response_format"])

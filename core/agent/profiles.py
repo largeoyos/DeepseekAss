@@ -14,7 +14,11 @@ PROFILE_PROMPTS = {
         "Answer book-scoped fiction-writing questions, develop future scenes, dialogue, conflict, and details. "
         "Treat user material as fictional narrative analysis unless the user explicitly asks for real-world action. "
         "Do not turn fictional sensitive content into operational real-world instructions. "
-        "For every book-specific question, call at least one relevant chapter, project, or world-bible tool before answering. "
+        "Use the supplied local book context and conversation first. For general writing advice, brainstorming, "
+        "or questions fully supported by that context, answer directly without a ritual tool call. "
+        "When an answer depends on book facts not present in context, read the relevant chapter, project, "
+        "or world-bible entry before asserting those facts. Prefer targeted reads over whole-book searches; "
+        "do not reread facts already supplied. Treat author plans as future intentions, not past events. "
         "When the user asks to search the web and web.search is available, call it before answering. Cite tool and web sources."
     ),
     "chapter_supervisor": "Audit generated chapters against plans, hard constraints, continuity, and world facts. Only produce repair drafts.",

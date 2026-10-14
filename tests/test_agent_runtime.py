@@ -43,6 +43,83 @@ def response(content="", tool_calls=None, usage=None):
 
 
 class AgentRuntimeTests(unittest.TestCase):
+    def test_context_budget_preserves_instructions_and_tool_pairing(self):
+        from core.agent.memory import fit_retrievable_context
+        from core.model_gateway import estimate_messages_tokens
+        messages = [
+            {"role": "system", "content": "Only approved changes may write."},
+            {"role": "system", "content": "事实" * 3000, "metadata": {"agent_retrievable_context": True}},
+            {"role": "user", "content": "必须保留完整作者规划" * 10},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "a", "function": {"name": "read", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "a", "content": "世界书" * 3000},
+        ]
+        fitted = fit_retrievable_context(messages, 1800)
+        self.assertLessEqual(estimate_messages_tokens(fitted), 1800)
+        self.assertEqual(messages[0], fitted[0])
+        self.assertEqual(messages[2], fitted[2])
+        self.assertEqual(messages[3], fitted[3])
+        self.assertEqual("a", fitted[4]["tool_call_id"])
+        self.assertIn("不是完整资料", fitted[4]["content"])
+        self.assertEqual(9000, len(messages[4]["content"]))
+        messages[1]["metadata"]["manual_reference"] = True
+        self.assertEqual(messages, fit_retrievable_context(messages, 1800))
+
+    def test_model_adapter_translates_domain_names_and_history_without_mutation(self):
+        observed = []
+        def complete(**kwargs):
+            observed.append(kwargs)
+            alias = kwargs["tools"][0]["function"]["name"]
+            self.assertRegex(alias, r"^[a-zA-Z0-9_-]{1,64}$")
+            self.assertEqual(alias, kwargs["messages"][0]["tool_calls"][0]["function"]["name"])
+            return response(tool_calls=[(alias, {"node_id": "first"})])
+        client = FakeClient(SimpleNamespace(create=complete))
+        messages = [{"role": "assistant", "content": "", "tool_calls": [
+            {"id": "old", "type": "function", "function": {"name": "chapter.read", "arguments": "{}"}}
+        ]}]
+        tools = [{"type": "function", "function": {"name": "chapter.read", "parameters": {}}}]
+        adapter = AgentModelAdapter(client, "fake")
+        for _ in range(2):
+            turn = adapter.complete(messages, tools)
+            self.assertEqual("chapter.read", turn.tool_calls[0].tool_name)
+        self.assertEqual(observed[0]["tools"], observed[1]["tools"])
+        self.assertEqual("chapter.read", tools[0]["function"]["name"])
+        self.assertEqual("chapter.read", messages[0]["tool_calls"][0]["function"]["name"])
+
+    def test_invalid_tool_schema_is_not_misreported_as_missing_capability(self):
+        completions = FakeCompletions(error="Error code: 400 - invalid name in function")
+        with self.assertRaisesRegex(RuntimeError, "invalid name"):
+            AgentModelAdapter(FakeClient(completions), "fake").complete([], [
+                {"type": "function", "function": {"name": "valid_name", "parameters": {}}}
+            ])
+        self.assertEqual(1, len(completions.calls))
+
+    def test_no_argument_tool_uses_explicit_transport_field_only(self):
+        def complete(**kwargs):
+            function = kwargs["tools"][0]["function"]
+            self.assertEqual(["_call_reason"], function["parameters"]["required"])
+            return response(tool_calls=[(function["name"], {"_call_reason": "Read story settings"})])
+        turn = AgentModelAdapter(FakeClient(SimpleNamespace(create=complete)), "fake").complete([], [
+            {"type": "function", "function": {"name": "project.summary", "parameters": {"type": "object", "properties": {}}}}
+        ])
+        self.assertEqual("project.summary", turn.tool_calls[0].tool_name)
+        self.assertEqual({}, turn.tool_calls[0].arguments)
+
+    def test_gateway_schema_rejection_gets_one_correction_with_tools(self):
+        from core.model_gateway import ToolAuthorizationError
+        attempts = []
+        def complete(**kwargs):
+            attempts.append(kwargs)
+            if len(attempts) == 1:
+                raise ToolAuthorizationError("extra argument")
+            return response(tool_calls=[("read", {"query": "novel"})])
+        turn = AgentModelAdapter(FakeClient(SimpleNamespace(create=complete)), "fake").complete([], [
+            {"type": "function", "function": {"name": "read", "parameters": {"type": "object", "properties": {"query": {"type": "string"}}}}}
+        ])
+        self.assertEqual(2, len(attempts))
+        self.assertIn("tools", attempts[1])
+        self.assertFalse(turn.planning_only)
+
+
     def test_tool_registry_blocks_tool_outside_profile(self):
         with tempfile.TemporaryDirectory() as root:
             manager = NovelManager(bookshelf_root=root)

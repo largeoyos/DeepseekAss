@@ -1,5 +1,4 @@
 import re
-import threading
 import time
 
 from PyQt6.QtCore import Qt, pyqtSignal
@@ -25,6 +24,7 @@ from PyQt6.QtWidgets import (
 )
 
 from core.novel_manager import NovelManager
+from core.task_manager import report_task_failure, task_cancel_requested
 from ui.chapter_editor_dialog import ChapterEditorDialog
 from utils.prompts import Prompts
 from utils.supplement import count_cn
@@ -310,7 +310,7 @@ class ChapterTreeDialog(QDialog):
         self._rebuild_success_message = f"已切换阅读树：{self._tree_combo.currentText()}。剧情摘要和世界书已按该树重建。"
         self._switch_btn.setEnabled(False)
         self._load_tree()
-        threading.Thread(target=self._run_rebuild_memory, daemon=True).start()
+        self.parent()._start_background_task('重建章节记忆', target=self._run_rebuild_memory, cancellable=False)
     def _draw_layered_tree(
         self,
         roots: list[dict],
@@ -506,8 +506,9 @@ class ChapterTreeDialog(QDialog):
                     raise ValueError("章节节点不存在")
                 self.rebuild_done.emit(report)
             except Exception as exc:
+                report_task_failure(str(exc))
                 self.rebuild_failed.emit(str(exc))
-        threading.Thread(target=switch, daemon=True).start()
+        self.parent()._start_background_task('切换章节分支并同步记忆', target=switch, cancellable=False)
 
     def _run_rebuild_memory(self) -> None:
         try:
@@ -515,6 +516,7 @@ class ChapterTreeDialog(QDialog):
             report = ChapterBranchService(self._novel_manager).synchronize(self._book_title)
             self.rebuild_done.emit(report)
         except Exception as exc:
+            report_task_failure(str(exc))
             self.rebuild_failed.emit(str(exc))
 
     def _on_rebuild_done(self, report=None) -> None:
@@ -553,7 +555,7 @@ class ChapterTreeDialog(QDialog):
             return
         self._rebuild_success_message = "世界书已从全部活跃路径正文重新提取。"
         self._details.setPlainText("正在从活跃章节正文重新提取世界书，请稍候...")
-        threading.Thread(target=self._run_force_extract_all_world_bible, daemon=True).start()
+        self.parent()._start_background_task('提取全部世界书', target=self._run_force_extract_all_world_bible, cancellable=False)
 
     def _run_force_extract_all_world_bible(self) -> None:
         try:
@@ -566,6 +568,7 @@ class ChapterTreeDialog(QDialog):
             )
             self.rebuild_done.emit(report)
         except Exception as exc:
+            report_task_failure(str(exc))
             self.rebuild_failed.emit(str(exc))
 
     def _force_extract_current_world_bible(self) -> None:
@@ -588,11 +591,11 @@ class ChapterTreeDialog(QDialog):
             return
         self._rebuild_success_message = f"{label} 世界书快照已刷新。"
         self._details.setPlainText("正在提取当前章节世界书，请稍候...")
-        threading.Thread(
+        self.parent()._start_background_task('提取章节世界书',
             target=self._run_force_extract_current_world_bible,
             args=(node["id"],),
-            daemon=True,
-        ).start()
+            cancellable=False,
+        )
 
     def _run_force_extract_current_world_bible(self, node_id: str) -> None:
         try:
@@ -618,6 +621,7 @@ class ChapterTreeDialog(QDialog):
                 )
             self.rebuild_done.emit(report)
         except Exception as exc:
+            report_task_failure(str(exc))
             self.rebuild_failed.emit(str(exc))
 
     def _regenerate_summary(self) -> None:
@@ -630,11 +634,11 @@ class ChapterTreeDialog(QDialog):
             return
         self._summary_btn.setEnabled(False)
         self._details.setPlainText("正在重新生成当前章节摘要，请稍候...")
-        threading.Thread(
+        self.parent()._start_background_task('重建章节摘要',
             target=self._run_regenerate_summary,
             args=(dict(node),),
-            daemon=True,
-        ).start()
+            cancellable=False,
+        )
 
     def _run_regenerate_summary(self, node: dict) -> None:
         old_summary = ""
@@ -669,6 +673,7 @@ class ChapterTreeDialog(QDialog):
             self.summary_done.emit(f"{label} 摘要已重新生成。")
         except Exception as exc:
             old_state = "原有摘要已保留" if old_summary else "节点摘要仍为空"
+            report_task_failure(f"{exc}\n\n{old_state}；本次未修改、未保存摘要。")
             self.summary_failed.emit(
                 f"{exc}\n\n{old_state}；本次未修改、未保存摘要。"
             )
@@ -780,9 +785,10 @@ class ChapterTreeDialog(QDialog):
                 plan = service.prepare(request)
                 self.polish_plan_ready.emit(node, request, plan)
             except Exception as exc:
+                report_task_failure(str(exc))
                 self.polish_plan_failed.emit(str(exc))
 
-        threading.Thread(target=prepare, daemon=True).start()
+        self.parent()._start_background_task('Agent 润色规划', target=prepare, cancellable=False)
 
     def _on_polish_plan_ready(self, node, request, plan) -> None:
         parent = self.parent()
@@ -855,12 +861,12 @@ class ChapterTreeDialog(QDialog):
             parent._assistant_text_buffer = []
             action = "Agent 润色" if agent_plan is not None else ("润色" if mode == "polish" else "重写")
             parent._append_user_message(f"🌳 {action}第 {chapter_num} 章「{title}」")
-        threading.Thread(
+        self.parent()._start_background_task('润色或重写章节',
             target=self._run_generation,
             args=(node, mode, requirement),
             kwargs={"agent_request": agent_request, "agent_plan": agent_plan},
-            daemon=True,
-        ).start()
+            cancellable=True,
+        )
 
     def _run_generation(
         self, node: dict, mode: str, requirement: str, *,
@@ -916,6 +922,7 @@ class ChapterTreeDialog(QDialog):
                         polish_service.mark_cancelled(agent_request, agent_plan)
                     self._finish_host_stream()
                     host_stream_finished = True
+                    report_task_failure("已取消生成。")
                     self.generation_failed.emit("已取消生成。")
                     return
             else:
@@ -942,17 +949,20 @@ class ChapterTreeDialog(QDialog):
                 if not validation.passed:
                     self._finish_host_stream()
                     host_stream_finished = True
+                    report_task_failure("润色稿未通过保真审查，未写入章节树。"
+                        f"\n加密 Artifact：{validation.artifact_id}")
                     self.generation_failed.emit(
                         "润色稿未通过保真审查，未写入章节树。"
                         f"\n加密 Artifact：{validation.artifact_id}"
                     )
                     return
 
-            if getattr(self._client, "_cancel_requested", False):
+            if task_cancel_requested(getattr(self._client, "_cancel_requested", False)):
                 if polish_service is not None:
                     polish_service.mark_cancelled(agent_request, agent_plan)
                 self._finish_host_stream()
                 host_stream_finished = True
+                report_task_failure("已取消生成。")
                 self.generation_failed.emit("已取消生成。")
                 return
 
@@ -1012,6 +1022,7 @@ class ChapterTreeDialog(QDialog):
         except Exception as exc:
             if not host_stream_finished:
                 self._finish_host_stream()
+            report_task_failure(str(exc))
             self.generation_failed.emit(str(exc))
     def _on_generation_done(self, message: str) -> None:
         self._polish_btn.setEnabled(True)
@@ -1084,8 +1095,9 @@ class ChapterTreeDialog(QDialog):
                 plan = service.prepare(request)
                 self.extra_plan_ready.emit(request, plan)
             except Exception as exc:
+                report_task_failure(str(exc))
                 self.extra_plan_failed.emit(str(exc))
-        threading.Thread(target=prepare, daemon=True).start()
+        self.parent()._start_background_task('Agent 番外规划', target=prepare, cancellable=False)
 
     def _on_extra_plan_ready(self, request, plan) -> None:
         parent = self.parent()
@@ -1125,7 +1137,7 @@ class ChapterTreeDialog(QDialog):
             parent._streaming_start_time = time.time()
             parent._assistant_text_buffer = []
             parent._append_user_message(f"Agent 生成番外：{request.title}")
-        threading.Thread(target=self._run_extra_generation, args=(request, plan), daemon=True).start()
+        self.parent()._start_background_task('生成番外章节', target=self._run_extra_generation, args=(request, plan), cancellable=True)
 
     def _run_extra_generation(self, request, plan) -> None:
         host_finished = False
@@ -1153,6 +1165,7 @@ class ChapterTreeDialog(QDialog):
                 if cancelled:
                     self._finish_host_stream()
                     host_finished = True
+                    report_task_failure("已取消番外生成。")
                     self.generation_failed.emit("已取消番外生成。")
                     return
             else:
@@ -1164,9 +1177,10 @@ class ChapterTreeDialog(QDialog):
                 )
                 content = response.choices[0].message.content or ""
                 generation_stats = {}
-            if getattr(self._client, "_cancel_requested", False):
+            if task_cancel_requested(getattr(self._client, "_cancel_requested", False)):
                 self._finish_host_stream()
                 host_finished = True
+                report_task_failure("已取消番外生成。")
                 self.generation_failed.emit("已取消番外生成。")
                 return
             anchor_id = request.start_node_id or request.reference_node_id
@@ -1258,6 +1272,7 @@ class ChapterTreeDialog(QDialog):
                     exc = RuntimeError(f"{exc}；回滚失败：{restore_exc}")
             if not host_finished:
                 self._finish_host_stream()
+            report_task_failure(str(exc))
             self.generation_failed.emit(str(exc))
 
     def _delete_current(self) -> None:
@@ -1278,4 +1293,4 @@ class ChapterTreeDialog(QDialog):
         self._switch_btn.setEnabled(False)
         self._rebuild_success_message = "章节子树已删除，剧情记忆和世界书已按剩余活跃路径同步。"
         self._details.setPlainText("正在同步删除后的剧情记忆和世界书，请稍候...")
-        threading.Thread(target=self._run_rebuild_memory, daemon=True).start()
+        self.parent()._start_background_task('重建章节记忆', target=self._run_rebuild_memory, cancellable=False)

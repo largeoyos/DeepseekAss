@@ -21,6 +21,8 @@ class TokenLogEntry:
     model: str
     content_preview: str
     content_full: str = ""
+    prompt_preview: str = ""
+    prompt_full: str = ""
     reasoning_content_preview: str = ""
     reasoning_content_full: str = ""
     reasoning_tokens: int | None = None
@@ -116,6 +118,7 @@ class TokenLogManager:
         model: str,
         content: str,
         usage: dict | None,
+        prompt: str = "",
         reasoning_content: str = "",
         reasoning_tokens: int | None = None,
         started_at: str | None = None,
@@ -125,12 +128,13 @@ class TokenLogManager:
         hanzi_count: int | None = None,
         gateway_metadata: dict | None = None,
     ) -> TokenLogEntry:
-        preview = (content or "").strip().replace("\n", " ")
-        if len(preview) > 60:
-            preview = preview[:60] + "..."
-        reasoning_preview = (reasoning_content or "").strip().replace("\n", " ")
-        if len(reasoning_preview) > 60:
-            reasoning_preview = reasoning_preview[:60] + "..."
+        def make_preview(value: str) -> str:
+            preview = (value or "").strip().replace("\n", " ")
+            return preview if len(preview) <= 60 else preview[:60] + "..."
+
+        preview = make_preview(content)
+        prompt_preview = make_preview(prompt)
+        reasoning_preview = make_preview(reasoning_content)
         status = "ok" if usage else "unavailable"
         gateway_metadata = dict(gateway_metadata or {})
         entry = TokenLogEntry(
@@ -142,6 +146,8 @@ class TokenLogManager:
             model=model,
             content_preview=preview,
             content_full=content or "",
+            prompt_preview=prompt_preview,
+            prompt_full=prompt or "",
             reasoning_content_preview=reasoning_preview,
             reasoning_content_full=reasoning_content or "",
             reasoning_tokens=reasoning_tokens,

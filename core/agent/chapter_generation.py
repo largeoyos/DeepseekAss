@@ -886,7 +886,7 @@ class AgentChapterGenerationService:
         )
         prompt = schema + json.dumps(payload, ensure_ascii=False)
         messages = [{"role": "user", "content": prompt}]
-        max_tokens = 8192
+        max_tokens = 16384
         last_error = None
         finish_reason = ""
         content = ""
@@ -906,8 +906,8 @@ class AgentChapterGenerationService:
                 return self._parse_json(content)
             except Exception as exc:
                 last_error = exc
-                if finish_reason == "length" and max_tokens < 16000:
-                    max_tokens = 16000
+                if finish_reason == "length" and max_tokens < 32000:
+                    max_tokens = 32000
                     hint = "上一次输出被 max_tokens 截断。已调大输出上限，请只输出完整合法 JSON。"
                 elif not str(content).strip():
                     hint = "上一次输出为空。请直接输出完整合法 JSON，字段和类型必须严格匹配，不要任何解释或 Markdown。"

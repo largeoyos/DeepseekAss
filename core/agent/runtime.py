@@ -84,11 +84,19 @@ class AgentRuntime:
         session.active_run_id = run.run_id
         session.run_ids.append(run.run_id)
         append_request_user_message(session, request)
+        preparation_started = time.monotonic()
+        self._emit(repository, run.run_id, "context_preparing", {})
         skills = SkillService(repository).render_for_agent(request.agent_kind) if self.skills_enabled else ""
-        context_report = self.contexts.assemble(request.book_title, request.manual_references)
+        context_report = self.contexts.assemble_for_request(request)
+        self._emit(repository, run.run_id, "context_ready", {
+            "duration_ms": int((time.monotonic() - preparation_started) * 1000),
+            "chars": context_report.total_chars,
+            "sources": context_report.sources,
+        })
         run.messages = [
             {"role": "system", "content": build_system_prompt(profile, skills)},
-            {"role": "system", "content": "当前书籍事实上下文：\n" + context_report.content},
+            {"role": "system", "content": "当前书籍事实上下文：\n" + context_report.content,
+             "metadata": {"agent_retrievable_context": not bool(request.manual_references), "manual_reference": bool(request.manual_references)}},
             *[{"role": m["role"], "content": m["content"]} for m in session.messages],
         ]
         for item in self.middleware:
@@ -98,24 +106,46 @@ class AgentRuntime:
         self._emit(repository, run.run_id, "run_started", {"agent_kind": run.agent_kind})
         adapter = AgentModelAdapter(self.client, request.model)
         repeated: dict[str, int] = {}
+
+        def check_cancel():
+            cancelled = self.services.get("cancel_requested")
+            if control.cancelled.is_set() or (callable(cancelled) and cancelled()):
+                raise AgentCancelled()
+
         try:
             for iteration in range(1, min(50, profile.max_iterations) + 1):
                 control.wait_if_paused()
-                if control.cancelled.is_set():
-                    raise AgentCancelled()
+                check_cancel()
                 run.iteration = iteration
                 for item in self.middleware:
                     item.before_turn(run)
-                if self.compactor.needs_compaction(run.messages, profile.context_budget):
+                # Gateway clients fit retrievable context against the model's
+                # token budget while retaining instructions and tool pairs.
+                if not getattr(adapter.client, "gateway", None) and self.compactor.needs_compaction(run.messages, profile.context_budget):
                     run.messages, epoch = self.compactor.compact(run.messages)
                     if epoch:
                         session.epochs.append(epoch)
                         self._emit(repository, run.run_id, "context_compacted", epoch)
-                turn = adapter.complete(
-                    run.messages,
-                    self.tool_registry.schemas_for(profile.allowed_tools),
-                    require_tool=(run.agent_kind == "writing_advisor" and iteration == 1),
-                )
+                streaming = bool(self.services.get("stream_model"))
+                partial = []
+                def on_text(text):
+                    partial.append(text)
+                    # Transient deltas are delivered immediately; the complete
+                    # turn is persisted once below, avoiding per-token disk I/O.
+                    self.event_sink(AgentEvent(run.run_id, 0, "model_delta", payload={"text": text}))
+                options = {"on_text": on_text, "check_cancel": check_cancel} if streaming else {}
+                self._emit(repository, run.run_id, "model_turn_started", {"iteration": iteration})
+                try:
+                    turn = adapter.complete(
+                        run.messages,
+                        self.tool_registry.schemas_for(profile.allowed_tools),
+                        **options,
+                    )
+                    check_cancel()
+                except Exception:
+                    if partial:
+                        run.messages.append({"role": "assistant", "content": "".join(partial), "partial": True})
+                    raise
                 run.planning_only = run.planning_only or turn.planning_only
                 run.usage = self._merge_usage(run.usage, turn.usage)
                 self._emit(repository, run.run_id, "usage_updated", run.usage)
@@ -135,6 +165,7 @@ class AgentRuntime:
                         run.terminal_reason = "planning_only" if run.planning_only else "model_completed"
                     break
                 for call in turn.tool_calls:
+                    check_cancel()
                     signature = f"{call.tool_name}:{json.dumps(call.arguments, sort_keys=True, ensure_ascii=False)}"
                     repeated[signature] = repeated.get(signature, 0) + 1
                     if repeated[signature] > 3:
@@ -177,7 +208,7 @@ class AgentRuntime:
             if session.active_run_id == run.run_id:
                 session.active_run_id = ""
             assistants = [m for m in run.messages if m.get("role") == "assistant" and m.get("content")]
-            if assistants:
+            if run.status == "completed" and assistants and not assistants[-1].get("partial"):
                 session.messages.append({"role": "assistant", "content": assistants[-1]["content"], "at": now_iso()})
             repository.save_session(session)
             with self._lock:

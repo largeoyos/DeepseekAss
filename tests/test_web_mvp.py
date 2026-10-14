@@ -5,6 +5,7 @@ import tempfile
 import time
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -164,11 +165,12 @@ class WebMvpTestCase(unittest.TestCase):
         token = self.login()
         headers = self.auth_headers(token)
         self.client.post("/api/books", headers=headers, json={"title": "无配置书"})
-        response = self.client.post(
-            "/api/books/%E6%97%A0%E9%85%8D%E7%BD%AE%E4%B9%A6/generate",
-            headers=headers,
-            json={"chapter_title": "开端", "plot": "开始", "target_words": 800},
-        )
+        with patch("config.Config.API_KEY", ""):
+            response = self.client.post(
+                "/api/books/%E6%97%A0%E9%85%8D%E7%BD%AE%E4%B9%A6/generate",
+                headers=headers,
+                json={"chapter_title": "开端", "plot": "开始", "target_words": 800},
+            )
         self.assertEqual(response.status_code, 400)
         self.assertIn("桌面端设置中心", response.json()["detail"])
 

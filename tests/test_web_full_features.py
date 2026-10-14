@@ -1243,11 +1243,13 @@ class WebFullFeatureTests(unittest.TestCase):
         self.assertEqual(len(branches.json()["branches"]), 2)
 
     def test_continuation_model_tasks_require_api_key(self):
-        denied = self.client.post(
-            "/api/continuation/generate",
-            headers=self.headers,
-            json={"title": "NoApi", "source_text": "旧文"},
-        )
+        # A developer's .env must not supply the key in this missing-key scenario.
+        with patch("config.Config.API_KEY", ""):
+            denied = self.client.post(
+                "/api/continuation/generate",
+                headers=self.headers,
+                json={"title": "NoApi", "source_text": "旧文"},
+            )
         self.assertEqual(denied.status_code, 400)
         self.assertIn("API", denied.text)
 
@@ -2083,5 +2085,28 @@ class WebFullFeatureTests(unittest.TestCase):
         self.assertIn("estimated_cost", exported_data["summary"])
         self.assertEqual(exported_data["summary"]["activity"]["duration_ms"], 1200)
         self.assertEqual(exported_data["filters"]["q"], "alpha")
+    def test_single_request_token_log_search_and_export(self):
+        token = self.headers["Authorization"].split(" ", 1)[1]
+        ctx = self.runtime.context_from_token(token)
+        ctx.token_log_manager.add_entry(
+            operation="chat", direction="request", strategy="Novel", model="model-a",
+            prompt="unique-request-text", content="response text",
+            usage={"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
+        )
+        response = self.client.get("/api/token-log?q=unique-request-text", headers=self.headers)
+        self.assertEqual(200, response.status_code)
+        data = response.json()
+        self.assertEqual(1, data["total"])
+        self.assertEqual(150, data["summary"]["totals"]["total_tokens"])
+        self.assertEqual("unique-request-text", data["entries"][0]["prompt_full"])
+        self.assertEqual("response text", data["entries"][0]["content_full"])
+        exported = self.client.post("/api/token-log/export", headers=self.headers, json={})
+        self.assertEqual(200, exported.status_code)
+        download = self.client.get(f'{exported.json()["download"]["download_url"]}?token={token}')
+        self.assertEqual(200, download.status_code)
+        self.assertEqual(150, download.json()["summary"]["totals"]["total_tokens"])
+        self.assertEqual("unique-request-text", download.json()["entries"][0]["prompt_full"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -1,0 +1,1063 @@
+{
+  "schema_version": 1,
+  "book": {
+    "book_id": "94dd64d97a2f",
+    "title": "最后一班潮汐邮船（CLI实测-6d3119）"
+  },
+  "categories": {
+    "character": 7,
+    "location": 4,
+    "timeline": 4,
+    "plot_thread": 3,
+    "world_rule": 3,
+    "foreshadowing": 5,
+    "setting": 4,
+    "dialogue": 9,
+    "fact": 30
+  },
+  "category": "character",
+  "items": [
+    {
+      "id": "char_a569f45147f55416",
+      "name": "沈砚",
+      "aliases": [
+        "小沈"
+      ],
+      "traits": "二十九岁，雾港邮局的临时邮差，干了两年仍是临时。习惯回避争执，擅长辨认旧邮戳和维修机械。手指在信封边缘上滑过去，像摸惯了的活。性格内敛，不接话，不抬头，但会默默行动。对父亲的事敏感，不愿被人劝阻。",
+      "relationships": [
+        {
+          "target": "沈衡",
+          "target_id": "char_ef49bc9786105db6",
+          "type": "family",
+          "description": "父亲，十年前水闸事故中被认定失职"
+        },
+        {
+          "target": "老赵",
+          "target_id": "char_63bc736ac51d5e65",
+          "type": "ally",
+          "description": "邮局同事，劝他别管旧事"
+        },
+        {
+          "target": "周伯",
+          "target_id": "char_597bd0183e525030",
+          "type": "ally",
+          "description": "退休船工，帮他上船"
+        },
+        {
+          "target": "叶青",
+          "target_id": "char_6a34b36476d95623",
+          "type": "ally",
+          "description": "水文测绘员，未在本章出场"
+        },
+        {
+          "target": "陆岑",
+          "target_id": "char_64599e6c50625e0b",
+          "type": "enemy",
+          "description": "港务主管，参与过十年前隐瞒水闸隐患的决定，未在本章出场"
+        }
+      ],
+      "status": "alive",
+      "importance": "major",
+      "first_appearance": 1,
+      "notes": "",
+      "key_details": [
+        "沈砚把灯罩往下压了压，让光落在台面上，省得照见墙上那张褪色的排班表。表上他的名字用铅笔写着，随时可以擦掉——临时邮差，干了两年，还是临时。",
+        "那枚邮戳缺了一齿。不是磨损，是戳模本身缺角，压出来的圆环在左下断开一小段，像被咬掉一口。沈砚见过这个缺口。十年前父亲的水闸事故卷宗，他翻过不止一次——卷宗封皮上贴着事故当日的挂号信回执，回执上的邮戳，缺的是同一个位置。",
+        "他今年二十九。十年前那件事发生的时候，他十九，还在念书，被人从教室里叫出去，说他父亲没了。后来所有人都说，沈衡是擅离岗位。"
+      ],
+      "key_dialogues": [
+        "【原文引用】“这封没走完流程。”",
+        "【原文引用】“听见了。”",
+        "【原文引用】“我要上船。”"
+      ],
+      "motivation": "查明缺齿邮戳与父亲事故的关联，上旧邮船随船交接那封死信，弄清十年前真相。",
+      "arc": "从回避争执、默默忍受临时身份，到主动行动、登上旧邮船追查线索。",
+      "birth_date": "",
+      "current_age": "29",
+      "age_basis": "原文明确“他今年二十九”。",
+      "life_stage": "成年，临时邮差",
+      "current_location": "旧邮船上，船已驶入雾中，旧码头灯已看不见",
+      "current_goal": "随船到旧码头，下船查看寄存柜，追查缺齿邮戳和那封信的线索。",
+      "current_emotion": "表面平静，内心因父亲的事和缺齿邮戳而震动，抓住栏杆没松手。",
+      "recent_action": "登上旧邮船，在甲板上查看信封，确认地址“雾港旧码头 三号”对应寄存柜编号。",
+      "knowledge_state": "已知缺齿邮戳与父亲事故卷宗回执上的邮戳缺口一致；已知旧码头寄存柜明早将被清空拉走；已知那封信地址指向三号寄存柜。",
+      "unresolved_conflicts": [
+        "父亲被认定擅离岗位，沈砚想翻案但缺乏证据",
+        "临时邮差身份随时可被擦掉",
+        "旧码头明早封闭拆除，时间紧迫"
+      ],
+      "source_chapter": 1,
+      "source_version": 1,
+      "last_updated_chapter": 1,
+      "last_updated_version": 1,
+      "hidden": false,
+      "fact_sources": {
+        "name": [
+          {
+            "value": "沈砚",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "aliases": [
+          {
+            "value": "小沈",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "traits": [
+          {
+            "value": "二十九岁，雾港邮局的临时邮差，干了两年仍是临时。习惯回避争执，擅长辨认旧邮戳和维修机械。手指在信封边缘上滑过去，像摸惯了的活。性格内敛，不接话，不抬头，但会默默行动。对父亲的事敏感，不愿被人劝阻。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "status": [
+          {
+            "value": "alive",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "importance": [
+          {
+            "value": "major",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "key_details": [
+          {
+            "value": "沈砚把灯罩往下压了压，让光落在台面上，省得照见墙上那张褪色的排班表。表上他的名字用铅笔写着，随时可以擦掉——临时邮差，干了两年，还是临时。",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "那枚邮戳缺了一齿。不是磨损，是戳模本身缺角，压出来的圆环在左下断开一小段，像被咬掉一口。沈砚见过这个缺口。十年前父亲的水闸事故卷宗，他翻过不止一次——卷宗封皮上贴着事故当日的挂号信回执，回执上的邮戳，缺的是同一个位置。",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "他今年二十九。十年前那件事发生的时候，他十九，还在念书，被人从教室里叫出去，说他父亲没了。后来所有人都说，沈衡是擅离岗位。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "key_dialogues": [
+          {
+            "value": "【原文引用】“这封没走完流程。”",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "【原文引用】“听见了。”",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "【原文引用】“我要上船。”",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "motivation": [
+          {
+            "value": "查明缺齿邮戳与父亲事故的关联，上旧邮船随船交接那封死信，弄清十年前真相。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "arc": [
+          {
+            "value": "从回避争执、默默忍受临时身份，到主动行动、登上旧邮船追查线索。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "birth_date": [],
+        "current_age": [
+          {
+            "value": "29",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "age_basis": [
+          {
+            "value": "原文明确“他今年二十九”。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "life_stage": [
+          {
+            "value": "成年，临时邮差",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "current_location": [
+          {
+            "value": "旧邮船上，船已驶入雾中，旧码头灯已看不见",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "current_goal": [
+          {
+            "value": "随船到旧码头，下船查看寄存柜，追查缺齿邮戳和那封信的线索。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "current_emotion": [
+          {
+            "value": "表面平静，内心因父亲的事和缺齿邮戳而震动，抓住栏杆没松手。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "recent_action": [
+          {
+            "value": "登上旧邮船，在甲板上查看信封，确认地址“雾港旧码头 三号”对应寄存柜编号。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "knowledge_state": [
+          {
+            "value": "已知缺齿邮戳与父亲事故卷宗回执上的邮戳缺口一致；已知旧码头寄存柜明早将被清空拉走；已知那封信地址指向三号寄存柜。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "unresolved_conflicts": [
+          {
+            "value": "父亲被认定擅离岗位，沈砚想翻案但缺乏证据",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "临时邮差身份随时可被擦掉",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "旧码头明早封闭拆除，时间紧迫",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "relationships": [
+          {
+            "value": "Relationship(target='沈衡', target_id='', type='family', description='父亲，十年前水闸事故中被认定失职')",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "Relationship(target='老赵', target_id='', type='ally', description='邮局同事，劝他别管旧事')",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "Relationship(target='周伯', target_id='', type='ally', description='退休船工，帮他上船')",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "Relationship(target='叶青', target_id='', type='ally', description='水文测绘员，未在本章出场')",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "Relationship(target='陆岑', target_id='', type='enemy', description='港务主管，参与过十年前隐瞒水闸隐患的决定，未在本章出场')",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "Relationship(target='沈衡', target_id='char_ef49bc9786105db6', type='family', description='父亲，十年前水闸事故中被认定失职')",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "Relationship(target='老赵', target_id='char_63bc736ac51d5e65', type='ally', description='邮局同事，劝他别管旧事')",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "Relationship(target='周伯', target_id='char_597bd0183e525030', type='ally', description='退休船工，帮他上船')",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "Relationship(target='叶青', target_id='char_6a34b36476d95623', type='ally', description='水文测绘员，未在本章出场')",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "Relationship(target='陆岑', target_id='char_64599e6c50625e0b', type='enemy', description='港务主管，参与过十年前隐瞒水闸隐患的决定，未在本章出场')",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ]
+      },
+      "knowledge_type": "canon",
+      "confidence": 1.0,
+      "source_refs": [
+        {
+          "chapter": 1,
+          "version": 1,
+          "snapshot_key": "ch0001_v001",
+          "excerpt": ""
+        }
+      ],
+      "locked": false
+    },
+    {
+      "id": "char_63bc736ac51d5e65",
+      "name": "老赵",
+      "aliases": [],
+      "traits": "邮局同事，拎着饭盒，说话直接，劝沈砚别管死信和旧码头的事。",
+      "relationships": [
+        {
+          "target": "沈砚",
+          "target_id": "char_a569f45147f55416",
+          "type": "ally",
+          "description": "邮局同事，劝他别凑热闹"
+        }
+      ],
+      "status": "alive",
+      "importance": "minor",
+      "first_appearance": 1,
+      "notes": "",
+      "key_details": [
+        "“十年前的信，什么流程都过期了。”老赵把饭盒搁在台面上，“我跟你说个事，旧码头那排寄存柜，明早拆的时候直接清空，柜子连东西一起拉走。港务那边通知了，让咱们别去凑热闹。你爸那事……你也别去凑热闹。”"
+      ],
+      "key_dialogues": [
+        "【原文引用】“看什么呢？”",
+        "“那筐是死信，明天一起送销毁。别挑。”",
+        "【原文引用】“听见没有？”"
+      ],
+      "motivation": "按流程处理死信，劝沈砚别卷入旧事。",
+      "arc": "未展开。",
+      "birth_date": "",
+      "current_age": "",
+      "age_basis": "",
+      "life_stage": "",
+      "current_location": "雾港邮局分拣室（已离开）",
+      "current_goal": "",
+      "current_emotion": "",
+      "recent_action": "告知沈砚旧码头寄存柜明早清空，劝他别去。",
+      "knowledge_state": "知道旧码头寄存柜明早清空拉走，知道沈砚父亲的事。",
+      "unresolved_conflicts": [],
+      "source_chapter": 1,
+      "source_version": 1,
+      "last_updated_chapter": 1,
+      "last_updated_version": 1,
+      "hidden": false,
+      "fact_sources": {
+        "name": [
+          {
+            "value": "老赵",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "aliases": [],
+        "traits": [
+          {
+            "value": "邮局同事，拎着饭盒，说话直接，劝沈砚别管死信和旧码头的事。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "status": [
+          {
+            "value": "alive",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "importance": [
+          {
+            "value": "minor",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "key_details": [
+          {
+            "value": "“十年前的信，什么流程都过期了。”老赵把饭盒搁在台面上，“我跟你说个事，旧码头那排寄存柜，明早拆的时候直接清空，柜子连东西一起拉走。港务那边通知了，让咱们别去凑热闹。你爸那事……你也别去凑热闹。”",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "key_dialogues": [
+          {
+            "value": "【原文引用】“看什么呢？”",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "“那筐是死信，明天一起送销毁。别挑。”",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "【原文引用】“听见没有？”",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "motivation": [
+          {
+            "value": "按流程处理死信，劝沈砚别卷入旧事。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "arc": [
+          {
+            "value": "未展开。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "birth_date": [],
+        "current_age": [],
+        "age_basis": [],
+        "life_stage": [],
+        "current_location": [
+          {
+            "value": "雾港邮局分拣室（已离开）",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "current_goal": [],
+        "current_emotion": [],
+        "recent_action": [
+          {
+            "value": "告知沈砚旧码头寄存柜明早清空，劝他别去。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "knowledge_state": [
+          {
+            "value": "知道旧码头寄存柜明早清空拉走，知道沈砚父亲的事。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "unresolved_conflicts": [],
+        "relationships": [
+          {
+            "value": "Relationship(target='沈砚', target_id='', type='ally', description='邮局同事，劝他别凑热闹')",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "Relationship(target='沈砚', target_id='char_a569f45147f55416', type='ally', description='邮局同事，劝他别凑热闹')",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ]
+      },
+      "knowledge_type": "canon",
+      "confidence": 1.0,
+      "source_refs": [
+        {
+          "chapter": 1,
+          "version": 1,
+          "snapshot_key": "ch0001_v001",
+          "excerpt": ""
+        }
+      ],
+      "locked": false
+    },
+    {
+      "id": "char_597bd0183e525030",
+      "name": "周伯",
+      "aliases": [],
+      "traits": "六十一岁，退休船工，穿旧棉袄，蹲着收扳手。以前跑旧码头这条线，退休后还常来帮着看船。掌握旧航线记录。",
+      "relationships": [
+        {
+          "target": "沈砚",
+          "target_id": "char_a569f45147f55416",
+          "type": "ally",
+          "description": "帮沈砚上船，未多问原因"
+        }
+      ],
+      "status": "alive",
+      "importance": "normal",
+      "first_appearance": 1,
+      "notes": "",
+      "key_details": [
+        "一个穿旧棉袄的老头正蹲着收扳手。周伯。以前跑旧码头这条线，退休后还常来帮着看船。",
+        "周伯没问为什么。他把扳手塞进箱子，站起来往执勤那边走，说了几句。风大，沈砚只听见“邮局的”“随船”几个词。执勤的人皱着眉，最后挥了下手。"
+      ],
+      "key_dialogues": [
+        "【原文引用】“小沈。”",
+        "【原文引用】“这个点来，不是送信吧。”",
+        "“船绕一圈，最后靠旧码头。你要下船，自己看着点。”"
+      ],
+      "motivation": "帮沈砚上船，未追问原因。",
+      "arc": "未展开。",
+      "birth_date": "",
+      "current_age": "61",
+      "age_basis": "原文明确“六十一岁”。",
+      "life_stage": "退休船工",
+      "current_location": "旧码头货运入口附近",
+      "current_goal": "",
+      "current_emotion": "",
+      "recent_action": "帮沈砚向执勤人员说情，让他上船。",
+      "knowledge_state": "知道旧码头航线，知道沈砚父亲的事（未明说）。",
+      "unresolved_conflicts": [],
+      "source_chapter": 1,
+      "source_version": 1,
+      "last_updated_chapter": 1,
+      "last_updated_version": 1,
+      "hidden": false,
+      "fact_sources": {
+        "name": [
+          {
+            "value": "周伯",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "aliases": [],
+        "traits": [
+          {
+            "value": "六十一岁，退休船工，穿旧棉袄，蹲着收扳手。以前跑旧码头这条线，退休后还常来帮着看船。掌握旧航线记录。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "status": [
+          {
+            "value": "alive",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "importance": [
+          {
+            "value": "normal",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "key_details": [
+          {
+            "value": "一个穿旧棉袄的老头正蹲着收扳手。周伯。以前跑旧码头这条线，退休后还常来帮着看船。",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "周伯没问为什么。他把扳手塞进箱子，站起来往执勤那边走，说了几句。风大，沈砚只听见“邮局的”“随船”几个词。执勤的人皱着眉，最后挥了下手。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "key_dialogues": [
+          {
+            "value": "【原文引用】“小沈。”",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "【原文引用】“这个点来，不是送信吧。”",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "“船绕一圈，最后靠旧码头。你要下船，自己看着点。”",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "motivation": [
+          {
+            "value": "帮沈砚上船，未追问原因。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "arc": [
+          {
+            "value": "未展开。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "birth_date": [],
+        "current_age": [
+          {
+            "value": "61",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "age_basis": [
+          {
+            "value": "原文明确“六十一岁”。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "life_stage": [
+          {
+            "value": "退休船工",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "current_location": [
+          {
+            "value": "旧码头货运入口附近",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "current_goal": [],
+        "current_emotion": [],
+        "recent_action": [
+          {
+            "value": "帮沈砚向执勤人员说情，让他上船。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "knowledge_state": [
+          {
+            "value": "知道旧码头航线，知道沈砚父亲的事（未明说）。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "unresolved_conflicts": [],
+        "relationships": [
+          {
+            "value": "Relationship(target='沈砚', target_id='', type='ally', description='帮沈砚上船，未多问原因')",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "Relationship(target='沈砚', target_id='char_a569f45147f55416', type='ally', description='帮沈砚上船，未多问原因')",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ]
+      },
+      "knowledge_type": "canon",
+      "confidence": 1.0,
+      "source_refs": [
+        {
+          "chapter": 1,
+          "version": 1,
+          "snapshot_key": "ch0001_v001",
+          "excerpt": ""
+        }
+      ],
+      "locked": false
+    },
+    {
+      "id": "char_ef49bc9786105db6",
+      "name": "沈衡",
+      "aliases": [],
+      "traits": "沈砚父亲，十年前在水闸事故中被认定失职，已故。",
+      "relationships": [
+        {
+          "target": "沈砚",
+          "target_id": "char_a569f45147f55416",
+          "type": "family",
+          "description": "父子，沈砚为其翻案"
+        }
+      ],
+      "status": "dead",
+      "importance": "normal",
+      "first_appearance": 1,
+      "notes": "",
+      "key_details": [
+        "十年前父亲的水闸事故卷宗，他翻过不止一次——卷宗封皮上贴着事故当日的挂号信回执，回执上的邮戳，缺的是同一个位置。",
+        "后来所有人都说，沈衡是擅离岗位。"
+      ],
+      "key_dialogues": [],
+      "motivation": "",
+      "arc": "",
+      "birth_date": "",
+      "current_age": "",
+      "age_basis": "",
+      "life_stage": "",
+      "current_location": "",
+      "current_goal": "",
+      "current_emotion": "",
+      "recent_action": "",
+      "knowledge_state": "",
+      "unresolved_conflicts": [],
+      "source_chapter": 1,
+      "source_version": 1,
+      "last_updated_chapter": 1,
+      "last_updated_version": 1,
+      "hidden": false,
+      "fact_sources": {
+        "name": [
+          {
+            "value": "沈衡",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "aliases": [],
+        "traits": [
+          {
+            "value": "沈砚父亲，十年前在水闸事故中被认定失职，已故。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "status": [
+          {
+            "value": "dead",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "importance": [
+          {
+            "value": "normal",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "key_details": [
+          {
+            "value": "十年前父亲的水闸事故卷宗，他翻过不止一次——卷宗封皮上贴着事故当日的挂号信回执，回执上的邮戳，缺的是同一个位置。",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "后来所有人都说，沈衡是擅离岗位。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "key_dialogues": [],
+        "motivation": [],
+        "arc": [],
+        "birth_date": [],
+        "current_age": [],
+        "age_basis": [],
+        "life_stage": [],
+        "current_location": [],
+        "current_goal": [],
+        "current_emotion": [],
+        "recent_action": [],
+        "knowledge_state": [],
+        "unresolved_conflicts": [],
+        "relationships": [
+          {
+            "value": "Relationship(target='沈砚', target_id='', type='family', description='父子，沈砚为其翻案')",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "Relationship(target='沈砚', target_id='char_a569f45147f55416', type='family', description='父子，沈砚为其翻案')",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ]
+      },
+      "knowledge_type": "canon",
+      "confidence": 1.0,
+      "source_refs": [
+        {
+          "chapter": 1,
+          "version": 1,
+          "snapshot_key": "ch0001_v001",
+          "excerpt": ""
+        }
+      ],
+      "locked": false
+    },
+    {
+      "id": "char_6a34b36476d95623",
+      "name": "叶青",
+      "aliases": [],
+      "traits": "三十二岁，水文测绘员，坚持证据胜于传闻。未在本章出场。",
+      "relationships": [
+        {
+          "target": "沈砚",
+          "target_id": "char_a569f45147f55416",
+          "type": "ally",
+          "description": "未在本章出场"
+        }
+      ],
+      "status": "alive",
+      "importance": "normal",
+      "first_appearance": 1,
+      "notes": "",
+      "key_details": [],
+      "key_dialogues": [],
+      "motivation": "",
+      "arc": "",
+      "birth_date": "",
+      "current_age": "32",
+      "age_basis": "原文明确“三十二岁”。",
+      "life_stage": "",
+      "current_location": "",
+      "current_goal": "",
+      "current_emotion": "",
+      "recent_action": "",
+      "knowledge_state": "",
+      "unresolved_conflicts": [],
+      "source_chapter": 1,
+      "source_version": 1,
+      "last_updated_chapter": 1,
+      "last_updated_version": 1,
+      "hidden": false,
+      "fact_sources": {
+        "name": [
+          {
+            "value": "叶青",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "aliases": [],
+        "traits": [
+          {
+            "value": "三十二岁，水文测绘员，坚持证据胜于传闻。未在本章出场。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "status": [
+          {
+            "value": "alive",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "importance": [
+          {
+            "value": "normal",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "key_details": [],
+        "key_dialogues": [],
+        "motivation": [],
+        "arc": [],
+        "birth_date": [],
+        "current_age": [
+          {
+            "value": "32",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "age_basis": [
+          {
+            "value": "原文明确“三十二岁”。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "life_stage": [],
+        "current_location": [],
+        "current_goal": [],
+        "current_emotion": [],
+        "recent_action": [],
+        "knowledge_state": [],
+        "unresolved_conflicts": [],
+        "relationships": [
+          {
+            "value": "Relationship(target='沈砚', target_id='', type='ally', description='未在本章出场')",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "Relationship(target='沈砚', target_id='char_a569f45147f55416', type='ally', description='未在本章出场')",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ]
+      },
+      "knowledge_type": "canon",
+      "confidence": 1.0,
+      "source_refs": [
+        {
+          "chapter": 1,
+          "version": 1,
+          "snapshot_key": "ch0001_v001",
+          "excerpt": ""
+        }
+      ],
+      "locked": false
+    },
+    {
+      "id": "char_64599e6c50625e0b",
+      "name": "陆岑",
+      "aliases": [],
+      "traits": "四十六岁，港务主管，参与过十年前隐瞒水闸隐患的决定。未在本章出场。",
+      "relationships": [
+        {
+          "target": "沈砚",
+          "target_id": "char_a569f45147f55416",
+          "type": "enemy",
+          "description": "未在本章出场"
+        }
+      ],
+      "status": "alive",
+      "importance": "normal",
+      "first_appearance": 1,
+      "notes": "",
+      "key_details": [],
+      "key_dialogues": [],
+      "motivation": "",
+      "arc": "",
+      "birth_date": "",
+      "current_age": "46",
+      "age_basis": "原文明确“四十六岁”。",
+      "life_stage": "",
+      "current_location": "",
+      "current_goal": "",
+      "current_emotion": "",
+      "recent_action": "",
+      "knowledge_state": "",
+      "unresolved_conflicts": [],
+      "source_chapter": 1,
+      "source_version": 1,
+      "last_updated_chapter": 1,
+      "last_updated_version": 1,
+      "hidden": false,
+      "fact_sources": {
+        "name": [
+          {
+            "value": "陆岑",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "aliases": [],
+        "traits": [
+          {
+            "value": "四十六岁，港务主管，参与过十年前隐瞒水闸隐患的决定。未在本章出场。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "status": [
+          {
+            "value": "alive",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "importance": [
+          {
+            "value": "normal",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "key_details": [],
+        "key_dialogues": [],
+        "motivation": [],
+        "arc": [],
+        "birth_date": [],
+        "current_age": [
+          {
+            "value": "46",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "age_basis": [
+          {
+            "value": "原文明确“四十六岁”。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "life_stage": [],
+        "current_location": [],
+        "current_goal": [],
+        "current_emotion": [],
+        "recent_action": [],
+        "knowledge_state": [],
+        "unresolved_conflicts": [],
+        "relationships": [
+          {
+            "value": "Relationship(target='沈砚', target_id='', type='enemy', description='未在本章出场')",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "Relationship(target='沈砚', target_id='char_a569f45147f55416', type='enemy', description='未在本章出场')",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ]
+      },
+      "knowledge_type": "canon",
+      "confidence": 1.0,
+      "source_refs": [
+        {
+          "chapter": 1,
+          "version": 1,
+          "snapshot_key": "ch0001_v001",
+          "excerpt": ""
+        }
+      ],
+      "locked": false
+    },
+    {
+      "id": "test_shenyan",
+      "name": "沈砚",
+      "aliases": [],
+      "traits": "临时邮差，擅长辨认旧邮戳和维修机械",
+      "relationships": [],
+      "status": "alive",
+      "importance": "normal",
+      "first_appearance": 0,
+      "notes": "",
+      "key_details": [],
+      "key_dialogues": [],
+      "motivation": "",
+      "arc": "",
+      "birth_date": "",
+      "current_age": "",
+      "age_basis": "",
+      "life_stage": "",
+      "current_location": "",
+      "current_goal": "",
+      "current_emotion": "",
+      "recent_action": "",
+      "knowledge_state": "",
+      "unresolved_conflicts": [],
+      "source_chapter": 0,
+      "source_version": 0,
+      "last_updated_chapter": 0,
+      "last_updated_version": 0,
+      "hidden": false,
+      "fact_sources": {},
+      "knowledge_type": "canon",
+      "confidence": 1.0,
+      "source_refs": [],
+      "locked": false
+    }
+  ],
+  "page": {
+    "offset": 0,
+    "limit": 500,
+    "returned": 7,
+    "total": 7,
+    "next_offset": null
+  }
+}

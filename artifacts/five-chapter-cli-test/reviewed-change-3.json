@@ -1,0 +1,7 @@
+{
+  "change_set_ids": [
+    "changes_5f38321677fc46318456bdf07aeb4f27"
+  ],
+  "replaces": "changes_9a981529665f4824ae499462a34d0159",
+  "reason": "原提案缺少 parent_id；正文未改动，通过 chapter propose 重建提案"
+}

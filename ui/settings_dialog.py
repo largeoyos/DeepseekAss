@@ -421,7 +421,7 @@ class SettingsDialog(QDialog):
         image_page = QWidget()
         image_layout = QVBoxLayout(image_page)
         image_layout.addWidget(self._build_api_section(
-            "image", "图片 API", "图片生成仍保持独立配置；不使用时可全部留空。", required=False
+            "image", "图片识别备用 API", "当前模型未勾选看图能力时使用。填写支持图片输入的 OpenAI 兼容视觉模型，不是生图模型；不使用时可全部留空。", required=False
         ))
         image_layout.addStretch()
         center_tabs.addTab(image_page, "图片 API")
@@ -538,7 +538,9 @@ class SettingsDialog(QDialog):
         self._cap_stream = QCheckBox("流式"); self._cap_tools = QCheckBox("工具")
         self._cap_search = QCheckBox("原生搜索"); self._cap_reasoning = QCheckBox("推理")
         self._cap_json = QCheckBox("JSON")
-        for item in (self._cap_stream, self._cap_tools, self._cap_search, self._cap_reasoning, self._cap_json): caps.addWidget(item)
+        self._cap_vision = QCheckBox("看图")
+        self._cap_vision.setToolTip("仅当此模型支持图片输入时勾选；不会依据模型名称猜测。")
+        for item in (self._cap_stream, self._cap_tools, self._cap_search, self._cap_reasoning, self._cap_json, self._cap_vision): caps.addWidget(item)
         self._model_reasoning_levels = QLineEdit(); self._model_reasoning_levels.setPlaceholderText("off, low, medium, high, xhigh, max")
         self._model_default_reasoning = QComboBox()
         for value in ("off", "low", "medium", "high", "xhigh", "max"): self._model_default_reasoning.addItem(value, value)
@@ -748,6 +750,7 @@ class SettingsDialog(QDialog):
         self._cap_stream.setChecked(caps.streaming); self._cap_tools.setChecked(caps.tools)
         self._cap_search.setChecked(caps.native_web_search); self._cap_reasoning.setChecked(caps.reasoning)
         self._cap_json.setChecked(caps.structured_output)
+        self._cap_vision.setChecked(caps.vision)
         self._model_reasoning_levels.setText(", ".join(caps.supported_reasoning_levels or ["off"]))
         self._set_combo_data(self._model_default_reasoning, profile.defaults.reasoning_level)
         self._set_combo_data(self._model_default_search, profile.defaults.web_search)
@@ -789,6 +792,7 @@ class SettingsDialog(QDialog):
         caps.streaming = self._cap_stream.isChecked(); caps.tools = self._cap_tools.isChecked()
         caps.native_web_search = self._cap_search.isChecked(); caps.reasoning = self._cap_reasoning.isChecked()
         caps.structured_output = self._cap_json.isChecked()
+        caps.vision = self._cap_vision.isChecked()
         caps.supported_reasoning_levels = [item.strip() for item in self._model_reasoning_levels.text().split(",") if item.strip()] or ["off"]
         profile.defaults.reasoning_level = str(self._model_default_reasoning.currentData() or "off")
         profile.defaults.web_search = str(self._model_default_search.currentData() or "off")
@@ -979,7 +983,7 @@ class SettingsDialog(QDialog):
         api_key.setEchoMode(QLineEdit.EchoMode.Password)
         api_key.setPlaceholderText("sk-...")
         model = QLineEdit(str(config.get("model", "")))
-        model.setPlaceholderText("例如 deepseek-chat / gpt-image-1")
+        model.setPlaceholderText("填写支持图片输入的视觉模型名称" if kind == "image" else "例如 deepseek-chat")
 
         form = QFormLayout()
         form.addRow("调用地址" + (" *" if required else ""), base_url)

@@ -62,6 +62,31 @@ def config_with_models(*models):
 
 
 class ModelConfigTests(unittest.TestCase):
+    def test_large_planning_input_reduces_output_ceiling_without_truncation(self):
+        config = config_with_models(ProviderProtocol.OPENAI_CHAT)
+        config.models["m0"].context_window = 32768
+        config.models["m0"].max_output_tokens = 32768
+        adapter = FakeAdapter(ProviderProtocol.OPENAI_CHAT, [ModelResult(content="plan")])
+        gateway = ModelGateway(config, adapters={ProviderProtocol.OPENAI_CHAT: adapter})
+        messages = [{"role": "system", "content": "必须保留" * 4000}, {"role": "user", "content": "生成完整规划"}]
+        result = gateway.complete(ModelRequest("agent_chapter_plan", TaskStage.PLANNING, messages, max_output_tokens=16384))
+        self.assertEqual(messages, adapter.requests[0].messages)
+        self.assertLess(result.context_report.max_output_tokens, 16384)
+        self.assertGreaterEqual(result.context_report.max_output_tokens, 1024)
+
+    def test_output_ceiling_equal_to_window_reserves_room_for_input(self):
+        config = config_with_models(ProviderProtocol.OPENAI_CHAT)
+        config.models["m0"].context_window = 32768
+        config.models["m0"].max_output_tokens = 32768
+        adapter = FakeAdapter(ProviderProtocol.OPENAI_CHAT, [ModelResult(content="{}")])
+        gateway = ModelGateway(config, adapters={ProviderProtocol.OPENAI_CHAT: adapter})
+        result = gateway.complete(ModelRequest("world_bible_update", TaskStage.EXTRACTION,
+            [{"role": "user", "content": "章节正文" * 1000}], max_output_tokens=32768))
+        report = result.context_report
+        self.assertFalse(report.blocked)
+        self.assertGreater(report.input_budget, 1)
+        self.assertLessEqual(report.estimated_input_tokens + report.max_output_tokens + report.safety_reserve, 32768)
+
     def test_legacy_text_config_migrates_to_six_routes(self):
         config = migrate_legacy_config(
             {"text": {"api_key": "key", "base_url": "https://api.deepseek.com", "model": "deepseek-v4-pro"}},

@@ -47,6 +47,7 @@ class AgentRunRequest:
     mode: str = "agent"
     book_title: str = ""
     request_id: str = field(default_factory=lambda: f"request_{uuid.uuid4().hex}")
+    context_query: str = ""  # Original question, without fiction/task prompt wrappers.
 
 
 @dataclass

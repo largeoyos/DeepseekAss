@@ -1,0 +1,846 @@
+{
+  "schema_version": 1,
+  "book": {
+    "book_id": "94dd64d97a2f",
+    "title": "最后一班潮汐邮船（CLI实测-6d3119）"
+  },
+  "categories": {
+    "character": 9,
+    "location": 10,
+    "timeline": 11,
+    "plot_thread": 9,
+    "world_rule": 14,
+    "foreshadowing": 16,
+    "setting": 14,
+    "dialogue": 26,
+    "fact": 116
+  },
+  "category": "location",
+  "items": [
+    {
+      "id": "loc_37b4a086c59e540a",
+      "name": "雾港邮局分拣室",
+      "description": "晚上七点以后只剩一盏灯。墙上贴着褪色的排班表，沈砚的名字用铅笔写着。窗外风一阵紧过一阵，玻璃缝里塞着旧报纸，还是漏进咸味。台面上有饭盒，抽屉最底下有邮戳登记册。",
+      "significance": "故事起点，沈砚发现缺齿邮戳死信的地方。",
+      "first_appearance": 1,
+      "key_details": [
+        "雾港邮局的分拣室在晚上七点以后就只剩一盏灯。沈砚把灯罩往下压了压，让光落在台面上，省得照见墙上那张褪色的排班表。",
+        "窗外风一阵紧过一阵。玻璃缝里塞着旧报纸，还是漏进咸味。"
+      ],
+      "atmosphere": "昏暗、安静、咸味渗入，只有一盏灯。",
+      "source_chapter": 1,
+      "source_version": 1,
+      "last_updated_chapter": 1,
+      "last_updated_version": 1,
+      "hidden": false,
+      "fact_sources": {
+        "name": [
+          {
+            "value": "雾港邮局分拣室",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "description": [
+          {
+            "value": "晚上七点以后只剩一盏灯。墙上贴着褪色的排班表，沈砚的名字用铅笔写着。窗外风一阵紧过一阵，玻璃缝里塞着旧报纸，还是漏进咸味。台面上有饭盒，抽屉最底下有邮戳登记册。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "significance": [
+          {
+            "value": "故事起点，沈砚发现缺齿邮戳死信的地方。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "first_appearance": [
+          {
+            "value": "1",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "key_details": [
+          {
+            "value": "雾港邮局的分拣室在晚上七点以后就只剩一盏灯。沈砚把灯罩往下压了压，让光落在台面上，省得照见墙上那张褪色的排班表。",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "窗外风一阵紧过一阵。玻璃缝里塞着旧报纸，还是漏进咸味。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "atmosphere": [
+          {
+            "value": "昏暗、安静、咸味渗入，只有一盏灯。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ]
+      },
+      "knowledge_type": "canon",
+      "confidence": 1.0,
+      "source_refs": [
+        {
+          "chapter": 1,
+          "version": 1,
+          "snapshot_key": "ch0001_v001",
+          "excerpt": ""
+        }
+      ],
+      "locked": false
+    },
+    {
+      "id": "loc_01d833966e2a5409",
+      "name": "旧码头",
+      "description": "天还没亮，码头上只剩两盏灯，一盏在售票窗口上方，一盏挂在货运入口，光都发黄。拆雨棚的工人夜里收了工，铁架子和塑料布堆在一边，风一吹，塑料布贴着地皮跑。寄存柜那排铁皮还在，暗红色，一扇挨着一扇。",
+      "significance": "故事核心地点，即将封闭拆除，隐藏着旧邮戳和维护记录。",
+      "first_appearance": 1,
+      "key_details": [
+        "旧码头的售票窗口已经关了。铁栅栏拉下来一半，里面黑着。风把栈桥上的塑料布吹得啪啪响，几个工人正拆附属的雨棚，螺丝掉在铁板上，滚出很远。",
+        "那排寄存柜还在，铁皮锈成暗红色，柜门一扇挨着一扇，没被搬走。他数了数，从东边数第三扇，门缝里塞着东西，看不清。",
+        "旧邮船今晚退役，明晨旧码头封闭拆除。",
+        "有封旧信，地址是旧码头",
+        "明早码头就拆了，柜子连东西一起拉走。",
+        "码头上只剩两盏灯，一盏在售票窗口上方，一盏挂在货运入口，光都发黄。",
+        "寄存柜那排铁皮还在，暗红色，一扇挨着一扇。"
+      ],
+      "atmosphere": "昏暗、破败、风大",
+      "source_chapter": 1,
+      "source_version": 1,
+      "last_updated_chapter": 3,
+      "last_updated_version": 1,
+      "hidden": false,
+      "fact_sources": {
+        "name": [
+          {
+            "value": "旧码头",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "旧码头",
+            "source_chapter": 2,
+            "source_version": 2
+          },
+          {
+            "value": "旧码头",
+            "source_chapter": 3,
+            "source_version": 1
+          }
+        ],
+        "description": [
+          {
+            "value": "售票窗口已关，铁栅栏拉下来一半，里面黑着。风把栈桥上的塑料布吹得啪啪响，几个工人正拆附属的雨棚，螺丝掉在铁板上滚出很远。货运入口堆着缆绳和旧工具箱。码头深处有一排寄存柜，铁皮锈成暗红色，柜门一扇挨着一扇，没被搬走。从东边数第三扇，门缝里塞着东西。",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "明早封闭拆除。沈砚有一封旧信地址是旧码头。",
+            "source_chapter": 2,
+            "source_version": 2
+          },
+          {
+            "value": "天还没亮，码头上只剩两盏灯，一盏在售票窗口上方，一盏挂在货运入口，光都发黄。拆雨棚的工人夜里收了工，铁架子和塑料布堆在一边，风一吹，塑料布贴着地皮跑。寄存柜那排铁皮还在，暗红色，一扇挨着一扇。",
+            "source_chapter": 3,
+            "source_version": 1
+          }
+        ],
+        "significance": [
+          {
+            "value": "明早封闭拆除，寄存柜将被清空拉走。沈砚父亲事故相关地点。",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "故事核心地点，十年前水闸事故相关，即将拆除。",
+            "source_chapter": 2,
+            "source_version": 2
+          },
+          {
+            "value": "故事核心地点，即将封闭拆除，隐藏着旧邮戳和维护记录。",
+            "source_chapter": 3,
+            "source_version": 1
+          }
+        ],
+        "first_appearance": [
+          {
+            "value": "1",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "2",
+            "source_chapter": 2,
+            "source_version": 2
+          },
+          {
+            "value": "3",
+            "source_chapter": 3,
+            "source_version": 1
+          }
+        ],
+        "key_details": [
+          {
+            "value": "旧码头的售票窗口已经关了。铁栅栏拉下来一半，里面黑着。风把栈桥上的塑料布吹得啪啪响，几个工人正拆附属的雨棚，螺丝掉在铁板上，滚出很远。",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "那排寄存柜还在，铁皮锈成暗红色，柜门一扇挨着一扇，没被搬走。他数了数，从东边数第三扇，门缝里塞着东西，看不清。",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "旧邮船今晚退役，明晨旧码头封闭拆除。",
+            "source_chapter": 2,
+            "source_version": 2
+          },
+          {
+            "value": "有封旧信，地址是旧码头",
+            "source_chapter": 2,
+            "source_version": 2
+          },
+          {
+            "value": "明早码头就拆了，柜子连东西一起拉走。",
+            "source_chapter": 2,
+            "source_version": 2
+          },
+          {
+            "value": "码头上只剩两盏灯，一盏在售票窗口上方，一盏挂在货运入口，光都发黄。",
+            "source_chapter": 3,
+            "source_version": 1
+          },
+          {
+            "value": "寄存柜那排铁皮还在，暗红色，一扇挨着一扇。",
+            "source_chapter": 3,
+            "source_version": 1
+          }
+        ],
+        "atmosphere": [
+          {
+            "value": "荒凉、风大、即将拆除的废弃感。",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "昏暗、破败、风大",
+            "source_chapter": 3,
+            "source_version": 1
+          }
+        ]
+      },
+      "knowledge_type": "canon",
+      "confidence": 1.0,
+      "source_refs": [
+        {
+          "chapter": 1,
+          "version": 1,
+          "snapshot_key": "ch0001_v001",
+          "excerpt": ""
+        }
+      ],
+      "locked": false
+    },
+    {
+      "id": "loc_abac1a2dbf1a5c87",
+      "name": "旧邮船",
+      "description": "甲板上人很少。风从船头压过来，船身一离栈桥就开始晃。船舱的灯从侧面照过来。船驶进雾里，旧码头的灯在身后一点点变小，最后只剩一点黄。",
+      "significance": "退役邮船，沈砚随船前往旧码头。",
+      "first_appearance": 1,
+      "key_details": [
+        "甲板上人很少。风从船头压过来，船身一离栈桥就开始晃。沈砚扶着栏杆站了一会儿，等腿上的劲稳了，才把信掏出来。",
+        "船已经驶进雾里，旧码头的灯在身后一点点变小，最后只剩一点黄。"
+      ],
+      "atmosphere": "摇晃、风大、雾中航行，孤独感。",
+      "source_chapter": 1,
+      "source_version": 1,
+      "last_updated_chapter": 1,
+      "last_updated_version": 1,
+      "hidden": false,
+      "fact_sources": {
+        "name": [
+          {
+            "value": "旧邮船",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "description": [
+          {
+            "value": "甲板上人很少。风从船头压过来，船身一离栈桥就开始晃。船舱的灯从侧面照过来。船驶进雾里，旧码头的灯在身后一点点变小，最后只剩一点黄。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "significance": [
+          {
+            "value": "退役邮船，沈砚随船前往旧码头。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "first_appearance": [
+          {
+            "value": "1",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "key_details": [
+          {
+            "value": "甲板上人很少。风从船头压过来，船身一离栈桥就开始晃。沈砚扶着栏杆站了一会儿，等腿上的劲稳了，才把信掏出来。",
+            "source_chapter": 1,
+            "source_version": 1
+          },
+          {
+            "value": "船已经驶进雾里，旧码头的灯在身后一点点变小，最后只剩一点黄。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ],
+        "atmosphere": [
+          {
+            "value": "摇晃、风大、雾中航行，孤独感。",
+            "source_chapter": 1,
+            "source_version": 1
+          }
+        ]
+      },
+      "knowledge_type": "canon",
+      "confidence": 1.0,
+      "source_refs": [
+        {
+          "chapter": 1,
+          "version": 1,
+          "snapshot_key": "ch0001_v001",
+          "excerpt": ""
+        }
+      ],
+      "locked": false
+    },
+    {
+      "id": "test_wugang",
+      "name": "雾港",
+      "description": "近现代架空海港，旧邮船即将退役",
+      "significance": "",
+      "first_appearance": 0,
+      "key_details": [],
+      "atmosphere": "",
+      "source_chapter": 0,
+      "source_version": 0,
+      "last_updated_chapter": 0,
+      "last_updated_version": 0,
+      "hidden": false,
+      "fact_sources": {},
+      "knowledge_type": "canon",
+      "confidence": 1.0,
+      "source_refs": [],
+      "locked": false
+    },
+    {
+      "id": "loc_cbed903a3e2b59db",
+      "name": "退役邮船",
+      "description": "旧邮船今晚退役。甲板上有风，船舱入口灯亮着，门半开。工作区不大，一张长桌，两把椅子，墙角堆着旧航标灯和卷起来的缆绳。船绕主港一圈，最后才靠旧码头，中间有一个多钟头。",
+      "significance": "故事主要发生地，沈砚与叶青在此相遇并发现潮汐表被篡改。",
+      "first_appearance": 2,
+      "key_details": [
+        "甲板上的风比刚上船时更硬。",
+        "船舱入口的灯亮着，门半开。里面有人伏在长桌上，面前摊着一卷图纸，纸边用两只铁夹子压住，风一过就哗啦响。",
+        "工作区不大，一张长桌，两把椅子，墙角堆着旧航标灯和卷起来的缆绳。",
+        "船还在雾里走，旧码头的方向什么都看不见。"
+      ],
+      "atmosphere": "风硬，雾重，旧船即将退役的萧瑟感。",
+      "source_chapter": 2,
+      "source_version": 2,
+      "last_updated_chapter": 2,
+      "last_updated_version": 2,
+      "hidden": false,
+      "fact_sources": {
+        "name": [
+          {
+            "value": "退役邮船",
+            "source_chapter": 2,
+            "source_version": 2
+          }
+        ],
+        "description": [
+          {
+            "value": "旧邮船今晚退役。甲板上有风，船舱入口灯亮着，门半开。工作区不大，一张长桌，两把椅子，墙角堆着旧航标灯和卷起来的缆绳。船绕主港一圈，最后才靠旧码头，中间有一个多钟头。",
+            "source_chapter": 2,
+            "source_version": 2
+          }
+        ],
+        "significance": [
+          {
+            "value": "故事主要发生地，沈砚与叶青在此相遇并发现潮汐表被篡改。",
+            "source_chapter": 2,
+            "source_version": 2
+          }
+        ],
+        "first_appearance": [
+          {
+            "value": "2",
+            "source_chapter": 2,
+            "source_version": 2
+          }
+        ],
+        "key_details": [
+          {
+            "value": "甲板上的风比刚上船时更硬。",
+            "source_chapter": 2,
+            "source_version": 2
+          },
+          {
+            "value": "船舱入口的灯亮着，门半开。里面有人伏在长桌上，面前摊着一卷图纸，纸边用两只铁夹子压住，风一过就哗啦响。",
+            "source_chapter": 2,
+            "source_version": 2
+          },
+          {
+            "value": "工作区不大，一张长桌，两把椅子，墙角堆着旧航标灯和卷起来的缆绳。",
+            "source_chapter": 2,
+            "source_version": 2
+          },
+          {
+            "value": "船还在雾里走，旧码头的方向什么都看不见。",
+            "source_chapter": 2,
+            "source_version": 2
+          }
+        ],
+        "atmosphere": [
+          {
+            "value": "风硬，雾重，旧船即将退役的萧瑟感。",
+            "source_chapter": 2,
+            "source_version": 2
+          }
+        ]
+      },
+      "knowledge_type": "canon",
+      "confidence": 1.0,
+      "source_refs": [
+        {
+          "chapter": 2,
+          "version": 2,
+          "snapshot_key": "ch0002_v002",
+          "excerpt": ""
+        }
+      ],
+      "locked": false
+    },
+    {
+      "id": "loc_92472ed55f895045",
+      "name": "港务档案室",
+      "description": "原件存放处，叶青调不出来。",
+      "significance": "潮汐表原件所在地，无法调取。",
+      "first_appearance": 2,
+      "key_details": [
+        "原件在港务档案室，我调不出来。"
+      ],
+      "atmosphere": "",
+      "source_chapter": 2,
+      "source_version": 2,
+      "last_updated_chapter": 2,
+      "last_updated_version": 2,
+      "hidden": false,
+      "fact_sources": {
+        "name": [
+          {
+            "value": "港务档案室",
+            "source_chapter": 2,
+            "source_version": 2
+          }
+        ],
+        "description": [
+          {
+            "value": "原件存放处，叶青调不出来。",
+            "source_chapter": 2,
+            "source_version": 2
+          }
+        ],
+        "significance": [
+          {
+            "value": "潮汐表原件所在地，无法调取。",
+            "source_chapter": 2,
+            "source_version": 2
+          }
+        ],
+        "first_appearance": [
+          {
+            "value": "2",
+            "source_chapter": 2,
+            "source_version": 2
+          }
+        ],
+        "key_details": [
+          {
+            "value": "原件在港务档案室，我调不出来。",
+            "source_chapter": 2,
+            "source_version": 2
+          }
+        ],
+        "atmosphere": []
+      },
+      "knowledge_type": "canon",
+      "confidence": 1.0,
+      "source_refs": [
+        {
+          "chapter": 2,
+          "version": 2,
+          "snapshot_key": "ch0002_v002",
+          "excerpt": ""
+        }
+      ],
+      "locked": false
+    },
+    {
+      "id": "loc_28152cd9c81a500b",
+      "name": "周伯家",
+      "description": "码头后头一排平房里，窗户亮着。屋里一张方桌，桌上摊着几本账册，边角卷起。墙角立着一盘系缆绳，绳头打着结，结法很特别，绕两圈再回穿，收得死紧。",
+      "significance": "关键证词和证据的提供地。",
+      "first_appearance": 3,
+      "key_details": [
+        "屋里一张方桌，桌上摊着几本账册，边角卷起。",
+        "墙角立着一盘系缆绳，绳头打着结，结法很特别，绕两圈再回穿，收得死紧。"
+      ],
+      "atmosphere": "安静、紧张、风从窗缝钻入",
+      "source_chapter": 3,
+      "source_version": 1,
+      "last_updated_chapter": 3,
+      "last_updated_version": 1,
+      "hidden": false,
+      "fact_sources": {
+        "name": [
+          {
+            "value": "周伯家",
+            "source_chapter": 3,
+            "source_version": 1
+          }
+        ],
+        "description": [
+          {
+            "value": "码头后头一排平房里，窗户亮着。屋里一张方桌，桌上摊着几本账册，边角卷起。墙角立着一盘系缆绳，绳头打着结，结法很特别，绕两圈再回穿，收得死紧。",
+            "source_chapter": 3,
+            "source_version": 1
+          }
+        ],
+        "significance": [
+          {
+            "value": "关键证词和证据的提供地。",
+            "source_chapter": 3,
+            "source_version": 1
+          }
+        ],
+        "first_appearance": [
+          {
+            "value": "3",
+            "source_chapter": 3,
+            "source_version": 1
+          }
+        ],
+        "key_details": [
+          {
+            "value": "屋里一张方桌，桌上摊着几本账册，边角卷起。",
+            "source_chapter": 3,
+            "source_version": 1
+          },
+          {
+            "value": "墙角立着一盘系缆绳，绳头打着结，结法很特别，绕两圈再回穿，收得死紧。",
+            "source_chapter": 3,
+            "source_version": 1
+          }
+        ],
+        "atmosphere": [
+          {
+            "value": "安静、紧张、风从窗缝钻入",
+            "source_chapter": 3,
+            "source_version": 1
+          }
+        ]
+      },
+      "knowledge_type": "canon",
+      "confidence": 1.0,
+      "source_refs": [
+        {
+          "chapter": 3,
+          "version": 1,
+          "snapshot_key": "ch0003_v001",
+          "excerpt": ""
+        }
+      ],
+      "locked": false
+    },
+    {
+      "id": "loc_ce2d2bc0ea80525c",
+      "name": "水闸",
+      "description": "横在两道堤之间，混凝土发黑，闸门那扇铁皮锈得看不出原来的颜色。控制室的灯亮着，一扇小窗透出黄光。闸门底下没有水声。控制室门从里面插死，窗玻璃后面横着一根铁条别在窗框上。后墙根有一块方形铁皮通风口，锈得发脆。",
+      "significance": "故事核心地点，十年前事故和当前危机的发生地。",
+      "first_appearance": 3,
+      "key_details": [
+        "老水闸这些年没大修过，闸门还是那扇。",
+        "夜里就一个值班的。出了事，喊人都来不及。",
+        "水闸横在两道堤之间，混凝土发黑，闸门那扇铁皮锈得看不出原来的颜色。控制室的灯亮着，一扇小窗透出黄光。可闸门底下没有水声——按规矩，涨潮前该先开一道缝预排，把水位压下去。闸门纹丝不动。",
+        "后墙根果然有一块方形铁皮，锈得发脆。"
+      ],
+      "atmosphere": "压抑、紧张、危险",
+      "source_chapter": 3,
+      "source_version": 1,
+      "last_updated_chapter": 4,
+      "last_updated_version": 1,
+      "hidden": false,
+      "fact_sources": {
+        "name": [
+          {
+            "value": "水闸",
+            "source_chapter": 3,
+            "source_version": 1
+          },
+          {
+            "value": "水闸",
+            "source_chapter": 4,
+            "source_version": 1
+          }
+        ],
+        "description": [
+          {
+            "value": "老水闸，闸门还是那扇，这些年没大修过。夜里就一个值班的。",
+            "source_chapter": 3,
+            "source_version": 1
+          },
+          {
+            "value": "横在两道堤之间，混凝土发黑，闸门那扇铁皮锈得看不出原来的颜色。控制室的灯亮着，一扇小窗透出黄光。闸门底下没有水声。控制室门从里面插死，窗玻璃后面横着一根铁条别在窗框上。后墙根有一块方形铁皮通风口，锈得发脆。",
+            "source_chapter": 4,
+            "source_version": 1
+          }
+        ],
+        "significance": [
+          {
+            "value": "危机即将发生的地点，十年前事故的发生地。",
+            "source_chapter": 3,
+            "source_version": 1
+          },
+          {
+            "value": "故事核心地点，十年前事故和当前危机的发生地。",
+            "source_chapter": 4,
+            "source_version": 1
+          }
+        ],
+        "first_appearance": [
+          {
+            "value": "3",
+            "source_chapter": 3,
+            "source_version": 1
+          },
+          {
+            "value": "4",
+            "source_chapter": 4,
+            "source_version": 1
+          }
+        ],
+        "key_details": [
+          {
+            "value": "老水闸这些年没大修过，闸门还是那扇。",
+            "source_chapter": 3,
+            "source_version": 1
+          },
+          {
+            "value": "夜里就一个值班的。出了事，喊人都来不及。",
+            "source_chapter": 3,
+            "source_version": 1
+          },
+          {
+            "value": "水闸横在两道堤之间，混凝土发黑，闸门那扇铁皮锈得看不出原来的颜色。控制室的灯亮着，一扇小窗透出黄光。可闸门底下没有水声——按规矩，涨潮前该先开一道缝预排，把水位压下去。闸门纹丝不动。",
+            "source_chapter": 4,
+            "source_version": 1
+          },
+          {
+            "value": "后墙根果然有一块方形铁皮，锈得发脆。",
+            "source_chapter": 4,
+            "source_version": 1
+          }
+        ],
+        "atmosphere": [
+          {
+            "value": "危险、紧迫",
+            "source_chapter": 3,
+            "source_version": 1
+          },
+          {
+            "value": "压抑、紧张、危险",
+            "source_chapter": 4,
+            "source_version": 1
+          }
+        ]
+      },
+      "knowledge_type": "canon",
+      "confidence": 1.0,
+      "source_refs": [
+        {
+          "chapter": 3,
+          "version": 1,
+          "snapshot_key": "ch0003_v001",
+          "excerpt": ""
+        }
+      ],
+      "locked": false
+    },
+    {
+      "id": "loc_ce34d6d4fe6d5ac9",
+      "name": "碎石小径与废弃货棚",
+      "description": "平房后头一条碎石小径，两边是废弃的货棚，铁皮门歪着，风从缝里穿过去，呜呜地响。",
+      "significance": "通往水闸的隐蔽路径，避开码头正面。",
+      "first_appearance": 4,
+      "key_details": [
+        "他拐进平房后头一条碎石小径，两边是废弃的货棚，铁皮门歪着，风从缝里穿过去，呜呜地响。"
+      ],
+      "atmosphere": "荒凉、风声呜咽",
+      "source_chapter": 4,
+      "source_version": 1,
+      "last_updated_chapter": 4,
+      "last_updated_version": 1,
+      "hidden": false,
+      "fact_sources": {
+        "name": [
+          {
+            "value": "碎石小径与废弃货棚",
+            "source_chapter": 4,
+            "source_version": 1
+          }
+        ],
+        "description": [
+          {
+            "value": "平房后头一条碎石小径，两边是废弃的货棚，铁皮门歪着，风从缝里穿过去，呜呜地响。",
+            "source_chapter": 4,
+            "source_version": 1
+          }
+        ],
+        "significance": [
+          {
+            "value": "通往水闸的隐蔽路径，避开码头正面。",
+            "source_chapter": 4,
+            "source_version": 1
+          }
+        ],
+        "first_appearance": [
+          {
+            "value": "4",
+            "source_chapter": 4,
+            "source_version": 1
+          }
+        ],
+        "key_details": [
+          {
+            "value": "他拐进平房后头一条碎石小径，两边是废弃的货棚，铁皮门歪着，风从缝里穿过去，呜呜地响。",
+            "source_chapter": 4,
+            "source_version": 1
+          }
+        ],
+        "atmosphere": [
+          {
+            "value": "荒凉、风声呜咽",
+            "source_chapter": 4,
+            "source_version": 1
+          }
+        ]
+      },
+      "knowledge_type": "canon",
+      "confidence": 1.0,
+      "source_refs": [
+        {
+          "chapter": 4,
+          "version": 1,
+          "snapshot_key": "ch0004_v001",
+          "excerpt": ""
+        }
+      ],
+      "locked": false
+    },
+    {
+      "id": "loc_dff20249584a5a61",
+      "name": "控制室",
+      "description": "内有控制台、配电箱。一股潮气。值班员被捆在控制台后面。配电箱内几根线头断着，铜芯露在外面。",
+      "significance": "操作水闸的核心位置，沈砚在此修复线路并准备开闸。",
+      "first_appearance": 4,
+      "key_details": [
+        "控制室里一股潮气。值班员缩在控制台后面，手脚被一根尼龙绳捆着，嘴里塞着布。",
+        "沈砚打开配电箱。里面几根线头断着，铜芯露在外面。"
+      ],
+      "atmosphere": "潮湿、封闭、紧迫",
+      "source_chapter": 4,
+      "source_version": 1,
+      "last_updated_chapter": 4,
+      "last_updated_version": 1,
+      "hidden": false,
+      "fact_sources": {
+        "name": [
+          {
+            "value": "控制室",
+            "source_chapter": 4,
+            "source_version": 1
+          }
+        ],
+        "description": [
+          {
+            "value": "内有控制台、配电箱。一股潮气。值班员被捆在控制台后面。配电箱内几根线头断着，铜芯露在外面。",
+            "source_chapter": 4,
+            "source_version": 1
+          }
+        ],
+        "significance": [
+          {
+            "value": "操作水闸的核心位置，沈砚在此修复线路并准备开闸。",
+            "source_chapter": 4,
+            "source_version": 1
+          }
+        ],
+        "first_appearance": [
+          {
+            "value": "4",
+            "source_chapter": 4,
+            "source_version": 1
+          }
+        ],
+        "key_details": [
+          {
+            "value": "控制室里一股潮气。值班员缩在控制台后面，手脚被一根尼龙绳捆着，嘴里塞着布。",
+            "source_chapter": 4,
+            "source_version": 1
+          },
+          {
+            "value": "沈砚打开配电箱。里面几根线头断着，铜芯露在外面。",
+            "source_chapter": 4,
+            "source_version": 1
+          }
+        ],
+        "atmosphere": [
+          {
+            "value": "潮湿、封闭、紧迫",
+            "source_chapter": 4,
+            "source_version": 1
+          }
+        ]
+      },
+      "knowledge_type": "canon",
+      "confidence": 1.0,
+      "source_refs": [
+        {
+          "chapter": 4,
+          "version": 1,
+          "snapshot_key": "ch0004_v001",
+          "excerpt": ""
+        }
+      ],
+      "locked": false
+    }
+  ],
+  "page": {
+    "offset": 0,
+    "limit": 500,
+    "returned": 10,
+    "total": 10,
+    "next_offset": null
+  }
+}

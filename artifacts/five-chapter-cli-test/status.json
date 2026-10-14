@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "defaults": {
+    "tree_page_size": 500,
+    "chapter_page_chars": 20000,
+    "search_scope": "all",
+    "search_limit": 20,
+    "world_page_size": 100,
+    "include_summaries": false,
+    "agent_target_words": 3000
+  },
+  "capabilities": {
+    "read": true,
+    "propose": true,
+    "writing_agent": true,
+    "approve": true,
+    "manage": true
+  }
+}

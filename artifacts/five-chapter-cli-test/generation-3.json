@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "book": {
+    "book_id": "94dd64d97a2f",
+    "title": "最后一班潮汐邮船（CLI实测-6d3119）"
+  },
+  "session_id": "session_307ed7084d5e4eb2a580572ae7842d60",
+  "run_id": "run_18ea0296e9814db488522f186608fa85",
+  "status": "waiting_approval",
+  "terminal_reason": "approval_required",
+  "backend": {
+    "requested": "legacy",
+    "active": "legacy",
+    "fallback_reason": ""
+  },
+  "model": "deepseek-flash",
+  "target": {
+    "chapter_title": "船工的绳结",
+    "target_words": 1600
+  },
+  "change_set_ids": [
+    "changes_9a981529665f4824ae499462a34d0159"
+  ],
+  "artifact_ids": [
+    "artifact_b7a48ac07a4148eebe89fb9c56c0bf90",
+    "artifact_a1c98eba4d7d4891aa2b7a89a2992aeb"
+  ],
+  "requires_human_approval": true,
+  "final_text": "Draft written. Self-check against continuity, fidelity, and the author plan:\n\n- **承接**：接第2章结尾（肋骨伤、下船、找周伯、明早拆码头）✓\n- **作者规划对齐**：周伯用系缆绳结证明沈衡提前安排撤离；承认因怕失业沉默；交出维护记录副本；陆岑批准拖延维修（本章仅作周伯口述线索，未坐实定罪）；风暴重现，调查转救援 ✓\n- **信息边界**：沈砚仍不知凶手；陆岑未出场，仅被间接提及 ✓\n- **禁写遵守**：未提前认定凶手 ✓\n- **去AI腔**：无抽象拔高、无金句段尾、无模板排比 ✓\n\nNow submitting the formal ChangeSet for approval.",
+  "warning": ""
+}

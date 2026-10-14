@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "book": {
+    "book_id": "94dd64d97a2f",
+    "title": "最后一班潮汐邮船（CLI实测-6d3119）"
+  },
+  "session_id": "session_253893580923418987d30cf29a650c49",
+  "run_id": "run_a3e1f7ff016a4c6788c30279439f8f03",
+  "status": "waiting_approval",
+  "terminal_reason": "approval_required",
+  "backend": {
+    "requested": "legacy",
+    "active": "legacy",
+    "fallback_reason": ""
+  },
+  "model": "deepseek-flash",
+  "target": {
+    "chapter_title": "被改写的潮汐",
+    "target_words": 1600
+  },
+  "change_set_ids": [
+    "changes_332a4c647068420e94fc1eb266a71ca4"
+  ],
+  "artifact_ids": [],
+  "requires_human_approval": true,
+  "final_text": "Draft written. Now let me self-check continuity and then propose the formal chapter.",
+  "warning": ""
+}

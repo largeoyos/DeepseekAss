@@ -27,7 +27,7 @@ class ContentViewerDialog(QDialog):
         self.resize(780, 560)
 
         layout = QVBoxLayout(self)
-        direction = "发送" if entry.direction == "send" else "接收"
+        direction = {"send": "发送", "request": "请求 / 回复"}.get(entry.direction, "接收")
         meta = QLabel(
             f"{entry.timestamp} · {direction} · {entry.operation} · {entry.strategy} · {entry.model}"
         )
@@ -41,6 +41,10 @@ class ContentViewerDialog(QDialog):
         meta.setText(meta_text)
 
         tabs = QTabWidget()
+        self._prompt = QPlainTextEdit()
+        self._prompt.setReadOnly(True)
+        self._prompt.setPlainText(entry.prompt_full or entry.prompt_preview or "(旧日志未单独保存请求内容)")
+        tabs.addTab(self._prompt, "请求内容")
         self._text = QPlainTextEdit()
         self._text.setReadOnly(True)
         self._text.setLineWrapMode(QPlainTextEdit.LineWrapMode.WidgetWidth)
@@ -163,6 +167,7 @@ class TokenLogDialog(QDialog):
                 entry.timestamp, entry.operation, entry.direction, entry.strategy,
                 entry.model, entry.provider_name, entry.protocol, entry.stage,
                 entry.reasoning_level, entry.content_preview, entry.reasoning_content_preview,
+                entry.prompt_preview,
             ]).lower()
             if keyword and keyword not in haystack:
                 continue
@@ -193,7 +198,7 @@ class TokenLogDialog(QDialog):
                 reasoning_preview = "—"
             values = [
                 entry.timestamp,
-                "发送" if entry.direction == "send" else "接收",
+                {"send": "发送", "request": "请求 / 回复"}.get(entry.direction, "接收"),
                 entry.operation,
                 entry.stage,
                 entry.provider_name,

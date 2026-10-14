@@ -1596,6 +1596,7 @@ def _merge_character_group(
 def dedup_world_bible_characters(
     bible: WorldBible, client=None, model: str = "deepseek-v4-flash",
     global_user_prompt: str = "",
+    *, snapshot_key: str = "",
 ) -> WorldBible:
     """检测并合并世界书中重复的角色（AI 检测 + 仅拼接，不压缩）"""
     if len(bible.characters) < 2:
@@ -1610,7 +1611,8 @@ def dedup_world_bible_characters(
             continue
         result = _merge_character_group(bible.characters, group)
         if result:
-            _, remove_indices = result
+            base, remove_indices = result
+            _dedup_snapshot_entities(bible, snapshot_key, "characters", group, base.name)
             to_remove.update(remove_indices)
 
     bible.characters = [c for i, c in enumerate(bible.characters) if i not in to_remove]
@@ -1697,6 +1699,7 @@ def _merge_location_group(
 def dedup_world_bible_locations(
     bible: WorldBible, client=None, model: str = "deepseek-v4-flash",
     global_user_prompt: str = "",
+    *, snapshot_key: str = "",
 ) -> WorldBible:
     """检测并合并世界书中重复的地点（AI 检测 + 仅拼接，不压缩）"""
     if len(bible.locations) < 2:
@@ -1711,11 +1714,33 @@ def dedup_world_bible_locations(
             continue
         result = _merge_location_group(bible.locations, group)
         if result:
-            _, remove_indices = result
+            base, remove_indices = result
+            _dedup_snapshot_entities(bible, snapshot_key, "locations", group, base.name)
             to_remove.update(remove_indices)
 
     bible.locations = [l for i, l in enumerate(bible.locations) if i not in to_remove]
     return bible
+
+
+def _dedup_snapshot_entities(bible, snapshot_key, field_name, group, canonical_name):
+    """Persist this chapter's merge without copying facts from other chapters."""
+    entry = bible.chapter_snapshots.get(snapshot_key)
+    if not isinstance(entry, dict) or not isinstance(entry.get("data"), dict):
+        return
+    entry = copy.deepcopy(entry)
+    local = dict_to_world_bible({field_name: entry["data"].get(field_name, [])})
+    entities = getattr(local, field_name)
+    merge = _merge_character_group if field_name == "characters" else _merge_location_group
+    result = merge(entities, group)
+    if result is None:
+        return
+    base, removed = result
+    if field_name == "characters" and base.name != canonical_name and base.name not in base.aliases:
+        base.aliases.append(base.name)
+    base.name = canonical_name
+    entry["data"][field_name] = [asdict(item) for i, item in enumerate(entities) if i not in removed]
+    bible.chapter_snapshots[snapshot_key] = entry
+    bible.chapter_world_entries[snapshot_key] = copy.deepcopy(entry)
 
 
 def audit_world_bible_consistency(bible: WorldBible) -> list[dict]:
@@ -2326,9 +2351,10 @@ def merge_extracted_world_bible_data(
     if store_chapter_entry and chapter_num:
         key = _chapter_world_entry_key(chapter_num, chapter_version)
         bible.chapter_world_entries[key] = {
+            **copy.deepcopy(bible.chapter_snapshots.get(key, {})),
             "chapter": int(chapter_num),
             "version": int(chapter_version or 0),
-            "data": data,
+            "data": copy.deepcopy(data),
         }
         bible.chapter_snapshots[key] = copy.deepcopy(bible.chapter_world_entries[key])
 
@@ -2639,12 +2665,13 @@ def merge_extracted_world_bible_data(
         _merge_foreshadowing(bible.global_foreshadowing, item, chapter_num, chapter_version)
 
     if run_dedup and client is not None:
+        snapshot_key = _chapter_world_entry_key(chapter_num, chapter_version) if store_chapter_entry and chapter_num else ""
         try:
-            bible = dedup_world_bible_characters(bible, client, model, global_user_prompt)
+            bible = dedup_world_bible_characters(bible, client, model, global_user_prompt, snapshot_key=snapshot_key)
         except Exception:
             pass
         try:
-            bible = dedup_world_bible_locations(bible, client, model, global_user_prompt)
+            bible = dedup_world_bible_locations(bible, client, model, global_user_prompt, snapshot_key=snapshot_key)
         except Exception:
             pass
 
@@ -2783,7 +2810,9 @@ def extract_and_merge_world_bible(
             user_content += f"\n\n用户偏好参考: {global_user_prompt}"
         data = None
         last_error = None
+        attempt_errors = []
         for max_tokens in (16384, 32768):
+            response_received = False
             try:
                 response = client.chat.completions.create(
                     model=model,
@@ -2792,6 +2821,7 @@ def extract_and_merge_world_bible(
                     temperature=0.1,
                     **_world_extraction_completion_options(model),
                 )
+                response_received = True
                 choice = response.choices[0]
                 content = choice.message.content or ""
                 if not content.strip():
@@ -2808,9 +2838,14 @@ def extract_and_merge_world_bible(
                 break
             except Exception as exc:
                 last_error = exc
+                attempt_errors.append(str(exc))
+                # Transport retries belong to the model gateway. Increasing
+                # the JSON output budget cannot repair a failed API request.
+                if not response_received:
+                    break
                 user_content += "\n\n请只输出完整、合法的 JSON，不要添加解释。"
         if data is None:
-            errors.append({"chunk": index, "chars": len(chunk), "error": str(last_error)})
+            errors.append({"chunk": index, "chars": len(chunk), "error": str(last_error), "attempt_errors": attempt_errors})
             continue
         covered_chars += len(chunk)
         snapshot_bible = merge_extracted_world_bible_data(
@@ -2848,4 +2883,10 @@ def extract_and_merge_world_bible(
         "covered_chars": covered_chars,
         "complete": not errors and covered_chars >= len(chapter_content or ""),
     }
+    if chapter_num:
+        import hashlib
+        key = _chapter_world_entry_key(chapter_num, chapter_version)
+        for entries in (result.chapter_snapshots, result.chapter_world_entries):
+            entries[key]["content_hash"] = hashlib.sha256(chapter_content.encode("utf-8")).hexdigest()
+            entries[key]["extraction_complete"] = result.diagnostics["last_extraction"]["complete"]
     return result

@@ -61,7 +61,12 @@ def estimate_messages_tokens(messages: list[dict]) -> int:
     total = 0
     for item in messages:
         total += 6
-        total += estimate_text_tokens(str(item.get("content") or ""))
+        content = item.get("content") or ""
+        if isinstance(content, list):
+            # 图片 token 因提供方而异；预算不应把 base64 文件当成正文计算。
+            total += sum(4096 if part.get("type") == "image_url" else estimate_text_tokens(part.get("text", "")) for part in content)
+        else:
+            total += estimate_text_tokens(str(content))
         total += estimate_text_tokens(json.dumps(item.get("tool_calls") or [], ensure_ascii=False))
     return total + 3
 
@@ -136,7 +141,8 @@ def _status_code(exc: Exception) -> int | None:
 
 
 def is_fallback_error(exc: Exception) -> bool:
-    if isinstance(exc, (TimeoutError, ConnectionError, httpx.ConnectError, httpx.TimeoutException)):
+    if isinstance(exc, (TimeoutError, ConnectionError, httpx.ConnectError,
+                        httpx.ReadError, httpx.RemoteProtocolError, httpx.TimeoutException)):
         return True
     if exc.__class__.__name__ in {"APIConnectionError", "APITimeoutError", "RateLimitError"}:
         return True
@@ -198,6 +204,8 @@ class ModelGateway:
 
     def _prepare(self, request: ModelRequest, provider: ProviderProfile, model: ModelProfile, route: RoutePolicy) -> tuple[PreparedRequest, ContextBudgetReport, list[Citation]]:
         required = set(request.required_capabilities)
+        if any(isinstance(item.get("content"), list) and any(part.get("type") == "image_url" for part in item["content"]) for item in request.messages):
+            required.add("vision")
         if request.tools:
             required.add("tools")
         missing = [name for name in sorted(required) if not bool(getattr(model.capabilities, name, False))]
@@ -214,6 +222,12 @@ class ModelGateway:
         context_window = int(overrides.context_window or model.context_window)
         context_window = max(512, min(context_window, model.context_window))
         safety = max(256, min(4096, math.ceil(context_window * 0.02)))
+        if max_output >= context_window - safety:
+            # A provider's output ceiling is not an instruction to consume the
+            # entire context window (e.g. extraction's 32768-token retry).
+            required_input = estimate_messages_tokens(request.messages)
+            required_input += estimate_text_tokens(json.dumps(request.tools, ensure_ascii=False))
+            max_output = max(1, min(max_output, context_window - safety - required_input))
         input_budget = max(1, context_window - max_output - safety)
         messages = [dict(item) for item in request.messages]
         citations: list[Citation] = []
@@ -258,6 +272,13 @@ class ModelGateway:
         estimated = estimate_messages_tokens(messages)
         compacted, did_compact, removed = compact_messages(messages, input_budget)
         final_estimate = estimate_messages_tokens(compacted)
+        if final_estimate > input_budget:
+            available_output = context_window - safety - final_estimate
+            # max_output_tokens is a ceiling. Keep pinned story constraints and
+            # lower that ceiling when there is still room for a useful answer.
+            if available_output >= min(max_output, 1024):
+                max_output = min(max_output, available_output)
+                input_budget = context_window - max_output - safety
         report = ContextBudgetReport(
             context_window=context_window,
             max_output_tokens=max_output,
@@ -491,7 +512,7 @@ class ModelGateway:
                 emitted = False
                 try:
                     prepared, report, pre_citations = self._prepare(request, provider, model, route)
-                    if prepared.tools:
+                    if prepared.tools and (request.tool_executor is not None or "web_search" in self._tool_specs(prepared.tools)):
                         # Tool rounds must preserve complete assistant/tool messages.
                         # Run the bounded unified loop first, then expose its final text
                         # through the same streaming event contract.
@@ -513,6 +534,11 @@ class ModelGateway:
                             if event.event_type in {"text_delta", "reasoning_delta"} and event.text:
                                 emitted = True
                             if event.result is not None:
+                                specs = self._tool_specs(prepared.tools)
+                                for call in event.result.tool_calls:
+                                    if call.name not in specs:
+                                        raise ToolAuthorizationError(f"模型请求了未授权工具：{call.name}")
+                                    self._validate_tool_arguments(call.name, call.arguments, specs[call.name])
                                 attempts.append(AttemptRecord(model.model_id, provider.provider_id, model.model, provider.protocol.value, True))
                                 event.result.citations = _dedupe_citations([*pre_citations, *event.result.citations])
                                 event.result.attempts = attempts
@@ -722,6 +748,14 @@ class GatewayCompletionsProxy:
         }
         if kwargs.get("extra_body"):
             metadata["request_extra_body"] = dict(kwargs.get("extra_body") or {})
+        reasoning_level = kwargs.get("reasoning_effort")
+        # Translate the legacy DeepSeek switch before reserved wire fields are
+        # sanitized. A disabled thinking switch takes precedence over effort.
+        thinking = (metadata.get("request_extra_body") or {}).get("thinking")
+        if isinstance(thinking, dict) and thinking.get("type") == "disabled":
+            reasoning_level = "off"
+        elif isinstance(thinking, dict) and thinking.get("type") == "enabled" and reasoning_level is None:
+            reasoning_level = "high"
         request = ModelRequest(
             operation=self.owner.operation,
             stage=self.owner.stage,
@@ -731,7 +765,7 @@ class GatewayCompletionsProxy:
             top_p=kwargs.get("top_p"),
             frequency_penalty=kwargs.get("frequency_penalty"),
             max_output_tokens=max_output,
-            reasoning_level=kwargs.get("reasoning_effort"),
+            reasoning_level=reasoning_level,
             tools=list(kwargs.get("tools") or []),
             tool_choice=kwargs.get("tool_choice"),
             metadata=metadata,
@@ -740,15 +774,19 @@ class GatewayCompletionsProxy:
             return _compat_response(self.owner.gateway.complete(request))
 
         def generate():
-            for event in self.owner.gateway.stream(request):
-                if event.event_type in {"text_delta", "reasoning_delta"}:
-                    delta = SimpleNamespace(
-                        content=event.text if event.event_type == "text_delta" else None,
-                        reasoning_content=event.text if event.event_type == "reasoning_delta" else None,
-                    )
-                    yield SimpleNamespace(choices=[SimpleNamespace(delta=delta, finish_reason=None)], usage=None)
-                elif event.result is not None:
-                    yield SimpleNamespace(choices=[], usage=_usage_namespace(event.result.usage), gateway_result=event.result)
+            events = self.owner.gateway.stream(request)
+            try:
+                for event in events:
+                    if event.event_type in {"text_delta", "reasoning_delta"}:
+                        delta = SimpleNamespace(
+                            content=event.text if event.event_type == "text_delta" else None,
+                            reasoning_content=event.text if event.event_type == "reasoning_delta" else None,
+                        )
+                        yield SimpleNamespace(choices=[SimpleNamespace(delta=delta, finish_reason=None)], usage=None)
+                    elif event.result is not None:
+                        yield SimpleNamespace(choices=[], usage=_usage_namespace(event.result.usage), gateway_result=event.result)
+            finally:
+                events.close()
         return generate()
 
 

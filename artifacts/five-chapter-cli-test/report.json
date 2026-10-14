@@ -1,0 +1,2409 @@
+{
+  "status": "completed_with_failures",
+  "real_models": true,
+  "cli_calls": [
+    {
+      "args": [
+        "auth",
+        "register",
+        "--password-env",
+        "DSA_TEST_PASSWORD",
+        "--name",
+        "五章CLI实测",
+        "--expires-days",
+        "1",
+        "--allow-agent",
+        "--allow-manage",
+        "--allow-approve"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "models",
+        "configure",
+        "--input",
+        "-"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "control",
+        "generation",
+        "--enabled"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "project",
+        "create",
+        "--title",
+        "最后一班潮汐邮船（CLI实测-6d3119）"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "project",
+        "set",
+        "--input",
+        "-",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "read",
+        "--entity-id",
+        "test_shenyan",
+        "--entity-id",
+        "test_wugang",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "propose-patch",
+        "--input",
+        "-",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "changes",
+        "apply",
+        "changes_8017b82c0c3d4029adbbdb20fb44aeb5",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "project",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "show",
+        "--category",
+        "character",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "read",
+        "--entity-id",
+        "test_shenyan",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "rebuild",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "activate",
+        "--tree-id",
+        "primary_tree",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "models",
+        "status"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "agent",
+        "plan",
+        "--instruction",
+        "旧邮船退役当晚，沈砚收到一封十年前未投递的信。缺齿邮戳与父亲事故卷宗相同。他发现有人准备销毁旧码头寄存柜，决定登上末班邮船追查。交代职业与父亲污名，不能提前认定凶手。",
+        "--chapter-title",
+        "没有收件人的信",
+        "--target-words",
+        "1600",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "agent",
+        "plan-show",
+        "--plan-id",
+        "chapter_plan_d81daf6b90e44051a45d2285164b16a9",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "write",
+        "chapter",
+        "--input",
+        "-",
+        "--chapter-title",
+        "没有收件人的信",
+        "--target-words",
+        "1600",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "auth",
+        "grant",
+        "--password-env",
+        "DSA_TEST_PASSWORD",
+        "--name",
+        "五章CLI实测",
+        "--expires-days",
+        "1",
+        "--allow-agent",
+        "--allow-manage",
+        "--allow-approve"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "models",
+        "configure",
+        "--input",
+        "-"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "control",
+        "generation",
+        "--enabled"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "project",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "show",
+        "--category",
+        "character",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "read",
+        "--entity-id",
+        "test_shenyan",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "rebuild",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "activate",
+        "--tree-id",
+        "primary_tree",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "models",
+        "status"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "agent",
+        "plan-show",
+        "--plan-id",
+        "chapter_plan_d81daf6b90e44051a45d2285164b16a9",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "write",
+        "chapter",
+        "--input",
+        "-",
+        "--chapter-title",
+        "没有收件人的信",
+        "--target-words",
+        "1600",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 2
+    },
+    {
+      "args": [
+        "auth",
+        "grant",
+        "--password-env",
+        "DSA_TEST_PASSWORD",
+        "--name",
+        "五章CLI实测",
+        "--expires-days",
+        "1",
+        "--allow-agent",
+        "--allow-manage",
+        "--allow-approve"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "models",
+        "configure",
+        "--input",
+        "-"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "control",
+        "generation",
+        "--enabled"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "project",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "show",
+        "--category",
+        "character",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "read",
+        "--entity-id",
+        "test_shenyan",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "rebuild",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "activate",
+        "--tree-id",
+        "primary_tree",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "models",
+        "status"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "agent",
+        "plan-show",
+        "--plan-id",
+        "chapter_plan_d81daf6b90e44051a45d2285164b16a9",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "write",
+        "chapter",
+        "--input",
+        "-",
+        "--chapter-title",
+        "没有收件人的信",
+        "--target-words",
+        "1600",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 2
+    },
+    {
+      "args": [
+        "auth",
+        "grant",
+        "--password-env",
+        "DSA_TEST_PASSWORD",
+        "--name",
+        "五章CLI实测",
+        "--expires-days",
+        "1",
+        "--allow-agent",
+        "--allow-manage",
+        "--allow-approve"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "models",
+        "configure",
+        "--input",
+        "-"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "control",
+        "generation",
+        "--enabled"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "project",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "show",
+        "--category",
+        "character",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "read",
+        "--entity-id",
+        "test_shenyan",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "rebuild",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "activate",
+        "--tree-id",
+        "primary_tree",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "models",
+        "status"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "agent",
+        "plan-show",
+        "--plan-id",
+        "chapter_plan_d81daf6b90e44051a45d2285164b16a9",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "write",
+        "chapter",
+        "--input",
+        "-",
+        "--chapter-title",
+        "没有收件人的信",
+        "--target-words",
+        "1600",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "changes",
+        "show",
+        "changes_bba579e23a72461e8c099b9a602c7e63",
+        "--include-content",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "changes",
+        "apply",
+        "changes_bba579e23a72461e8c099b9a602c7e63",
+        "--operation-id",
+        "op_43384bb8113d45929d22124b9e7f74ad",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "chapter",
+        "current",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "chapter",
+        "maintain",
+        "--node-id",
+        "ch0001_v001",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "show",
+        "--category",
+        "character",
+        "--limit",
+        "500",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "agent",
+        "plan",
+        "--instruction",
+        "沈砚在船上遇到叶青。二人把信件时间与原始潮位记录交叉核对，发现公开事故报告使用了涂改潮汐表。有人试图拿走记录，沈砚首次公开阻拦并付出受伤代价。结尾两人决定找退休船工周伯。",
+        "--chapter-title",
+        "被改写的潮汐",
+        "--target-words",
+        "1600",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "agent",
+        "plan-show",
+        "--plan-id",
+        "chapter_plan_6dcb7197de5e4bc8a2e15dfc9ed0e30b",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "write",
+        "chapter",
+        "--input",
+        "-",
+        "--chapter-title",
+        "被改写的潮汐",
+        "--target-words",
+        "1600",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "changes",
+        "show",
+        "changes_332a4c647068420e94fc1eb266a71ca4",
+        "--include-content",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "changes",
+        "apply",
+        "changes_332a4c647068420e94fc1eb266a71ca4",
+        "--operation-id",
+        "op_1cc48cd8c99e407aa3137ea584a8ce0a",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "chapter",
+        "current",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "chapter",
+        "maintain",
+        "--node-id",
+        "ch0002_v001",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "show",
+        "--category",
+        "character",
+        "--limit",
+        "500",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "chapter",
+        "current",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "show",
+        "--include-summaries",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "chapter",
+        "propose-revision",
+        "--base-node-id",
+        "ch0002_v001",
+        "--title",
+        "被改写的潮汐",
+        "--input",
+        "-",
+        "--reason",
+        "保留旧版、验证修订分支",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "changes",
+        "apply",
+        "changes_a7b4a471cf61424da48012e102599215",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "chapter",
+        "current",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "activate",
+        "--node-id",
+        "ch0002_v002",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "chapter",
+        "current",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "chapter",
+        "maintain",
+        "--node-id",
+        "ch0002_v002",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "show",
+        "--category",
+        "character",
+        "--limit",
+        "500",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "project",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "activate",
+        "--node-id",
+        "ch0002_v001",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "chapter",
+        "current",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "activate",
+        "--node-id",
+        "ch0002_v002",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "project",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "show",
+        "--include-summaries",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "agent",
+        "plan",
+        "--instruction",
+        "周伯用旧系缆绳上的特殊结绳证明父亲曾提前安排撤离，而非擅离岗位。他承认当年因害怕失业而沉默，并交出维护记录副本。陆岑曾批准拖延维修，动机是掩盖预算挪用。当前风暴重现同样危险，调查转为救援。",
+        "--chapter-title",
+        "船工的绳结",
+        "--target-words",
+        "1600",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "agent",
+        "plan-show",
+        "--plan-id",
+        "chapter_plan_4115147f2dec474c902bb5ab96b636e5",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "write",
+        "chapter",
+        "--input",
+        "-",
+        "--chapter-title",
+        "船工的绳结",
+        "--target-words",
+        "1600",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 2
+    },
+    {
+      "args": [
+        "auth",
+        "grant",
+        "--password-env",
+        "DSA_TEST_PASSWORD",
+        "--name",
+        "五章CLI实测",
+        "--expires-days",
+        "1",
+        "--allow-agent",
+        "--allow-manage",
+        "--allow-approve"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "models",
+        "configure",
+        "--input",
+        "-"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "control",
+        "generation",
+        "--enabled"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "project",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "show",
+        "--category",
+        "character",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "read",
+        "--entity-id",
+        "test_shenyan",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "rebuild",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "activate",
+        "--tree-id",
+        "primary_tree",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "models",
+        "status"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "agent",
+        "plan-show",
+        "--plan-id",
+        "chapter_plan_4115147f2dec474c902bb5ab96b636e5",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "write",
+        "chapter",
+        "--input",
+        "-",
+        "--chapter-title",
+        "船工的绳结",
+        "--target-words",
+        "1600",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "agent",
+        "run-show",
+        "--run-id",
+        "run_18ea0296e9814db488522f186608fa85",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "changes",
+        "show",
+        "changes_9a981529665f4824ae499462a34d0159",
+        "--include-content",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "auth",
+        "grant",
+        "--password-env",
+        "DSA_TEST_PASSWORD",
+        "--name",
+        "五章CLI实测",
+        "--expires-days",
+        "1",
+        "--allow-agent",
+        "--allow-manage",
+        "--allow-approve"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "models",
+        "configure",
+        "--input",
+        "-"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "control",
+        "generation",
+        "--enabled"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "project",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "show",
+        "--category",
+        "character",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "read",
+        "--entity-id",
+        "test_shenyan",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "rebuild",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "activate",
+        "--tree-id",
+        "primary_tree",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "models",
+        "status"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "agent",
+        "plan-show",
+        "--plan-id",
+        "chapter_plan_4115147f2dec474c902bb5ab96b636e5",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "agent",
+        "run-show",
+        "--run-id",
+        "run_18ea0296e9814db488522f186608fa85",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "changes",
+        "show",
+        "changes_5f38321677fc46318456bdf07aeb4f27",
+        "--include-content",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "changes",
+        "apply",
+        "changes_5f38321677fc46318456bdf07aeb4f27",
+        "--operation-id",
+        "op_e1cc9fe17e664115963693702109ef70",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "chapter",
+        "current",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "chapter",
+        "maintain",
+        "--node-id",
+        "ch0003_v001",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 1
+    },
+    {
+      "args": [
+        "chapter",
+        "maintain",
+        "--node-id",
+        "ch0003_v001"
+      ],
+      "exit_code": 0,
+      "recovery": true
+    },
+    {
+      "args": [
+        "world",
+        "show",
+        "--category",
+        "character"
+      ],
+      "exit_code": 0,
+      "recovery": true
+    },
+    {
+      "args": [
+        "auth",
+        "grant",
+        "--password-env",
+        "DSA_TEST_PASSWORD",
+        "--name",
+        "五章CLI实测",
+        "--expires-days",
+        "1",
+        "--allow-agent",
+        "--allow-manage",
+        "--allow-approve"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "models",
+        "configure",
+        "--input",
+        "-"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "control",
+        "generation",
+        "--enabled"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "project",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "show",
+        "--category",
+        "character",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "read",
+        "--entity-id",
+        "test_shenyan",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "rebuild",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "activate",
+        "--tree-id",
+        "primary_tree",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "models",
+        "status"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "agent",
+        "plan",
+        "--instruction",
+        "陆岑试图封闭水闸控制室以拖延真相公开。沈砚、叶青、周伯分别负责机械、潮位判断和疏散，合作取得控制室。沈砚必须在追回一份证据与救人之间选择救人。已有副本和公开发送记录使证据链不依赖孤证。结尾准备在正确潮位打开旁通闸。",
+        "--chapter-title",
+        "最后一次靠岸",
+        "--target-words",
+        "1600",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "agent",
+        "plan-show",
+        "--plan-id",
+        "chapter_plan_15636382c254422db6fbdac1dc154803",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "write",
+        "chapter",
+        "--input",
+        "-",
+        "--chapter-title",
+        "最后一次靠岸",
+        "--target-words",
+        "1600",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "agent",
+        "run-show",
+        "--run-id",
+        "run_6f50464d3d5442c5a2c8a03f0cc52ed8",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "changes",
+        "show",
+        "changes_35dc6bf8e460403f804cd32abde806d0",
+        "--include-content",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "changes",
+        "apply",
+        "changes_35dc6bf8e460403f804cd32abde806d0",
+        "--operation-id",
+        "op_e4f1975199914be397e086853e8a3024",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "chapter",
+        "current",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "chapter",
+        "maintain",
+        "--node-id",
+        "ch0004_v001",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "show",
+        "--category",
+        "character",
+        "--limit",
+        "500",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "agent",
+        "plan",
+        "--instruction",
+        "利用前三章建立的潮位记录、结绳与机械知识完成开闸和撤离。陆岑的责任由维护记录、独立潮位档案和证言交叉证实，移交调查而非私刑。沈衡污名澄清，周伯承担沉默责任。旧邮船平安完成末航，沈砚将未投递信交给真正收件人，回收首章线索，故事明确结束。",
+        "--chapter-title",
+        "天亮之后投递",
+        "--target-words",
+        "1600",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 1
+    },
+    {
+      "args": [
+        "auth",
+        "grant",
+        "--password-env",
+        "DSA_TEST_PASSWORD",
+        "--name",
+        "五章CLI实测",
+        "--expires-days",
+        "1",
+        "--allow-agent",
+        "--allow-manage",
+        "--allow-approve"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "models",
+        "configure",
+        "--input",
+        "-"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "control",
+        "generation",
+        "--enabled"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "project",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "show",
+        "--category",
+        "character",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "read",
+        "--entity-id",
+        "test_shenyan",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "rebuild",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "activate",
+        "--tree-id",
+        "primary_tree",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "models",
+        "status"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "agent",
+        "plan",
+        "--instruction",
+        "利用前三章建立的潮位记录、结绳与机械知识完成开闸和撤离。陆岑的责任由维护记录、独立潮位档案和证言交叉证实，移交调查而非私刑。沈衡污名澄清，周伯承担沉默责任。旧邮船平安完成末航，沈砚将未投递信交给真正收件人，回收首章线索，故事明确结束。",
+        "--chapter-title",
+        "天亮之后投递",
+        "--target-words",
+        "1600",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "agent",
+        "plan-show",
+        "--plan-id",
+        "chapter_plan_69ef78e5e73b4ba08dc2a7f78602df70",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "write",
+        "chapter",
+        "--input",
+        "-",
+        "--chapter-title",
+        "天亮之后投递",
+        "--target-words",
+        "1600",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "agent",
+        "run-show",
+        "--run-id",
+        "run_c210f076f0e74b00b479d09c62cf5224",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "changes",
+        "show",
+        "changes_cb3ddc8a82784f81a6ceb381e91ccd1f",
+        "--include-content",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "changes",
+        "apply",
+        "changes_cb3ddc8a82784f81a6ceb381e91ccd1f",
+        "--operation-id",
+        "op_feb3238e97c94dc1a191cc69b8a9c472",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "chapter",
+        "current",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "auth",
+        "grant",
+        "--password-env",
+        "DSA_TEST_PASSWORD",
+        "--name",
+        "五章CLI实测",
+        "--expires-days",
+        "1",
+        "--allow-agent",
+        "--allow-manage",
+        "--allow-approve"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "models",
+        "configure",
+        "--input",
+        "-"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "control",
+        "generation",
+        "--enabled"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "project",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "show",
+        "--category",
+        "character",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "read",
+        "--entity-id",
+        "test_shenyan",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "rebuild",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "activate",
+        "--tree-id",
+        "primary_tree",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "models",
+        "status"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "chapter",
+        "current",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "chapter",
+        "maintain",
+        "--node-id",
+        "ch0005_v001",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 1
+    },
+    {
+      "args": [
+        "auth",
+        "grant",
+        "--password-env",
+        "DSA_TEST_PASSWORD",
+        "--name",
+        "五章CLI实测",
+        "--expires-days",
+        "1",
+        "--allow-agent",
+        "--allow-manage",
+        "--allow-approve"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "models",
+        "configure",
+        "--input",
+        "-"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "control",
+        "generation",
+        "--enabled"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "status"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "project",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "show",
+        "--category",
+        "character",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "read",
+        "--entity-id",
+        "test_shenyan",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "rebuild",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "activate",
+        "--tree-id",
+        "primary_tree",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "models",
+        "status"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "project",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "chapter",
+        "read",
+        "--node-id",
+        "ch0001_v001",
+        "--start",
+        "0",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "chapter",
+        "read",
+        "--node-id",
+        "ch0002_v002",
+        "--start",
+        "0",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "chapter",
+        "read",
+        "--node-id",
+        "ch0003_v001",
+        "--start",
+        "0",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "chapter",
+        "read",
+        "--node-id",
+        "ch0004_v001",
+        "--start",
+        "0",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "chapter",
+        "read",
+        "--node-id",
+        "ch0005_v001",
+        "--start",
+        "0",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "tree",
+        "show",
+        "--include-summaries",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "audit",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "search",
+        "--query",
+        "沈砚",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "chapter",
+        "search",
+        "--query",
+        "潮汐",
+        "--scope",
+        "all",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "show",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "show",
+        "--category",
+        "character",
+        "--offset",
+        "0",
+        "--limit",
+        "500",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "show",
+        "--category",
+        "location",
+        "--offset",
+        "0",
+        "--limit",
+        "500",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "show",
+        "--category",
+        "timeline",
+        "--offset",
+        "0",
+        "--limit",
+        "500",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "show",
+        "--category",
+        "plot_thread",
+        "--offset",
+        "0",
+        "--limit",
+        "500",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "show",
+        "--category",
+        "world_rule",
+        "--offset",
+        "0",
+        "--limit",
+        "500",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "show",
+        "--category",
+        "foreshadowing",
+        "--offset",
+        "0",
+        "--limit",
+        "500",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "show",
+        "--category",
+        "setting",
+        "--offset",
+        "0",
+        "--limit",
+        "500",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "show",
+        "--category",
+        "dialogue",
+        "--offset",
+        "0",
+        "--limit",
+        "500",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "show",
+        "--category",
+        "fact",
+        "--offset",
+        "0",
+        "--limit",
+        "500",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "rebuild",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    },
+    {
+      "args": [
+        "world",
+        "audit",
+        "--book",
+        "94dd64d97a2f"
+      ],
+      "exit_code": 0
+    }
+  ],
+  "completed_chapters": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "plans": {
+    "1": "chapter_plan_d81daf6b90e44051a45d2285164b16a9",
+    "2": "chapter_plan_6dcb7197de5e4bc8a2e15dfc9ed0e30b",
+    "3": "chapter_plan_4115147f2dec474c902bb5ab96b636e5",
+    "4": "chapter_plan_15636382c254422db6fbdac1dc154803",
+    "5": "chapter_plan_69ef78e5e73b4ba08dc2a7f78602df70"
+  },
+  "checks": {
+    "project_and_world_setup": true,
+    "initial_tree_activation": true,
+    "branch_revision": "ch0002_v002",
+    "third_chapter_parent_verified": "ch0002_v002",
+    "active_chapters": 5,
+    "prose_chars": 10083,
+    "all_application_operations_via_cli": true,
+    "chinese_chars": 7938,
+    "successful_agent_tool_calls": 50,
+    "agent_tool_names": [
+      "agent.context_report",
+      "agent.todo",
+      "chapter.propose",
+      "chapter.read",
+      "chapter.read_node",
+      "chapter.read_range",
+      "chapter.search",
+      "chapter.write_draft",
+      "project.active_state",
+      "project.author_plan",
+      "project.summary",
+      "world_bible.read",
+      "world_bible.read_entities",
+      "world_bible.search"
+    ],
+    "unit_tests_passed": 107,
+    "pending_change_sets": 0,
+    "missing_world_snapshots": [
+      "ch0005_v001"
+    ],
+    "editorial_findings": 10
+  },
+  "username": "cli_novel_test_f9074c51",
+  "book_id": "94dd64d97a2f",
+  "book_title": "最后一班潮汐邮船（CLI实测-6d3119）",
+  "previous_failures": [
+    "{'code': 'control_error', 'message': '上下文预计 30826 token，超过输入预算 23920 token；系统约束、人工引用或最近消息无法在不丢失关键内容的情况下继续压缩。'}",
+    "提案父节点错误，拒绝应用",
+    "{'code': 'internal_error', 'message': \"世界书提取全部分块失败: [{'chunk': 1, 'chars': 1751, 'error': '上下文预计 3988 token，超过输入预算 1 token；系统约束、人工引用或最近消息无法在不丢失关键内容的情况下继续压缩。'}]\"}",
+    "{'code': 'internal_error', 'message': 'Agent 章节规划失败: 上下文预计 16542 token，超过输入预算 15728 token；系统约束、人工引用或最近消息无法在不丢失关键内容的情况下继续压缩。'}",
+    "{'code': 'internal_error', 'message': \"世界书提取全部分块失败: [{'chunk': 1, 'chars': 2335, 'error': '所有模型尝试均失败：Request timed out.', 'attempt_errors': ['所有模型尝试均失败：Request timed out.', '所有模型尝试均失败：Request timed out.']}]\"}"
+  ],
+  "pending_chapter": {
+    "number": 5,
+    "node_id": "ch0005_v001"
+  },
+  "prose_completed_chapters": [
+    1,
+    2,
+    3,
+    4,
+    5
+  ],
+  "maintenance_completed_chapters": [
+    1,
+    2,
+    3,
+    4
+  ],
+  "remaining_failure": {
+    "stage": "chapter_5_world_extraction",
+    "node_id": "ch0005_v001",
+    "reason": "Upstream API timed out after gateway retries; chapter body and summary are saved.",
+    "resume_command": "python scripts/live_novel_test.py"
+  },
+  "functional_assessment": "账号、设定、五章规划和生成、提案应用、分支调整、读取和导出已验证；第五章世界书提取因服务超时失败，不能视为全部通过。"
+}

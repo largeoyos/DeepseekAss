@@ -3,6 +3,41 @@ from __future__ import annotations
 from core.agent.types import now_iso
 
 
+def fit_retrievable_context(messages: list[dict], input_budget: int) -> list[dict]:
+    """Clip re-readable facts only, preserving user text and tool call pairs."""
+    import copy
+    from core.model_gateway import estimate_messages_tokens, _clip_text_to_tokens
+    result = copy.deepcopy(messages)
+    if estimate_messages_tokens(result) <= input_budget:
+        return result
+    eligible = []
+    for index, item in enumerate(result):
+        metadata = item.get("metadata") or {}
+        if item.get("manual_reference") or metadata.get("manual_reference") or metadata.get("pinned"):
+            continue
+        if item.get("role") == "tool" or metadata.get("agent_retrievable_context"):
+            if isinstance(item.get("content"), str):
+                eligible.append((index, item["content"]))
+    marker = "\n[因模型输入预算裁剪；这不是完整资料。需要更多事实时请按节点或实体精确读取。]"
+    def candidate(cap):
+        for index, text in eligible:
+            clipped = _clip_text_to_tokens(text, cap)
+            result[index]["content"] = clipped + marker if clipped != text else text
+        return estimate_messages_tokens(result)
+    # Do not discard mandatory instructions or leave orphaned tool responses.
+    if not eligible or candidate(64) > input_budget:
+        return messages
+    low, high = 64, input_budget
+    while low < high:
+        mid = (low + high + 1) // 2
+        if candidate(mid) <= input_budget:
+            low = mid
+        else:
+            high = mid - 1
+    candidate(low)
+    return result
+
+
 class ContextCompactor:
     def __init__(self, threshold_ratio: float = 0.70, keep_recent: int = 8) -> None:
         self.threshold_ratio = threshold_ratio

@@ -1119,7 +1119,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
             return result
 
         label = "经典润色" if payload.mode == "polish" else "经典重写"
-        return {"task_id": runtime.start_task(ctx.username, f"{label}《{title}》章节", target, metadata={"kind": f"chapter_{payload.mode}", "book": title, "node_id": node_id}, retryable=True)}
+        return {"task_id": runtime.start_task(ctx.username, f"{label}《{title}》章节", target, metadata={"kind": f"chapter_{payload.mode}", "book": title, "node_id": node_id}, retryable=True, cancellable=True)}
     @app.post("/api/books/{title}/nodes/{node_id}/export", tags=["export"])
     def export_node_task(title: str, node_id: str, payload: NodeExportRequest, ctx: WebUserContext = Depends(current_context)):
         fmt = normalize_fmt(payload.fmt)
@@ -2165,7 +2165,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
             handle.progress("Agent 章节生成完成", percent=100, stage="完成", data={"result": result_data})
             return result_data
 
-        return {"task_id": runtime.start_task(ctx.username, f"Agent 生成《{title}》章节", target, metadata={"kind": "agent_chapter_generate", "book": title, "plan_id": payload.plan_id}, retryable=True)}
+        return {"task_id": runtime.start_task(ctx.username, f"Agent 生成《{title}》章节", target, metadata={"kind": "agent_chapter_generate", "book": title, "plan_id": payload.plan_id}, retryable=True, cancellable=True)}
     @app.post("/api/books/{title}/agent/polish/plan", tags=["agent"])
     def agent_polish_plan(title: str, payload: AgentPolishPlanRequest, ctx: WebUserContext = Depends(current_context)):
         _api, client, model = text_client_and_model(ctx, "agent_chapter_polish_plan", title)
@@ -2210,7 +2210,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
             service.mark_completed(request, plan, version, snapshot.snapshot_id)
             handle.progress("Agent 润色完成", percent=100, stage="完成", data={"result": {"chapter_num": request.chapter_num, "version": version, "snapshot_id": snapshot.snapshot_id}})
             return {"chapter_num": request.chapter_num, "version": version, "snapshot_id": snapshot.snapshot_id}
-        return {"task_id": runtime.start_task(ctx.username, f"Agent 润色《{title}》", target, metadata={"kind": "agent_polish_generate", "book": title, "plan_id": payload.plan_id}, retryable=True)}
+        return {"task_id": runtime.start_task(ctx.username, f"Agent 润色《{title}》", target, metadata={"kind": "agent_polish_generate", "book": title, "plan_id": payload.plan_id}, retryable=True, cancellable=True)}
 
     @app.post("/api/books/{title}/agent/extra/plan", tags=["agent"])
     def agent_extra_plan(title: str, payload: AgentExtraPlanRequest, ctx: WebUserContext = Depends(current_context)):
@@ -2247,7 +2247,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
             service.mark_completed(title, payload.plan_id, node.get("id", ""), snapshot.snapshot_id)
             handle.progress("Agent 番外完成", percent=100, stage="完成", data={"result": {"node": node, "snapshot_id": snapshot.snapshot_id}})
             return {"node": node, "snapshot_id": snapshot.snapshot_id}
-        return {"task_id": runtime.start_task(ctx.username, f"Agent 番外生成《{title}》", target, metadata={"kind": "agent_extra_generate", "book": title, "plan_id": payload.plan_id}, retryable=True)}
+        return {"task_id": runtime.start_task(ctx.username, f"Agent 番外生成《{title}》", target, metadata={"kind": "agent_extra_generate", "book": title, "plan_id": payload.plan_id}, retryable=True, cancellable=True)}
 
     @app.post("/api/books/{title}/agent/world/analyze", tags=["agent"])
     def agent_world_analyze(title: str, payload: WorldDetailAnalyzeRequest, ctx: WebUserContext = Depends(current_context)):
@@ -2376,7 +2376,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
             )
             handle.progress("导入完成", percent=100, stage="完成", data={"result": result})
             return result
-        return {"task_id": runtime.start_task(ctx.username, f"导入续写《{payload.title}》", target, metadata={"kind": "continuation_import", "book": payload.title}, retryable=True)}
+        return {"task_id": runtime.start_task(ctx.username, f"导入续写《{payload.title}》", target, metadata={"kind": "continuation_import", "book": payload.title}, retryable=True, cancellable=True)}
 
     @app.post("/api/continuation/analyze", tags=["continuation"])
     def continuation_analyze(payload: ContinuationAnalyzeRequest, ctx: WebUserContext = Depends(current_context)):
@@ -2449,7 +2449,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
             )
             handle.progress("分析导入完成", percent=100, stage="完成", data={"result": result})
             return result
-        return {"task_id": runtime.start_task(ctx.username, f"分析旧文并建书《{payload.title}》", target, metadata={"kind": "continuation_analyze", "book": payload.title}, retryable=True)}
+        return {"task_id": runtime.start_task(ctx.username, f"分析旧文并建书《{payload.title}》", target, metadata={"kind": "continuation_analyze", "book": payload.title}, retryable=True, cancellable=True)}
 
     @app.post("/api/continuation/suggest", tags=["continuation"])
     def continuation_suggest(payload: ContinuationSuggestRequest, ctx: WebUserContext = Depends(current_context)):
@@ -2604,7 +2604,7 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
             )
             handle.progress("续写完成", percent=100, stage="完成", data={"result": result})
             return result
-        return {"task_id": runtime.start_task(ctx.username, f"续写生成《{payload.title}》", target, metadata={"kind": "continuation_generate", "book": payload.title}, retryable=True)}
+        return {"task_id": runtime.start_task(ctx.username, f"续写生成《{payload.title}》", target, metadata={"kind": "continuation_generate", "book": payload.title}, retryable=True, cancellable=True)}
 
     @app.get("/api/continuation/runs", tags=["continuation"])
     def continuation_runs(title: str = Query(default=""), ctx: WebUserContext = Depends(current_context)):
@@ -3343,23 +3343,29 @@ def create_app(runtime: WebRuntime | None = None) -> FastAPI:
         if not runtime.user_owns_task(ctx.username, task_id):
             raise HTTPException(status_code=404, detail="任务不存在")
         async def event_stream():
-            replayed_terminal = False
-            for event in runtime.events_snapshot(task_id):
-                yield task_event_to_sse(event)
-                if event.type in {"completed", "failed", "cancelled"}:
-                    replayed_terminal = True
-            if replayed_terminal:
-                return
-            q = runtime.event_queue(task_id)
-            while not await request.is_disconnected():
-                try:
-                    event = await asyncio.to_thread(q.get, True, 15)
-                except queue.Empty:
-                    yield ": keepalive\n\n"
-                    continue
-                yield task_event_to_sse(event)
-                if event.type in {"completed", "failed", "cancelled"}:
-                    break
+            try:
+                after_sequence = max(0, int(request.headers.get("last-event-id", "0")))
+            except ValueError:
+                after_sequence = 0
+            snapshot, q = runtime.subscribe_task_events(task_id)
+            terminal = {"completed", "failed", "cancelled"}
+            try:
+                for event in snapshot:
+                    if event.sequence > after_sequence:
+                        yield task_event_to_sse(event)
+                    if event.type in terminal:
+                        return
+                while not await request.is_disconnected():
+                    try:
+                        event = await asyncio.to_thread(q.get, True, 1)
+                    except queue.Empty:
+                        yield ": keepalive\n\n"
+                        continue
+                    yield task_event_to_sse(event)
+                    if event.type in terminal:
+                        return
+            finally:
+                runtime.unsubscribe_task_events(task_id, q)
         return StreamingResponse(event_stream(), media_type="text/event-stream")
 
     @app.post("/api/tasks/{task_id}/retry", tags=["tasks"])
@@ -3726,7 +3732,7 @@ def filter_token_entries(entries: list[dict], *, q: str = "", model: str = "", o
         if end and day > end:
             continue
         if keyword:
-            haystack = " ".join(str(row.get(key) or "") for key in ("timestamp", "operation", "direction", "strategy", "model", "content_preview", "usage_status")).lower()
+            haystack = " ".join(str(row.get(key) or "") for key in ("timestamp", "operation", "direction", "strategy", "model", "content_preview", "prompt_preview", "usage_status")).lower()
             if keyword not in haystack:
                 continue
         result.append(row)

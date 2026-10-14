@@ -9,12 +9,38 @@ from datetime import datetime
 from typing import Callable
 
 
+_task_context = threading.local()
+
+
+def current_task_handle():
+    """The task executing on this worker, if any (never shared with the UI thread)."""
+    return getattr(_task_context, "handle", None)
+
+
+def report_task_failure(error: object) -> None:
+    """Record failures caught by legacy workers which also emit their own UI signals."""
+    handle = current_task_handle()
+    if handle is not None:
+        handle.error = str(error)
+
+
+def task_cancel_requested(fallback: bool = False) -> bool:
+    """A worker checkpoint acknowledges a requested stop before returning early."""
+    handle = current_task_handle()
+    if handle is None:
+        return fallback
+    if fallback and handle.cancellable:
+        handle.cancel()
+    return handle.cancelled
+
+
 @dataclass
 class TaskEvent:
     task_id: str
     type: str
     message: str = ""
     data: dict = field(default_factory=dict)
+    sequence: int = 0
 
 
 @dataclass
@@ -32,6 +58,7 @@ class TaskRecord:
     error: str = ""
     result_preview: str = ""
     retryable: bool = False
+    cancellable: bool = False
     retry_of: str = ""
     metadata: dict = field(default_factory=dict)
     events: list[dict] = field(default_factory=list)
@@ -63,7 +90,7 @@ class WorkspaceTaskHistoryStore(TaskHistoryStore):
         for item in items:
             if not isinstance(item, dict):
                 continue
-            values = {name: item.get(name) for name in TaskRecord.__dataclass_fields__}
+            values = {name: item[name] for name in TaskRecord.__dataclass_fields__ if name in item}
             values["metadata"] = values.get("metadata") or {}
             values["events"] = values.get("events") or []
             records.append(TaskRecord(**values))
@@ -77,17 +104,33 @@ class WorkspaceTaskHistoryStore(TaskHistoryStore):
 
 
 class TaskHandle:
-    def __init__(self, task_id: str, progress_sink: Callable[[TaskEvent], None] | None = None) -> None:
+    def __init__(self, task_id: str, progress_sink: Callable[[TaskEvent], None] | None = None,
+                 *, cancellable: bool = True, cancel_callback: Callable[[], None] | None = None) -> None:
         self.task_id = task_id
         self._cancelled = threading.Event()
         self._progress_sink = progress_sink or (lambda _event: None)
+        self.cancellable = cancellable
+        self._cancel_callback = cancel_callback
+        self.cancel_acknowledged = False
+        self.error = ""
 
     def cancel(self) -> None:
+        if not self.cancellable or self._cancelled.is_set():
+            return
         self._cancelled.set()
+        if self._cancel_callback is not None:
+            self._cancel_callback()
+
+    @property
+    def cancel_requested(self) -> bool:
+        return self._cancelled.is_set()
 
     @property
     def cancelled(self) -> bool:
-        return self._cancelled.is_set()
+        # Reading at a worker checkpoint confirms that the task observed the request.
+        if self.cancel_requested:
+            self.cancel_acknowledged = True
+        return self.cancel_requested
 
     def progress(
         self,
@@ -122,7 +165,8 @@ class TaskRunner:
     ) -> None:
         self.event_sink = event_sink or (lambda _event: None)
         self._handles: dict[str, TaskHandle] = {}
-        self._targets: dict[str, tuple[str, Callable[[TaskHandle], object], dict, bool]] = {}
+        self._targets: dict[str, tuple] = {}
+        self._retrying: set[str] = set()
         self._records: dict[str, TaskRecord] = {}
         self._order: list[str] = []
         self._history_store = history_store
@@ -130,6 +174,11 @@ class TaskRunner:
         self._lock = threading.Lock()
         if history_store is not None:
             for record in history_store.load():
+                record.retryable = False  # Callbacks cannot survive a process restart.
+                record.cancellable = False
+                if record.status in {"pending", "running", "cancelling"}:
+                    record.status = "failed"
+                    record.error = "应用已退出，任务未完成，请从原入口重新执行。"
                 self._records[record.task_id] = record
                 self._order.append(record.task_id)
 
@@ -141,14 +190,18 @@ class TaskRunner:
         retryable: bool = False,
         metadata: dict | None = None,
         retry_of: str = "",
+        cancellable: bool = False,
+        cancel_callback: Callable[[], None] | None = None,
     ) -> TaskHandle:
         task_id = f"task_{uuid.uuid4().hex[:12]}"
-        handle = TaskHandle(task_id, self._handle_progress)
+        handle = TaskHandle(task_id, self._handle_progress,
+                            cancellable=cancellable, cancel_callback=cancel_callback)
         record = TaskRecord(
             task_id=task_id,
             name=name,
             created_at=self._now(),
             retryable=retryable,
+            cancellable=cancellable,
             retry_of=retry_of,
             metadata=dict(metadata or {}),
         )
@@ -157,28 +210,34 @@ class TaskRunner:
             self._records[task_id] = record
             self._order.append(task_id)
             if retryable:
-                self._targets[task_id] = (name, target, dict(metadata or {}), retryable)
+                self._targets[task_id] = (name, target, dict(metadata or {}), cancellable, cancel_callback)
             self._trim_locked()
             self._persist_locked()
 
         def run() -> None:
-            started = time.time()
-            self._emit(handle, "started", name)
+            started = time.monotonic()
+            _task_context.handle = handle
             try:
+                self._emit(handle, "started", name)
                 result = target(handle)
-                if handle.cancelled:
+                if handle.cancel_acknowledged:
                     self._emit(handle, "cancelled", name)
+                elif handle.error:
+                    self._emit(handle, "failed", handle.error)
                 else:
                     self._emit(handle, "completed", name, {"result": self._preview(result)})
             except Exception as exc:
-                if handle.cancelled:
+                if handle.cancel_acknowledged:
                     self._emit(handle, "cancelled", name)
                 else:
                     self._emit(handle, "failed", str(exc), {"exception_type": type(exc).__name__})
             finally:
-                self._emit(handle, "finished", name, {"duration_ms": int((time.time() - started) * 1000)})
-                with self._lock:
-                    self._handles.pop(task_id, None)
+                try:
+                    self._emit(handle, "finished", name, {"duration_ms": int((time.monotonic() - started) * 1000)})
+                finally:
+                    _task_context.handle = None
+                    with self._lock:
+                        self._handles.pop(task_id, None)
 
         threading.Thread(target=run, daemon=True, name=task_id).start()
         return handle
@@ -186,9 +245,12 @@ class TaskRunner:
     def cancel(self, task_id: str) -> bool:
         with self._lock:
             handle = self._handles.get(task_id)
-        if handle is None:
-            return False
-        handle.cancel()
+            record = self._records.get(task_id)
+            if handle is None or record is None or not record.cancellable or record.status not in {"pending", "running"}:
+                return False
+            record.status = "cancelling"
+            record.message = "已请求取消，等待任务到达可停止的位置。"
+            handle.cancel()
         return True
 
     def active(self) -> list[str]:
@@ -221,10 +283,23 @@ class TaskRunner:
         with self._lock:
             target = self._targets.get(task_id)
             record = self._records.get(task_id)
-        if target is None or record is None or not record.retryable:
-            raise ValueError("Task is not retryable")
-        name, callback, metadata, retryable = target
-        return self.start(name, callback, retryable=retryable, metadata=metadata, retry_of=task_id)
+            if target is None or record is None or not record.retryable:
+                raise ValueError("该任务不支持重试，请从原入口重新执行。")
+            if record.status not in {"failed", "cancelled"} or task_id in self._handles:
+                raise ValueError("只有已结束的失败或取消任务可以重试。")
+            if task_id in self._retrying or any(
+                item.retry_of == task_id and item.status in {"pending", "running", "cancelling"}
+                for item in self._records.values()
+            ):
+                raise ValueError("该任务已有重试正在运行。")
+            self._retrying.add(task_id)
+        name, callback, metadata, cancellable, cancel_callback = target
+        try:
+            return self.start(name, callback, retryable=True, metadata=metadata, retry_of=task_id,
+                              cancellable=cancellable, cancel_callback=cancel_callback)
+        finally:
+            with self._lock:
+                self._retrying.discard(task_id)
 
     def _emit(self, handle: TaskHandle, event_type: str, message: str, data=None) -> None:
         event = TaskEvent(
@@ -255,10 +330,12 @@ class TaskRunner:
             if len(record.events) > 50:
                 record.events = record.events[-50:]
             if event.type == "started":
-                record.status = "running"
+                if record.status != "cancelling":
+                    record.status = "running"
                 record.started_at = self._now()
             elif event.type == "progress":
-                record.status = "running"
+                if record.status != "cancelling":
+                    record.status = "running"
                 if "progress" in event.data:
                     record.progress = max(0, min(100, int(event.data.get("progress") or 0)))
                 if event.data.get("stage"):

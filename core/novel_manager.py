@@ -125,6 +125,14 @@ class NovelManager:
             self._workspace_cache[book_dir] = workspace
         return workspace
 
+    def save_interrupted_generation(self, title: str, record: dict) -> str:
+        """Keep incomplete output outside the chapter tree, using encrypted storage."""
+        path = f".drafts/interrupted_{uuid.uuid4().hex}.json"
+        self.get_workspace(title).storage.write_json(
+            path, {**record, "status": "interrupted", "book_title": title},
+        )
+        return path
+
     def ensure_workspace(self, title: str):
         workspace = self.get_workspace(title)
         try:

@@ -13,6 +13,7 @@ from core.agent.changes import ChangeSetError, ChangeSetService
 from core.agent.repository import AgentRepository
 from core.auth_manager import AuthManager
 from core.control_auth import ControlGrant
+from core.control_writing import WritingControlMixin
 from core.novel_manager import NovelManager
 from core.settings_manager import SettingsManager
 from core.world_bible import (
@@ -28,6 +29,14 @@ from core.world_bible import (
 
 class ControlError(RuntimeError):
     code = "control_error"
+
+
+class ControlMaintenanceError(ControlError):
+    code = "maintenance_pending"
+
+    def __init__(self, message: str, details: dict):
+        super().__init__(message)
+        self.details = details
 
 
 class ControlPermissionError(ControlError):
@@ -74,7 +83,7 @@ def _clip(value: object, limit: int = 240) -> str:
     return text if len(text) <= limit else text[:limit] + "…"
 
 
-class ControlService:
+class ControlService(WritingControlMixin):
     SCHEMA_VERSION = 1
 
     def __init__(self, grant: ControlGrant) -> None:
@@ -144,6 +153,23 @@ class ControlService:
             "get_change_set": self.get_change_set,
             "get_control_settings": self.get_control_settings,
             "run_writing_agent": self.run_writing_agent,
+            "describe_images": self.describe_images,
+            "read_current_chapter": self.read_current_chapter,
+            "create_project": self.create_project,
+            "update_project": self.update_project,
+            "activate_branch": self.activate_branch,
+            "plan_chapter": self.plan_chapter,
+            "read_plan": self.read_plan,
+            "maintain_chapter": self.maintain_chapter,
+            "rebuild_world": self.rebuild_world,
+            "apply_change": self.apply_change,
+            "model_status": self.model_status,
+            "configure_models": self.configure_models,
+            "configure_generation": self.configure_generation,
+            "read_agent_run": self.read_agent_run,
+            "list_agent_runs": self.list_agent_runs,
+            "propose_new_chapter": self.propose_new_chapter,
+            "discard_change": self.discard_change,
         }
         handler = handlers.get(tool_name)
         if handler is None:
@@ -175,7 +201,8 @@ class ControlService:
                 "read": "read" in self.grant.scopes,
                 "propose": "propose" in self.grant.scopes,
                 "writing_agent": "generate" in self.grant.scopes and bool(self.settings.get("control_agent_enabled", False)),
-                "approve": False,
+                "approve": "approve" in self.grant.scopes,
+                "manage": "manage" in self.grant.scopes,
             },
         }
 
@@ -292,6 +319,31 @@ class ControlService:
             "page": {"start": start, "end": end, "total_chars": len(content), "next_start": end if end < len(content) else None},
         }
 
+    def read_current_chapter(self, book: str, start: int = 0, max_chars: int | None = None) -> dict:
+        self._require("read")
+        title, _meta = self._book(book)
+        nodes = [node for node in self.manager.get_active_path_nodes(title) if not node.get("virtual")]
+        if not nodes:
+            raise ControlNotFoundError("当前活跃路径还没有章节")
+        return self.read_chapter(book, str(nodes[-1]["id"]), start, max_chars)
+
+    def describe_images(self, paths: list[str], instruction: str = "", book: str = "") -> dict:
+        self._require("generate")
+        if not self.settings.get("control_agent_enabled", False):
+            raise ControlPermissionError("设置中未允许外部 AI 调用模型，请启用 AI 控制接口的生成开关")
+        from core.image_reference import ImageReferenceService
+        from core.model_config import ModelConfig
+        from core.model_gateway import ModelGateway
+        title = self._book(book)[0] if book else ""
+        raw = AuthManager.decrypt_json(self.grant.enc_key, os.path.join(self.user_dir, "config.enc")) or {}
+
+        def routes(book_title):
+            data = self.manager.get_workspace(book_title).storage.read_json(".deepseekass/model_routes.json", default={}) or {}
+            return dict(data.get("routes") or data)
+
+        gateway = ModelGateway(ModelConfig.from_dict(raw, self.settings), book_route_loader=routes)
+        return {"schema_version": self.SCHEMA_VERSION, **ImageReferenceService(gateway).describe(paths, instruction, book_title=title)}
+
     def search_chapters(self, book: str, query: str, scope: str = "", limit: int | None = None) -> dict:
         self._require("read")
         title, meta = self._book(book)
@@ -403,8 +455,22 @@ class ControlService:
     def audit_world_bible(self, book: str) -> dict:
         self._require("read")
         title, meta = self._book(book)
-        warnings = audit_world_bible_consistency(self.manager.load_world_bible(title))
-        return {"schema_version": self.SCHEMA_VERSION, "book": self._book_identity(title, meta), "warning_count": len(warnings), "warnings": warnings}
+        bible = self.manager.load_world_bible(title)
+        warnings = audit_world_bible_consistency(bible)
+        snapshots = bible.chapter_snapshots or bible.chapter_world_entries or {}
+        missing = []
+        for node in self.manager.get_active_path_nodes(title):
+            key = (f"node:{node['id']}" if node.get("storage_kind") == "extra_uuid"
+                   else f"ch{int(node['chapter_num']):04d}_v{int(node['version']):03d}")
+            entry = snapshots.get(key)
+            if not (isinstance(entry, dict) and isinstance(entry.get("data"), dict)):
+                missing.append(node["id"])
+        if missing:
+            warnings.append({"severity": "warning", "type": "章节快照缺失",
+                             "message": f"活跃路径有 {len(missing)} 章尚未同步到世界书。",
+                             "node_ids": missing, "suggestion": "对缺失节点执行 chapter maintain 后重新检查。"})
+        return {"schema_version": self.SCHEMA_VERSION, "book": self._book_identity(title, meta),
+                "warning_count": len(warnings), "warnings": warnings, "missing_snapshot_node_ids": missing}
 
     def run_writing_agent(
         self,
@@ -634,13 +700,17 @@ class ControlService:
         changes = [self._change_summary(item) for item in repository.list_pending_change_sets()]
         return {"schema_version": self.SCHEMA_VERSION, "book": self._book_identity(title, meta), "changes": changes, "total": len(changes)}
 
-    def get_change_set(self, book: str, change_set_id: str) -> dict:
+    def get_change_set(self, book: str, change_set_id: str, include_content: bool = False) -> dict:
         self._require("read")
         title, meta = self._book(book)
         change = AgentRepository(self.manager.get_workspace(title)).load_change_set(str(change_set_id))
         if change is None:
             raise ControlNotFoundError(f"变更不存在: {change_set_id}")
         summary = self._change_summary(change, detailed=True)
+        if include_content:
+            for item, operation in zip(summary["operations"], change.operations):
+                if "content" in operation.payload:
+                    item["payload"]["content"] = operation.payload["content"]
         summary["review"] = self._change_review(change, title)
         return {"schema_version": self.SCHEMA_VERSION, "book": self._book_identity(title, meta), "change_set": summary}
 

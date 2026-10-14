@@ -17,6 +17,15 @@ class ChangeSetService:
         self.repository = repository
 
     def propose_chapter(self, run_id: str, book_id: str, chapter_num: int, chapter_title: str, content: str, parent_id: str = "", reason: str = "") -> ChangeSet:
+        meta = self.manager.ensure_chapter_tree(self.book_title)
+        if not parent_id:
+            if chapter_num == 1:
+                parent_id = self.manager._virtual_root_node_id()
+            else:
+                parent_id = next((node_id for node_id in reversed(meta.active_path)
+                    if int(meta.chapter_nodes[node_id].get("chapter_num", 0)) == chapter_num - 1), "")
+        if parent_id not in meta.chapter_nodes:
+            raise ChangeSetError("无法确定章节父节点，请显式指定已有 parent_id")
         current = self.manager.read_active_chapter(self.book_title, chapter_num) or ""
         operation = ChangeOperation(
             operation_id=f"op_{uuid.uuid4().hex}",

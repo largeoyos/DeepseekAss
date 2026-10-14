@@ -46,7 +46,7 @@ class WritingAdvisorService:
         self.client = client
         self.conversation_manager = conversation_manager
 
-    def ask(self, request: AdvisorRequest) -> AdvisorResult:
+    def ask(self, request: AdvisorRequest, *, event_sink=None, cancel_requested=None) -> AdvisorResult:
         workspace = self.manager.get_workspace(request.book_title)
         manifest = self.manager.ensure_workspace(request.book_title)
         repository = AgentRepository(workspace)
@@ -59,6 +59,8 @@ class WritingAdvisorService:
             client=self.client,
             tool_registry=registry,
             skills_enabled=bool(request.settings.get("agent_skills_enabled", True)),
+            event_sink=event_sink,
+            services={"stream_model": event_sink is not None, "cancel_requested": cancel_requested},
         )
         user_message = self.wrap_fiction_request(request.message) if request.fiction_context else request.message
         run = runtime.run(AgentRunRequest(
@@ -70,6 +72,7 @@ class WritingAdvisorService:
             model=request.model,
             mode="advisor",
             book_title=request.book_title,
+            context_query=request.message,
         ))
         answer = ""
         for item in reversed(run.messages):
@@ -129,12 +132,26 @@ class WritingAdvisorService:
         session = self._existing_session(repository, book_id)
         if session is not None:
             return session
-        return repository.create_session(book_id, book_title, "writing_advisor", "写作顾问")
+        session = repository.create_session(book_id, book_title, "writing_advisor", "写作顾问")
+        repository.storage.write_json(f"{repository.root}/advisor_session.json", {"session_id": session.session_id})
+        return session
 
     @staticmethod
     def _existing_session(repository: AgentRepository, book_id: str):
+        # Resolve a single session on subsequent questions instead of decrypting
+        # every Agent session and all of its history on every submission.
+        try:
+            index = repository.storage.read_json(f"{repository.root}/advisor_session.json", default={})
+        except (ValueError, OSError):
+            index = {}  # The index is disposable; existing sessions remain authoritative.
+        session_id = str(index.get("session_id") or "") if isinstance(index, dict) else ""
+        if session_id:
+            session = repository.load_session(session_id)
+            if session and session.book_id == book_id and session.agent_kind == "writing_advisor":
+                return session
         for session in repository.list_sessions():
             if session.book_id == book_id and session.agent_kind == "writing_advisor":
+                repository.storage.write_json(f"{repository.root}/advisor_session.json", {"session_id": session.session_id})
                 return session
         return None
 

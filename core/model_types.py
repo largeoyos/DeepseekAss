@@ -76,6 +76,7 @@ class ModelCapabilities:
     structured_output: bool = True
     supported_reasoning_levels: list[str] = field(default_factory=lambda: [ReasoningLevel.OFF.value])
     verified: bool = False
+    vision: bool = False
 
     @classmethod
     def from_dict(cls, data: dict | None) -> "ModelCapabilities":

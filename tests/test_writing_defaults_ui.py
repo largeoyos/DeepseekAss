@@ -111,6 +111,11 @@ class WritingDefaultsUiTests(unittest.TestCase):
             self.assertTrue(any("模型档案" in label for label in tab_labels))
             self.assertTrue(any("任务路由" in label for label in tab_labels))
             self.assertEqual(6, len(dialog._route_controls))
+            dialog._cap_vision.setChecked(True)
+            self.assertTrue(dialog._store_model_editor(show_errors=False))
+            profile = dialog._model_config.models[dialog._editing_model_id]
+            self.assertTrue(profile.capabilities.vision)
+            self.assertTrue(profile.to_dict()["capabilities"]["vision"])
             dialog.close()
             parent.close()
 

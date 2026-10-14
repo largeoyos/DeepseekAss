@@ -1,0 +1,87 @@
+{
+  "schema_version": 1,
+  "book": {
+    "book_id": "94dd64d97a2f",
+    "title": "最后一班潮汐邮船（CLI实测-6d3119）"
+  },
+  "warning_count": 6,
+  "warnings": [
+    {
+      "severity": "info",
+      "type": "缺少来源",
+      "message": "角色「沈砚」缺少来源章节/版本，后续按章节追溯会不准确。",
+      "related": [
+        "沈砚"
+      ],
+      "entity_ids": [
+        "沈砚"
+      ],
+      "source_refs": [],
+      "suggestion": "检查相关来源并人工确认。"
+    },
+    {
+      "severity": "info",
+      "type": "字段来源待补全",
+      "message": "角色「沈砚」有 2 个主要字段缺少章节级来源，可通过按活跃路径同步世界书补全。",
+      "related": [
+        "沈砚"
+      ],
+      "entity_ids": [
+        "沈砚"
+      ],
+      "source_refs": [],
+      "suggestion": "检查相关来源并人工确认。"
+    },
+    {
+      "severity": "info",
+      "type": "缺少来源",
+      "message": "地点「雾港」缺少来源章节/版本，后续按章节追溯会不准确。",
+      "related": [
+        "雾港"
+      ],
+      "entity_ids": [
+        "雾港"
+      ],
+      "source_refs": [],
+      "suggestion": "检查相关来源并人工确认。"
+    },
+    {
+      "severity": "info",
+      "type": "字段来源待补全",
+      "message": "地点「雾港」有 1 个主要字段缺少章节级来源，可通过按活跃路径同步世界书补全。",
+      "related": [
+        "雾港"
+      ],
+      "entity_ids": [
+        "雾港"
+      ],
+      "source_refs": [],
+      "suggestion": "检查相关来源并人工确认。"
+    },
+    {
+      "severity": "info",
+      "type": "地点细节缺失",
+      "message": "地点「雾港」缺少原文关键细节，后续复用时容易失真。",
+      "related": [
+        "雾港"
+      ],
+      "entity_ids": [
+        "雾港"
+      ],
+      "source_refs": [],
+      "suggestion": "检查相关来源并人工确认。"
+    },
+    {
+      "severity": "warning",
+      "type": "章节快照缺失",
+      "message": "活跃路径有 1 章尚未同步到世界书。",
+      "node_ids": [
+        "ch0005_v001"
+      ],
+      "suggestion": "对缺失节点执行 chapter maintain 后重新检查。"
+    }
+  ],
+  "missing_snapshot_node_ids": [
+    "ch0005_v001"
+  ]
+}

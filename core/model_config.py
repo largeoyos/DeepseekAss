@@ -37,6 +37,7 @@ OPERATION_STAGES: dict[str, TaskStage] = {
     "roleplay_chat": TaskStage.INTERACTIVE,
     "roleplay_regenerate": TaskStage.INTERACTIVE,
     "novel_chapter": TaskStage.DRAFTING,
+    "agent_novel_chapter": TaskStage.DRAFTING,
     "continuation": TaskStage.DRAFTING,
     "chapter_regenerate": TaskStage.DRAFTING,
     "chapter_tree_rewrite": TaskStage.DRAFTING,

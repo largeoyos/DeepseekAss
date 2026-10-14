@@ -16,6 +16,9 @@ class GatewayLangChainChatModel(BaseChatModel):
     _temperature: float = PrivateAttr()
     _tools: list[dict] = PrivateAttr(default_factory=list)
     _tool_choice: Any = PrivateAttr(default=None)
+    _on_text: Any = PrivateAttr(default=None)
+    _on_turn: Any = PrivateAttr(default=None)
+    _check_cancel: Any = PrivateAttr(default=None)
 
     def __init__(
         self,
@@ -25,6 +28,9 @@ class GatewayLangChainChatModel(BaseChatModel):
         temperature: float = 0.3,
         tools: list[dict] | None = None,
         tool_choice: Any = None,
+        on_text=None,
+        on_turn=None,
+        check_cancel=None,
         **kwargs,
     ) -> None:
         super().__init__(**kwargs)
@@ -33,6 +39,9 @@ class GatewayLangChainChatModel(BaseChatModel):
         self._temperature = temperature
         self._tools = list(tools or [])
         self._tool_choice = tool_choice
+        self._on_text = on_text
+        self._on_turn = on_turn
+        self._check_cancel = check_cancel
 
     @property
     def _llm_type(self) -> str:
@@ -52,6 +61,7 @@ class GatewayLangChainChatModel(BaseChatModel):
             temperature=self._temperature,
             tools=converted,
             tool_choice=tool_choice,
+            on_text=self._on_text, on_turn=self._on_turn, check_cancel=self._check_cancel,
         )
 
     @staticmethod
@@ -101,7 +111,13 @@ class GatewayLangChainChatModel(BaseChatModel):
         if self._tools:
             request["tools"] = self._tools
             request["tool_choice"] = self._tool_choice or "auto"
-        response = self._client.chat.completions.create(**request)
+        if self._on_text is not None:
+            from core.agent.model_stream import collect_chat_stream
+            if self._on_turn:
+                self._on_turn()
+            response = collect_chat_stream(self._client, request, self._on_text, self._check_cancel)
+        else:
+            response = self._client.chat.completions.create(**request)
         message = response.choices[0].message
         tool_calls = [
             {

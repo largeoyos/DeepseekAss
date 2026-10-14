@@ -866,7 +866,7 @@ async function loadTokens(){ const data=await api(`/api/token-log${tokenFilterQu
 async function clearTokens(){ if(confirm("清空 Token 日志？")){ await api("/api/token-log",{method:"DELETE"}); await loadTokens(); } }
 async function exportTokens(){ const data=await api(`/api/token-log/export${tokenFilterQuery()}`,{method:"POST",body:"{}"}); addDownload(data.download); toast("Token 日志已生成下载"); }
 async function resetTokenFilters(){ for(const id of ["tokenQuery","tokenModelFilter","tokenOperationFilter","tokenDateFrom","tokenDateTo"]){ const el=$(id); if(el) el.value=""; } await loadTokens(); }
-function openTokenContent(index){ const row=(state.tokenEntries||[])[index]; const dialog=$("tokenContentDialog"); if(!dialog||!row) return; const full=(row.content_full||"").trim(); $("tokenContentFull").textContent=full||(row.content_preview||"(无内容)"); $("tokenReasoningFull").textContent=(row.reasoning_content_full||row.reasoning_content_preview||"(无推理内容)"); $("tokenRoutingDetail").textContent=JSON.stringify({provider_id:row.provider_id,provider_name:row.provider_name,protocol:row.protocol,model_profile_id:row.model_profile_id,stage:row.stage,reasoning_level:row.reasoning_level,context_budget:row.context_budget,search_source:row.search_source,fallback_attempts:row.fallback_attempts,final_failure_reason:row.final_failure_reason},null,2); $("tokenContentMeta").textContent=[row.timestamp,row.direction==="send"?"发送":"接收",row.operation,row.stage,row.provider_name,row.protocol,row.model].filter(Boolean).join(" · "); $("tokenContentNote").classList.toggle("hidden",Boolean(full)); if(!dialog.open) dialog.showModal(); }
+function openTokenContent(index){ const row=(state.tokenEntries||[])[index]; const dialog=$("tokenContentDialog"); if(!dialog||!row) return; const full=(row.content_full||"").trim(); $("tokenPromptFull").textContent=row.prompt_full||row.prompt_preview||"(旧日志未单独保存请求内容)"; $("tokenContentFull").textContent=full||(row.content_preview||"(无内容)"); $("tokenReasoningFull").textContent=(row.reasoning_content_full||row.reasoning_content_preview||"(无推理内容)"); $("tokenRoutingDetail").textContent=JSON.stringify({provider_id:row.provider_id,provider_name:row.provider_name,protocol:row.protocol,model_profile_id:row.model_profile_id,stage:row.stage,reasoning_level:row.reasoning_level,context_budget:row.context_budget,search_source:row.search_source,fallback_attempts:row.fallback_attempts,final_failure_reason:row.final_failure_reason},null,2); $("tokenContentMeta").textContent=[row.timestamp,row.direction==="request"?"请求 / 回复":row.direction==="send"?"发送":"接收",row.operation,row.stage,row.provider_name,row.protocol,row.model].filter(Boolean).join(" · "); $("tokenContentNote").classList.toggle("hidden",Boolean(full)); if(!dialog.open) dialog.showModal(); }
 function closeTokenContentDialog(){ const dialog=$("tokenContentDialog"); if(dialog&&dialog.open) dialog.close(); }
 function detailObject(value) {
   if (!value || typeof value !== "object") return {};
@@ -946,20 +946,44 @@ function renderDiagnostics(data = {}) {
     </section>
   `;
 }
-async function loadTasks(){ const data=await api("/api/tasks"); const tasks=data.tasks||[]; const list=$("taskList"); list.innerHTML=""; if(!tasks.length){ list.innerHTML='<div class="notice small">暂无任务历史</div>'; return; } for(const t of tasks){ const row=document.createElement("div"); row.className="item-card task-row"; const status=`${t.status||""} · ${t.stage||""} · ${t.progress||0}%`; row.innerHTML=`<span><strong>${escapeHtml(t.name||t.task_id)}</strong><small>${escapeHtml(status)}${t.error?` · ${escapeHtml(t.error)}`:""}</small></span><span class="task-actions"><button type="button" data-act="detail">详情</button>${t.status==="running"?'<button type="button" data-act="cancel">取消</button>':""}${t.retryable&&["failed","cancelled"].includes(t.status)?'<button type="button" data-act="retry">重试</button>':""}</span>`; row.querySelector('[data-act="detail"]').onclick=ev=>{ ev.stopPropagation(); showTaskDetail(t.task_id).catch(e=>toast(e.message)); };
+async function loadTasks(){ const data=await api("/api/tasks"); const tasks=data.tasks||[]; const list=$("taskList"); list.innerHTML=""; if(!tasks.length){ list.innerHTML='<div class="notice small">暂无任务历史</div>'; return; } for(const t of tasks){ const row=document.createElement("div"); row.className="item-card task-row"; const status=`${t.status||""} · ${t.stage||""} · ${t.progress||0}%`; row.innerHTML=`<span><strong>${escapeHtml(t.name||t.task_id)}</strong><small>${escapeHtml(status)}${t.error?` · ${escapeHtml(t.error)}`:""}</small></span><span class="task-actions"><button type="button" data-act="detail">详情</button>${t.cancellable&&["pending","running"].includes(t.status)?'<button type="button" data-act="cancel">取消</button>':""}${t.retryable&&["failed","cancelled"].includes(t.status)?'<button type="button" data-act="retry">重试</button>':""}</span>`; row.querySelector('[data-act="detail"]').onclick=ev=>{ ev.stopPropagation(); showTaskDetail(t.task_id).catch(e=>toast(e.message)); };
 const cancel=row.querySelector('[data-act="cancel"]'); if(cancel) cancel.onclick=ev=>{ ev.stopPropagation(); cancelTask(t.task_id).catch(e=>toast(e.message)); };
 const retry=row.querySelector('[data-act="retry"]'); if(retry) retry.onclick=ev=>{ ev.stopPropagation(); retryTask(t.task_id).catch(e=>toast(e.message)); };
 row.onclick=()=>showTaskDetail(t.task_id).catch(e=>toast(e.message)); list.appendChild(row); } }
 async function showTaskDetail(id){ const data=await api(`/api/tasks/${enc(id)}`); $("taskDetail").innerHTML=renderTaskDetail(data.task||{}); }
-async function cancelTask(id){ const data=await api(`/api/tasks/${enc(id)}/cancel`,{method:"POST",body:"{}"}); toast(data.ok?"任务已请求取消":"任务不可取消或已结束"); await loadTasks(); }
+async function cancelTask(id){ const data=await api(`/api/tasks/${enc(id)}/cancel`,{method:"POST",body:"{}"}); toast(data.ok?"任务已请求取消":"任务不可取消或已结束"); if(data.ok&&state.activeTaskId===id){ state.activeTaskCancellable=false; syncActiveTaskControl(); } await loadTasks(); }
 async function cancelActiveTask(){ if(!state.activeTaskId) return; await cancelTask(state.activeTaskId); }
 async function retryTask(id){ const data=await api(`/api/tasks/${enc(id)}/retry`,{method:"POST",body:"{}"}); toast("已提交重试任务"); connectTask(data.task_id); await loadTasks(); }
 async function loadDiagnostics(){ const data=await api("/api/diagnostics"); $("taskDetail").innerHTML=renderDiagnostics(data); }
 async function exportDiagnostics(){ const data=await api("/api/diagnostics/export",{method:"POST",body:"{}"}); addDownload(data.download); toast("诊断信息已生成下载"); selectSection("tasks"); }
-function syncActiveTaskControl(){ const button=$("cancelActiveTaskBtn"); if(button) button.classList.toggle("hidden",!state.activeTaskId); }
-function connectTask(id, onPayload){ if(state.eventSource) state.eventSource.close(); state.activeTaskId=id; syncActiveTaskControl(); state.streamBuffer=""; $("streamText").textContent=""; state.eventSource=new EventSource(`/api/tasks/${enc(id)}/events?token=${enc(state.token)}`); const h=e=>{ const payload=JSON.parse(e.data); updateTask(payload); if(onPayload) onPayload(payload); }; for(const t of ["started","progress","completed","failed","cancelled","finished"]) state.eventSource.addEventListener(t,h); }
+function syncActiveTaskControl(){ const button=$("cancelActiveTaskBtn"); if(button) button.classList.toggle("hidden",!state.activeTaskId||!state.activeTaskCancellable); }
+function connectTask(id, onPayload){
+  if(state.eventSource) state.eventSource.close();
+  state.activeTaskId=id;
+  state.activeTaskCancellable=false;
+  syncActiveTaskControl();
+  state.streamBuffer="";
+  $("streamText").textContent="";
+  $("taskStage").textContent="等待中";
+  $("taskPercent").textContent="0%";
+  $("taskBar").style.width="0%";
+  const source=new EventSource(`/api/tasks/${enc(id)}/events?token=${enc(state.token)}`);
+  state.eventSource=source;
+  api(`/api/tasks/${enc(id)}`).then(data=>{
+    if(state.eventSource!==source || state.activeTaskId!==id) return;
+    state.activeTaskCancellable=!!data.task?.cancellable&&["pending","running"].includes(data.task.status);
+    syncActiveTaskControl();
+  }).catch(()=>{});
+  const h=e=>{
+    if(state.eventSource!==source || state.activeTaskId!==id) return;
+    const payload=JSON.parse(e.data);
+    updateTask(payload);
+    if(onPayload) onPayload(payload);
+  };
+  for(const t of ["started","progress","completed","failed","cancelled","finished"]) source.addEventListener(t,h);
+}
 
-function updateTask(p){ const d=p.data||{}; const percent=Number(d.progress||(p.type==="completed"?100:0)); $("taskStage").textContent=d.stage||p.type; $("taskPercent").textContent=`${percent}%`; $("taskBar").style.width=`${percent}%`; $("taskMessage").textContent=p.message||""; if(d.text){ state.streamBuffer=(state.streamBuffer+d.text).slice(-10000); $("streamText").textContent=state.streamBuffer; } if(d.result){ $("streamText").textContent=typeof d.result==="string"?d.result:JSON.stringify(d.result,null,2); } if(["completed","failed","cancelled"].includes(p.type)&&state.eventSource){ state.eventSource.close(); state.activeTaskId=""; syncActiveTaskControl(); loadTasks().catch(()=>{}); } }
+function updateTask(p){ const d=p.data||{}; const percent=Number(d.progress??(p.type==="completed"?100:parseFloat($("taskPercent").textContent)||0)); if(d.stage||p.type!=="progress") $("taskStage").textContent=d.stage||p.type; $("taskPercent").textContent=`${percent}%`; $("taskBar").style.width=`${percent}%`; $("taskMessage").textContent=p.message||""; if(d.text){ state.streamBuffer=(state.streamBuffer+d.text).slice(-10000); $("streamText").textContent=state.streamBuffer; } if(d.result){ $("streamText").textContent=typeof d.result==="string"?d.result:JSON.stringify(d.result,null,2); } if(["completed","failed","cancelled"].includes(p.type)&&state.eventSource){ state.eventSource.close(); state.activeTaskId=""; syncActiveTaskControl(); loadTasks().catch(()=>{}); } }
 function bind(id, fn, event="click"){ const el=$(id); if(el) el.addEventListener(event, ev=>Promise.resolve(fn(ev)).catch(e=>toast(e.message))); }
 let registerMode=false;
 function setRegisterMode(enabled){

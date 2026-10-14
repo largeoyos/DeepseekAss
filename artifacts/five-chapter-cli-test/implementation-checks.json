@@ -1,0 +1,56 @@
+{
+  "book_id": "94dd64d97a2f",
+  "unit_tests": {
+    "count": 107,
+    "result": "passed",
+    "suites": [
+      "test_control_interface",
+      "test_control_management",
+      "test_agent_runtime",
+      "test_branch_consistency",
+      "test_agent_chapter_generation",
+      "test_model_gateway",
+      "test_world_bible_v2"
+    ],
+    "verified_at": "2026-09-14",
+    "duration_seconds": 28.978
+  },
+  "fixed_issues": [
+    {
+      "issue": "带点的领域工具名被严格兼容接口拒绝",
+      "fix": "发送前转为合法名称，响应和历史映射回领域名称"
+    },
+    {
+      "issue": "无参数工具被模型填入额外设置参数",
+      "fix": "提供显式传输说明字段，校验后移除；保留领域工具空参数约束"
+    },
+    {
+      "issue": "工具调用 Schema 错误被当成能力缺失",
+      "fix": "错误分类并最多一次带 Schema 反馈的纠正"
+    },
+    {
+      "issue": "第三章初始/工具上下文超过模型输入预算",
+      "fix": "按实际配置和工具 Schema 预留预算，仅裁剪可重读资料，保留作者指令及调用配对"
+    },
+    {
+      "issue": "新章提案省略父节点，延迟到批准时才推导",
+      "fix": "创建提案时绑定当前上游；第三章旧提案已通过 CLI 拒绝，并用原正文重建"
+    },
+    {
+      "issue": "提取重试的输出上限等于上下文窗口，输入预算只剩 1 token",
+      "fix": "预留真实输入及安全余量；同时保留每次提取失败的原始诊断"
+    },
+    {
+      "issue": "第五章规划输入超预算，但大量窗口被输出上限占用",
+      "fix": "保留关键输入，按剩余实际窗口降低输出上限，并保证最小可用输出预算"
+    },
+    {
+      "issue": "网络请求失败后被当作 JSON 格式错误再次重试",
+      "fix": "仅对已收到的无效正文重试 JSON 生成，网络重试交给网关，避免重复等待"
+    },
+    {
+      "issue": "世界书审计遗漏活跃章节缺失快照",
+      "fix": "审计返回 missing_snapshot_node_ids，并对未同步章节明确告警；切换分支后重新计算"
+    }
+  ]
+}

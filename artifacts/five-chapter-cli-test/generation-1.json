@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "book": {
+    "book_id": "94dd64d97a2f",
+    "title": "最后一班潮汐邮船（CLI实测-6d3119）"
+  },
+  "session_id": "session_efeff5516b694704b86baee650b8a3a2",
+  "run_id": "run_50664f6599c441e5954f0f960c47682e",
+  "status": "waiting_approval",
+  "terminal_reason": "approval_required",
+  "backend": {
+    "requested": "legacy",
+    "active": "legacy",
+    "fallback_reason": ""
+  },
+  "model": "deepseek-flash",
+  "target": {
+    "chapter_title": "没有收件人的信",
+    "target_words": 1600
+  },
+  "change_set_ids": [
+    "changes_bba579e23a72461e8c099b9a602c7e63"
+  ],
+  "artifact_ids": [],
+  "requires_human_approval": true,
+  "final_text": "I'll start by reading the project context, world bible, and chapter tree state.",
+  "warning": ""
+}

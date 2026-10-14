@@ -322,7 +322,8 @@ class WebRuntime:
         self.sensitive = SensitiveStore()
         self._uses_default_client_factory = client_factory is None
         self.client_factory = client_factory or self._default_client_factory
-        self._task_queues: dict[str, queue.Queue[TaskEvent]] = {}
+        self._task_subscribers: dict[str, set[queue.Queue[TaskEvent]]] = {}
+        self._task_sequences: dict[str, int] = {}
         self._task_events: dict[str, list[TaskEvent]] = {}
         self._task_users: dict[str, str] = {}
         self._task_runner = TaskRunner(event_sink=self._on_task_event)
@@ -370,11 +371,13 @@ class WebRuntime:
 
     def list_tasks(self, username: str, limit: int = 50) -> list[dict]:
         items = []
-        for record in self._task_runner.history(limit=limit):
+        for record in self._task_runner.history():
             data = asdict(record)
             meta = data.get("metadata") or {}
             if meta.get("username") == username or self._task_users.get(data["task_id"]) == username:
                 items.append(data)
+                if len(items) >= limit:
+                    break
         return items
 
     def user_owns_task(self, username: str, task_id: str) -> bool:
@@ -398,9 +401,9 @@ class WebRuntime:
         self._task_users[handle.task_id] = username
         return handle.task_id
 
-    def start_task(self, username: str, name: str, target, *, metadata: dict | None = None, retryable: bool = False) -> str:
+    def start_task(self, username: str, name: str, target, *, metadata: dict | None = None, retryable: bool = False, cancellable: bool = False) -> str:
         meta = {"username": username, **(metadata or {})}
-        handle = self._task_runner.start(name, target, retryable=retryable, metadata=meta)
+        handle = self._task_runner.start(name, target, retryable=retryable, metadata=meta, cancellable=cancellable)
         self._task_users[handle.task_id] = username
         return handle.task_id
 
@@ -512,11 +515,23 @@ class WebRuntime:
             target,
             metadata={"kind": "chapter_generation", "book": title},
             retryable=True,
+            cancellable=True,
         )
 
-    def event_queue(self, task_id: str) -> queue.Queue[TaskEvent]:
+    def subscribe_task_events(self, task_id: str) -> tuple[list[TaskEvent], queue.Queue[TaskEvent]]:
+        """Atomically split replay and live events; every subscriber gets its own queue."""
         with self._task_lock:
-            return self._task_queues.setdefault(task_id, queue.Queue())
+            subscriber = queue.Queue()
+            self._task_subscribers.setdefault(task_id, set()).add(subscriber)
+            return list(self._task_events.get(task_id, [])), subscriber
+
+    def unsubscribe_task_events(self, task_id: str, subscriber: queue.Queue[TaskEvent]) -> None:
+        with self._task_lock:
+            subscribers = self._task_subscribers.get(task_id)
+            if subscribers is not None:
+                subscribers.discard(subscriber)
+                if not subscribers:
+                    self._task_subscribers.pop(task_id, None)
 
     def events_snapshot(self, task_id: str) -> list[TaskEvent]:
         with self._task_lock:
@@ -524,10 +539,13 @@ class WebRuntime:
 
     def _on_task_event(self, event: TaskEvent) -> None:
         with self._task_lock:
+            event.sequence = self._task_sequences.get(event.task_id, 0) + 1
+            self._task_sequences[event.task_id] = event.sequence
             self._task_events.setdefault(event.task_id, []).append(event)
             if len(self._task_events[event.task_id]) > 250:
                 self._task_events[event.task_id] = self._task_events[event.task_id][-250:]
-            self._task_queues.setdefault(event.task_id, queue.Queue()).put(event)
+            for subscriber in self._task_subscribers.get(event.task_id, ()):
+                subscriber.put(event)
 
     def _default_client_factory(self, api_config: dict):
         config = ModelConfig.from_dict(api_config)
@@ -755,36 +773,46 @@ class WebRuntime:
             frequency_penalty=params["frequency_penalty"],
             stream=True,
         )
-        seen = 0
-        for chunk in response:
-            if handle.cancelled:
-                raise RuntimeError("任务已取消")
-            gateway_result = getattr(chunk, "gateway_result", None) or gateway_result
-            choices = getattr(chunk, "choices", []) or []
-            if not choices:
-                continue
-            delta = choices[0].delta
-            text = getattr(delta, "content", None) or ""
-            if not text:
-                continue
-            chunks.append(text)
-            seen += len(text)
-            if seen >= 80:
-                handle.progress(
-                    "生成正文中",
-                    percent=min(60, 20 + len("".join(chunks)) // 160),
-                    stage="生成正文",
-                    data={"text": "".join(chunks[-8:])[-500:]},
-                )
-                seen = 0
+        pending = []
+        pending_chars = 0
+        total_chars = 0
+        try:
+            for chunk in response:
+                if handle.cancelled:
+                    raise RuntimeError("任务已取消")
+                gateway_result = getattr(chunk, "gateway_result", None) or gateway_result
+                choices = getattr(chunk, "choices", []) or []
+                if not choices:
+                    continue
+                delta = choices[0].delta
+                text = getattr(delta, "content", None) or ""
+                if not text:
+                    continue
+                chunks.append(text)
+                pending.append(text)
+                pending_chars += len(text)
+                total_chars += len(text)
+                if pending_chars >= 80:
+                    handle.progress(
+                        "生成正文中",
+                        percent=min(60, 20 + total_chars // 160),
+                        stage="生成正文",
+                        data={"text": "".join(pending)},
+                    )
+                    pending.clear()
+                    pending_chars = 0
+        finally:
+            close = getattr(response, "close", None)
+            if callable(close):
+                close()
         if handle.cancelled:
             raise RuntimeError("任务已取消")
-        if seen:
+        if pending:
             handle.progress(
                 "生成正文中",
-                percent=min(60, 20 + len("".join(chunks)) // 160),
+                percent=min(60, 20 + total_chars // 160),
                 stage="生成正文",
-                data={"text": "".join(chunks[-8:])[-500:]},
+                data={"text": "".join(pending)},
             )
         content = "".join(chunks).strip()
         citation_block = format_citations_markdown(list(getattr(gateway_result, "citations", []) or []))
@@ -864,7 +892,7 @@ def task_event_to_sse(event: TaskEvent) -> str:
         "message": event.message,
         "data": event.data,
     }
-    return f"event: {event.type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+    return f"id: {event.sequence}\nevent: {event.type}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
 def to_plain(value):
